@@ -190,6 +190,54 @@ def test_activity_pool_has_five_activities():
     assert len({a.name for a in pool}) == 5
 
 
+def test_activity_descriptions_present():
+    """llm 档决策需要每个活动的一句话介绍。"""
+    for activity in default_activities():
+        assert activity.description
+        assert activity.name
+
+
+# ---------------------------------------------------------------------------
+# M2：决策参数注入（decider → ActivityContext.params → 活动）
+# ---------------------------------------------------------------------------
+def test_surf_uses_topic_param_over_random():
+    ctx = make_ctx(searcher=FakeSearcher())
+    ctx.params = {"topic": "深海生物"}
+    outcome = asyncio.run(SurfActivity().run(ctx))
+    assert ctx.searcher.queries == ["深海生物"]
+    assert "深海生物" in outcome.memory_content
+
+
+def test_surf_blank_param_falls_back_to_random():
+    """决策参数是空白串：回退随机主题（参数不可信时不阻塞活动）。"""
+    ctx = make_ctx(searcher=FakeSearcher())
+    ctx.params = {"topic": "   "}
+    outcome = asyncio.run(SurfActivity().run(ctx))
+    assert ctx.searcher.queries and ctx.searcher.queries[0]
+
+
+def test_read_uses_topic_param():
+    ctx = make_ctx(searcher=FakeSearcher(), fetcher=FakeFetcher())
+    ctx.params = {"topic": "咖啡文化"}
+    outcome = asyncio.run(ReadArticleActivity().run(ctx))
+    assert ctx.searcher.queries == ["咖啡文化"]
+
+
+def test_game_style_param_matches_template():
+    """style 参数模糊匹配模板名：'骰子' → 掷骰子统计。"""
+    ctx = make_ctx(sandbox=Sandbox())  # 真沙箱：能区分两个模板的实际输出
+    ctx.params = {"style": "骰子"}
+    outcome = asyncio.run(MiniGameActivity().run(ctx))
+    assert "掷骰子统计" in outcome.summary
+
+
+def test_game_style_param_no_match_falls_back_random():
+    ctx = make_ctx(sandbox=Sandbox())
+    ctx.params = {"style": "不存在的游戏风格"}
+    outcome = asyncio.run(MiniGameActivity().run(ctx))
+    assert "试玩" in outcome.summary  # 照常玩上了一个（随机）游戏
+
+
 def test_game_templates_pass_static_scan():
     """小游戏模板必须能过沙箱静态扫描（白名单库），否则活动必败。"""
     from core.sandbox import static_scan
