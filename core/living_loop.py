@@ -57,6 +57,8 @@ class LivingLoop:
         sender: Any = None,
         rng: random.Random | None = None,
         sleep_func: Callable[[float], Any] | None = None,
+        mood: Any = None,
+        decider: Any = None,
     ) -> None:
         self._gate = gate
         self._get_memory = memory_getter
@@ -67,6 +69,9 @@ class LivingLoop:
         self._rng = rng or random.Random()
         # 可注入的 sleep：测试里换成即时返回，不用真等 45 分钟
         self._sleep = sleep_func or asyncio.sleep
+        # M2：心境与决策层均可空——空则完全退回 M1 行为（向后兼容）
+        self._mood = mood
+        self._decider = decider
         self._task: asyncio.Task | None = None
         self._last_activity_name: str | None = None
 
@@ -145,7 +150,7 @@ class LivingLoop:
             return {"activity": None, "ok": False, "error": "memory_unavailable"}
 
         await self._gate.note_activity_started(now)
-        activity = self._pick_activity()
+        activity, params = await self._choose_activity(now)
         logger.info(f"[LivingLoop] 活动开始 name={activity.name} id={activity_id}")
 
         ctx = ActivityContext(
@@ -157,6 +162,7 @@ class LivingLoop:
             event=ghost_event,
             rng=self._rng,
             now=now,
+            params=params,
         )
 
         outcome = None
@@ -186,8 +192,12 @@ class LivingLoop:
             error_note = f"活动 {activity.name} 失败: {e}"
             logger.error(f"[LivingLoop] {error_note}")
 
+        # 心境演化与记忆重要度调节（M2 需求 D）
+        importance_adjust = await self._update_mood(activity, outcome, params)
         # 记忆双路径：无论成败都写（任务书 D）
-        await self._write_memory(activity, outcome, error_note, ctx)
+        await self._write_memory(
+            activity, outcome, error_note, ctx, importance_adjust
+        )
         await self._gate.note_activity_finished()
         logger.info(f"[LivingLoop] 活动结束 name={activity.name}")
 
@@ -200,12 +210,47 @@ class LivingLoop:
             "error": error_note,
         }
 
+    async def _choose_activity(self, now: datetime) -> tuple[Activity, dict]:
+        """M2：决策层优先（rules/hybrid/llm 三档），未接线时退回 M1 随机。"""
+        if self._decider is not None:
+            try:
+                decision = await self._decider.decide(now)
+                return decision.activity, dict(decision.params or {})
+            except Exception as e:
+                # 决策器自身抛异常：退回内部随机，生活照常
+                logger.warning(f"[LivingLoop] 决策器异常，回退随机选择: {e}")
+        return self._pick_activity(), {}
+
+    async def _update_mood(
+        self, activity: Activity, outcome: Any, params: dict | None
+    ) -> float:
+        """活动结束后更新心境；返回记忆重要度调节量。
+
+        低谷时的小确幸记得更牢：valence < 0 时成功活动的记忆重要度 +0.1
+        （任务书 M2-D）。心境更新失败不影响活动记账。
+        """
+        if self._mood is None:
+            return 0.0
+        ok = outcome is not None
+        valence_before = self._mood.valence
+        topic = (params or {}).get("topic")
+        try:
+            await self._mood.record_activity(
+                activity.name, ok, topic=topic if isinstance(topic, str) else None
+            )
+        except Exception as e:
+            logger.warning(f"[LivingLoop] 心境更新失败（活动仍算完成）: {e}")
+        if ok and valence_before < 0:
+            return 0.1
+        return 0.0
+
     async def _write_memory(
         self,
         activity: Activity,
         outcome: Any,
         error_note: str | None,
         ctx: ActivityContext,
+        importance_adjust: float = 0.0,
     ) -> None:
         if outcome is not None and outcome.memory_content:
             content = outcome.memory_content
@@ -215,6 +260,8 @@ class LivingLoop:
             detail = f"（{error_note}）" if error_note else ""
             content = f"{ctx.date_prefix()}我想{activity.name}来着，没成{detail}。"
             importance = 0.2
+        # 心境调节后的重要度仍要钳在合理区间
+        importance = max(0.0, min(1.0, importance + importance_adjust))
         try:
             memory = await self._get_memory()
             await asyncio.wait_for(
