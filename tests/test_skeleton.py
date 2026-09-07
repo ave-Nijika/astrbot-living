@@ -34,6 +34,10 @@ def test_conf_schema_valid_and_groups_complete():
         assert isinstance(schema[group]["items"], dict)
     # 关键默认值抽查（总纲：默认保守）
     assert schema["decision"]["items"]["daily_impulse_limit"]["default"] == 3
+    assert schema["decision"]["items"]["activity_probability"]["default"] == 0.8
+    assert schema["decision"]["items"]["impulse_check_interval_minutes"]["default"] == 45
+    assert schema["decision"]["items"]["max_run_seconds"]["default"] == 300
+    assert schema["capabilities"]["items"]["cooldown_between_activities_hours"]["default"] == 2.0
     assert schema["output_gate"]["items"]["daily_message_limit"]["default"] == 10
     assert schema["sleep"]["items"]["wake_n_messages"]["default"] == 3
     assert schema["model"]["items"]["provider_id"]["default"] == ""
