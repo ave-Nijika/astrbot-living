@@ -175,9 +175,25 @@ class SimpleBackend(MemoryBackend):
 
     async def search(self, query: str, k: int = 5) -> list[dict]:
         db = await self._get_db()
-        terms = [t for t in query.split() if t] or ([query] if query else [])
+        terms = [t for t in query.split() if t]
         if not terms:
-            return []
+            # 空查询 = "随便翻翻"（M1 整理活动用）：随机捞 k 条旧记忆
+            async with db.execute(
+                "SELECT id, content, importance, metadata_json FROM memories "
+                "ORDER BY RANDOM() LIMIT ?",
+                (int(k),),
+            ) as cur:
+                rows = await cur.fetchall()
+            return [
+                {
+                    "id": row_id,
+                    "content": content,
+                    "score": 0.0,
+                    "importance": float(importance),
+                    "metadata": json.loads(metadata_json or "{}"),
+                }
+                for row_id, content, importance, metadata_json in rows
+            ]
         # 命中词数作为相关性分数（简单启发式），重要度做次级排序
         like_clauses = " OR ".join(["content LIKE ?"] * len(terms))
         params = [f"%{t}%" for t in terms]

@@ -52,6 +52,24 @@ def test_simple_backend_full_flow(tmp_path):
     asyncio.run(flow())
 
 
+def test_simple_backend_empty_query_browses_randomly(tmp_path):
+    """空查询 = '随便翻翻'（M1 整理活动）：随机捞旧记忆而非返回空。"""
+
+    async def flow():
+        backend = SimpleBackend(str(tmp_path / "mem.db"))
+        try:
+            for i in range(5):
+                await backend.add(f"记忆片段{i}", 0.5)
+            rows = await backend.search("", k=3)
+            return rows
+        finally:
+            await backend.close()
+
+    rows = asyncio.run(flow())
+    assert len(rows) == 3
+    assert all(r["content"].startswith("记忆片段") for r in rows)
+
+
 def test_simple_backend_persists_across_instances(tmp_path):
     async def flow():
         path = str(tmp_path / "mem.db")
