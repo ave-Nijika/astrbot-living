@@ -16,6 +16,12 @@
         "type": "int",
         "default": 45
       },
+      "activity_probability": {
+        "description": "冲动通过概率（0-1）",
+        "hint": "过了所有限制后，以该概率决定这次是否真的动起来——让生活有随机性，不像闹钟。",
+        "type": "float",
+        "default": 0.8
+      },
       "daily_impulse_limit": {
         "description": "每日冲动上限",
         "hint": "0 = 不限制。",
@@ -144,6 +150,12 @@
         "description": "沙箱内存上限（MB，M0 预留，Windows 强化在 M4）",
         "type": "int",
         "default": 256
+      },
+      "cooldown_between_activities_hours": {
+        "description": "两次活动最小间隔（小时）",
+        "hint": "刚忙完一件事需要歇一会儿，隔多久才允许下一次冲动。",
+        "type": "float",
+        "default": 2.0
       }
     }
   },
