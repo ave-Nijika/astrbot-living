@@ -35,6 +35,17 @@ NEUTRAL_INTEREST = 0.3  # interest_weight 对无记录主题的中性值
 
 VALENCE_MIN, VALENCE_MAX = -1.0, 1.0
 UNIT_MIN, UNIT_MAX = 0.0, 1.0
+FATIGUE_MIN, FATIGUE_MAX = 0.0, 100.0
+# 每日恢复量：一夜安睡大致抵掉大半疲惫，但睡眠债高的人醒来仍带倦意
+DAILY_FATIGUE_RECOVERY = 60.0
+DELTA_AROUSAL_OK = 0.05  # 活动成功的兴奋值（M2 挂点兑现）
+AROUSAL_SLEEP_SETTLE = 0.6  # 睡一夜后 arousal 自然回落系数
+# 睡眠债每晚消退量（覆盖默认值；配置项 sleep.sleep_debt_decay_per_day 由
+# 调用方在结算时传入覆盖——load 里用常量兜底）
+DAILY_SLEEP_DEBT_DECAY = 30.0
+
+DELTA_GROUCHY_VALENCE = -0.15  # 被吵醒且触发起床气时的心境惩罚
+DELTA_GROUCHY_ENERGY = -0.1
 
 
 def _clamp(value: float, lo: float, hi: float) -> float:
@@ -62,6 +73,10 @@ class MoodState:
         self.arousal: float = 0.5
         self.energy: float = 0.8
         self.interests: dict[str, float] = {}
+        # M3：疲惫与睡眠债（0~100）。fatigue 随活动累积，sleep_debt 由
+        # 被吵醒产生——两者都让"它"第二天真的带着昨晚的痕迹醒来
+        self.fatigue: float = 0.0
+        self.sleep_debt: float = 0.0
 
     # ------------------------------------------------------------------
     # 持久化
@@ -95,8 +110,9 @@ class MoodState:
         )
         await db.commit()
 
-    async def load(self) -> None:
-        """读状态；跨日时做一次兴趣衰减（衰减节奏是"每天一次"，锚在 load）。"""
+    async def load(self, sleep_debt_decay_per_day: float = DAILY_SLEEP_DEBT_DECAY) -> None:
+        """读状态；跨日时做一次"隔夜结算"：兴趣衰减、疲惫恢复、睡眠债消退、
+        arousal 回落（衰减节奏是"每天一次"，锚在 load）。"""
         self.valence = _clamp(
             _to_float(await self._get_raw("mood_valence"), 0.2),
             VALENCE_MIN,
@@ -105,8 +121,17 @@ class MoodState:
         self.arousal = _clamp(
             _to_float(await self._get_raw("mood_arousal"), 0.5), UNIT_MIN, UNIT_MAX
         )
+        # sleep_debt 先于 energy 解析：energy 上限被睡眠债压制
+        self.sleep_debt = _clamp(
+            _to_float(await self._get_raw("sleep_debt"), 0.0),
+            FATIGUE_MIN,
+            FATIGUE_MAX,
+        )
         self.energy = _clamp(
-            _to_float(await self._get_raw("energy"), 0.8), UNIT_MIN, UNIT_MAX
+            _to_float(await self._get_raw("energy"), 0.8), UNIT_MIN, self._energy_cap()
+        )
+        self.fatigue = _clamp(
+            _to_float(await self._get_raw("fatigue"), 0.0), FATIGUE_MIN, FATIGUE_MAX
         )
         raw_interests = await self._get_raw("interests")
         try:
@@ -122,17 +147,35 @@ class MoodState:
 
         today = self._now().date().isoformat()
         stored_date = await self._get_raw("date")
-        if stored_date != today:
-            # 为什么只在日期翻转时衰减：兴趣的消退是"隔夜"尺度的事，
-            # 逐次活动衰减会让高频活动把自己刚养起来的兴趣立刻磨掉
+        if stored_date is not None and stored_date != today:
+            # 隔夜结算只在"确实跨了天"时触发：首次加载（无 stored_date）应当
+            # 保持出厂默认——刚来到世界上的第一刻不算"睡了一夜"
+            # 为什么只在日期翻转时结算：兴趣的消退、疲惫的恢复、睡眠债的
+            # 消退都是"隔夜"尺度的事，逐次活动结算会让高频活动立刻磨掉
+            # 自己刚养起来的状态
             self.decay_interests(DAILY_INTEREST_DECAY)
+            self.arousal = _clamp(
+                self.arousal * AROUSAL_SLEEP_SETTLE, UNIT_MIN, UNIT_MAX
+            )
+            self.fatigue = _clamp(
+                self.fatigue - DAILY_FATIGUE_RECOVERY, FATIGUE_MIN, FATIGUE_MAX
+            )
+            self.sleep_debt = _clamp(
+                self.sleep_debt - max(sleep_debt_decay_per_day, 0.0),
+                FATIGUE_MIN,
+                FATIGUE_MAX,
+            )
             await self._set_raw("date", today)
             await self.save()
 
     async def save(self) -> None:
+        # date 随状态一起落库：否则"上次活跃日"丢失，隔夜结算永远不触发
+        await self._set_raw("date", self._now().date().isoformat())
         await self._set_raw("mood_valence", repr(self.valence))
         await self._set_raw("mood_arousal", repr(self.arousal))
         await self._set_raw("energy", repr(self.energy))
+        await self._set_raw("fatigue", repr(self.fatigue))
+        await self._set_raw("sleep_debt", repr(self.sleep_debt))
         await self._set_raw("interests", json.dumps(self.interests, ensure_ascii=False))
 
     async def close(self) -> None:
@@ -144,17 +187,21 @@ class MoodState:
     # 更新
     # ------------------------------------------------------------------
     async def record_activity(
-        self, activity_name: str, ok: bool, topic: str | None = None
+        self, activity_name: str, ok: bool, topic: str | None = None,
+        duration_seconds: float = 0.0, fatigue_rate_per_hour: float = 4.0,
     ) -> None:
-        """活动结束后由 LivingLoop 调用：心情/精力/兴趣按规则演化。"""
+        """活动结束后由 LivingLoop 调用：心情/精力/兴趣/疲惫按规则演化。"""
         if ok:
             self.valence = _clamp(self.valence + DELTA_VALENCE_OK, VALENCE_MIN, VALENCE_MAX)
-            self.energy = _clamp(self.energy + DELTA_ENERGY_OK, UNIT_MIN, UNIT_MAX)
+            self.energy = _clamp(self.energy + DELTA_ENERGY_OK, UNIT_MIN, self._energy_cap())
+            self.arousal = _clamp(self.arousal + DELTA_AROUSAL_OK, UNIT_MIN, UNIT_MAX)
         else:
             self.valence = _clamp(
                 self.valence + DELTA_VALENCE_FAIL, VALENCE_MIN, VALENCE_MAX
             )
-            self.energy = _clamp(self.energy + DELTA_ENERGY_FAIL, UNIT_MIN, UNIT_MAX)
+            self.energy = _clamp(
+                self.energy + DELTA_ENERGY_FAIL, UNIT_MIN, self._energy_cap()
+            )
 
         if ok:
             if activity_name in INTEREST_TOPIC_ACTIVITIES and topic:
@@ -163,7 +210,46 @@ class MoodState:
                 # 翻旧记忆这件事本身也是兴趣：它爱回味，才会常翻
                 self.bump_interest(REMINISCE_INTEREST_KEY, DELTA_INTEREST_REMINISCE)
 
+        # 疲惫按活动实际耗时折算（任务书 B1：fatigue_rate_per_hour 配置由
+        # 调用方传入，mood 不读配置）
+        hours = max(duration_seconds, 0.0) / 3600.0
+        self.fatigue = _clamp(
+            self.fatigue + hours * fatigue_rate_per_hour, FATIGUE_MIN, FATIGUE_MAX
+        )
+
         await self.save()
+
+    def _energy_cap(self) -> float:
+        """精力上限受睡眠债压制：债满(100)时上限只有 0.5——没睡好的觉，
+        第二天做什么都提不起十足的劲。"""
+        return _clamp(1.0 - self.sleep_debt / 200.0, 0.5, 1.0)
+
+    def apply_grouchiness(self, enabled: bool) -> bool:
+        """被吵醒的起床气（任务书 B3）：命中概率时 valence/energy 双降。
+
+        Returns:
+            是否真的起了床气（供日志与记忆语气参考）。
+        """
+        if not enabled:
+            return False
+        self.valence = _clamp(
+            self.valence + DELTA_GROUCHY_VALENCE, VALENCE_MIN, VALENCE_MAX
+        )
+        self.energy = _clamp(
+            self.energy + DELTA_GROUCHY_ENERGY, UNIT_MIN, self._energy_cap()
+        )
+        return True
+
+    def add_sleep_debt(self, amount: float) -> None:
+        """吵醒按剩余睡眠比例累积睡眠债（任务书 B3），次日结算时消退。"""
+        self.sleep_debt = _clamp(
+            self.sleep_debt + max(amount, 0.0), FATIGUE_MIN, FATIGUE_MAX
+        )
+
+    def add_fatigue(self, amount: float) -> None:
+        self.fatigue = _clamp(
+            self.fatigue + max(amount, 0.0), FATIGUE_MIN, FATIGUE_MAX
+        )
 
     def bump_interest(self, topic: str, delta: float) -> None:
         current = self.interests.get(topic, 0.0)
@@ -200,6 +286,10 @@ class MoodState:
         else:
             energy_word = "有点累了"
         parts = [f"{mood_word}（valence={self.valence:.2f}）", energy_word]
+        if self.fatigue >= 60:
+            parts.append("身体有些疲惫")
+        if self.sleep_debt >= 40:
+            parts.append("最近没睡好，欠了点觉")
         top = sorted(self.interests.items(), key=lambda kv: kv[1], reverse=True)[:3]
         if top:
             liked = "、".join(f"{k}({v:.2f})" for k, v in top)

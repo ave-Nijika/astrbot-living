@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 import random
-from datetime import datetime, time as dt_time
+from datetime import datetime, time as dt_time, timedelta
 from typing import Any, Callable
 
 from astrbot.api import logger
@@ -162,13 +162,22 @@ class LivingGate:
     # ------------------------------------------------------------------
     # 判定
     # ------------------------------------------------------------------
-    async def should_wake(self, now: datetime | None = None) -> tuple[bool, str]:
-        """此刻是否允许进入一次活动周期。判定链按序短路（任务书 M1-B）。"""
+    async def should_wake(
+        self, now: datetime | None = None, force: bool = False
+    ) -> tuple[bool, str]:
+        """此刻是否允许进入一次活动周期。判定链按序短路（任务书 M1-B）。
+
+        force=True（手动/吵醒唤醒，任务书 M3-A2）：
+          - 豁免概率掷点；
+          - 休眠窗内不再直接拒绝，而是返回 (True, "woken_from_sleep")——
+            由调用方执行吵醒流程（起床气/睡眠债）后再进活动周期；
+          - 每日上限与冷却**仍然生效**：手动唤醒不是无限豁免。
+        """
         now = now or datetime.now()
         config = self._config_getter() or {}
         state = await self.get_state(now)
 
-        allow, reason = self._evaluate_wake(now, config, state)
+        allow, reason = self._evaluate_wake(now, config, state, force=force)
         last = state["last_activity_at"]
         hours_since = (
             f"{(now - last).total_seconds() / 3600:.1f}h" if last else "无记录"
@@ -177,21 +186,23 @@ class LivingGate:
             _to_int(_conf_group(config, "decision").get("daily_impulse_limit"), 3), 0
         )
         logger.debug(
-            f"[LivingGate] 判定 reason={reason} allow={allow}"
+            f"[LivingGate] 判定 reason={reason} allow={allow} force={force}"
             f"（今日活动 {state['activity_count']}"
             f"{'/%d' % limit if limit > 0 else '/∞'}，距上次活动 {hours_since}）"
         )
         return allow, reason
 
     def _evaluate_wake(
-        self, now: datetime, config: Any, state: dict
+        self, now: datetime, config: Any, state: dict, force: bool = False
     ) -> tuple[bool, str]:
         decision = _conf_group(config, "decision")
         capabilities = _conf_group(config, "capabilities")
 
-        # 1. 休眠窗口（M1 只做时间窗判定，疲惫度/睡眠债在 M3）
+        # 1. 休眠窗口（M3：force 触发吵醒流程而非拒绝，M1 仅做时间窗判定）
         window = parse_time_window(_conf_group(config, "sleep").get("sleep_window"))
         if window and in_time_window(now, window):
+            if force:
+                return True, "woken_from_sleep"
             return False, "sleeping"
 
         # 2. 今日活动上限（0 = 不限制）
@@ -209,11 +220,47 @@ class LivingGate:
             if elapsed < cooldown_hours * 3600:
                 return False, "cooldown"
 
-        # 4. 概率掷点：让"动不动"带点随机，不像闹钟
+        # 4. 概率掷点：让"动不动"带点随机，不像闹钟。手动唤醒豁免——
+        #    主人都来叫了，还掷骰子就太不识趣了
+        if force:
+            return True, "ok"
         probability = _to_float(decision.get("activity_probability"), 0.8)
         if self._rng() < probability:
             return True, "ok"
         return False, "rolled_off"
+
+    def in_sleep_window(self, now: datetime | None = None) -> bool:
+        """此刻是否在休眠窗内（供吵醒计数/静默拦截等调用方判断）。"""
+        now = now or datetime.now()
+        window = parse_time_window(
+            _conf_group(self._config_getter() or {}, "sleep").get("sleep_window")
+        )
+        return bool(window and in_time_window(now, window))
+
+    def sleep_window_span(self, now: datetime | None = None) -> tuple[float, float] | None:
+        """休眠窗信息：(总时长分钟, 距自然醒点的剩余分钟)。
+
+        窗内返回数值；不在窗内或未配置窗口返回 None。跨午夜窗口
+        （如 23:00-07:00）的剩余时间按"先到窗尾"方向计算。
+        """
+        now = now or datetime.now()
+        window = parse_time_window(
+            _conf_group(self._config_getter() or {}, "sleep").get("sleep_window")
+        )
+        if not window or not in_time_window(now, window):
+            return None
+        start, end = window
+        start_dt = datetime.combine(now.date(), start)
+        end_dt = datetime.combine(now.date(), end)
+        if end <= start:
+            # 跨午夜：窗尾在"明天"（如 23:00-07:00，23:30 时窗尾是明早 07:00）
+            if now.time() >= start:
+                end_dt = datetime.combine(now.date(), end) + timedelta(days=1)
+            else:  # 凌晨段：窗头在"昨天"
+                start_dt = datetime.combine(now.date(), start) - timedelta(days=1)
+        total_minutes = (end_dt - start_dt).total_seconds() / 60.0
+        remaining_minutes = max((end_dt - now).total_seconds() / 60.0, 0.0)
+        return total_minutes, remaining_minutes
 
     async def should_send_message(self, now: datetime | None = None) -> tuple[bool, str]:
         """此刻是否允许主动发消息（输出闸门，任务书 M1-E）。"""

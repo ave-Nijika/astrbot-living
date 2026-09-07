@@ -8,11 +8,17 @@
 
 异常哲学：活动失败 ≠ 进程崩溃。活动周期整体 try/except，任何异常只记
 日志，主循环必须活到下一轮心跳。
+
+M3 双事件（任务书 A1）：睡眠可被两个事件打断——
+  - config_event：配置变更 → **只重置定时器，不触发判定**（频繁改配置
+    = 定时器反复重置，零判定零活动零 LLM 调用）；
+  - wake_event：手动/吵醒唤醒 → 触发一次 force 判定（仍过闸门其余约束）。
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 from contextlib import suppress
 from datetime import datetime
@@ -27,6 +33,9 @@ DEFAULT_CHECK_INTERVAL_MIN = 45.0
 DEFAULT_MAX_RUN_SECONDS = 300.0
 # 记忆写入单独限时：LivingMemory 引擎可能走嵌入 API，不能让它拖死活动周期
 MEMORY_WRITE_TIMEOUT = 30.0
+CONFIG_POLL_SECONDS = 5.0
+DEFAULT_AGENT_ACTIVITIES = ("surf", "read", "game")
+DREAM_MAX_CHARS = 120
 
 
 def _to_float(value: Any, default: float) -> float:
@@ -59,6 +68,9 @@ class LivingLoop:
         sleep_func: Callable[[float], Any] | None = None,
         mood: Any = None,
         decider: Any = None,
+        sleep_manager: Any = None,
+        agent_loop: Any = None,
+        dream_llm_call: Callable[..., Any] | None = None,
     ) -> None:
         self._gate = gate
         self._get_memory = memory_getter
@@ -69,11 +81,33 @@ class LivingLoop:
         self._rng = rng or random.Random()
         # 可注入的 sleep：测试里换成即时返回，不用真等 45 分钟
         self._sleep = sleep_func or asyncio.sleep
-        # M2：心境与决策层均可空——空则完全退回 M1 行为（向后兼容）
+        # M2：心境与决策层均可空——空则跳过相应逻辑（向后兼容）
         self._mood = mood
         self._decider = decider
+        # M3：休眠结算器、agent 循环、梦生成 LLM，均可空
+        self._sleep_manager = sleep_manager
+        self._agent_loop = agent_loop
+        self._dream_llm_call = dream_llm_call
         self._task: asyncio.Task | None = None
+        self._watcher_task: asyncio.Task | None = None
         self._last_activity_name: str | None = None
+        # 双事件（任务书 A1）：配置变更重置定时器；手动/吵醒唤醒触发判定
+        self._config_event = asyncio.Event()
+        self._wake_event = asyncio.Event()
+        # 睡眠状态跟踪（任务书 B2/B5）：入睡写回顾，醒来掷梦
+        self._asleep: bool = False
+        self._pending_dream: bool = False
+
+    # ------------------------------------------------------------------
+    # 对外事件入口（main.py 的命令/消息监听调用）
+    # ------------------------------------------------------------------
+    def notify_config_changed(self) -> None:
+        """配置变更：只重置定时器（不触发判定）。"""
+        self._config_event.set()
+
+    def request_wake(self) -> None:
+        """请求一次判定（force 语义仍受闸门其余约束）。"""
+        self._wake_event.set()
 
     # ------------------------------------------------------------------
     # 生命周期
@@ -86,18 +120,56 @@ class LivingLoop:
         """启动心跳任务。重复 start 幂等（已在跑就直接返回）。"""
         if self.running:
             return
+        # 初始哈希在 start 里同步采集：若留给 watcher 首帧采集，启动慢时
+        # 第一次哈希可能已经落在配置修改之后，变更会被当成初始值漏检
+        self._last_config_hash = self._config_hash()
         self._task = asyncio.create_task(self._run(), name="living-loop")
+        self._watcher_task = asyncio.create_task(
+            self._config_watcher(), name="living-config-watcher"
+        )
         logger.info("[LivingLoop] 主循环已启动")
 
     async def stop(self) -> None:
         """停止心跳任务。重复 stop 幂等。"""
-        if self._task is None:
-            return
-        task, self._task = self._task, None
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
+        for name in ("_task", "_watcher_task"):
+            task = getattr(self, name, None)
+            if task is None:
+                continue
+            setattr(self, name, None)
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
         logger.info("[LivingLoop] 主循环已停止")
+
+    async def _config_watcher(self) -> None:
+        """配置变更兜底检测（任务书 A4）：每 5 秒序列化比对一次。
+
+        为什么用哈希快照而不是保存配置对象引用：AstrBotConfig 是原地修改
+        对象，存引用永远等于自己；json 序列化哈希每次取的是当前状态。
+        纯内存比对，零 LLM 零网络。若 AstrBot 未来提供配置变更钩子，
+        main 可直接调 notify_config_changed()，本 watcher 留作兜底。
+        """
+        last = getattr(self, "_last_config_hash", None) or self._config_hash()
+        while True:
+            await asyncio.sleep(CONFIG_POLL_SECONDS)
+            try:
+                current = self._config_hash()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                continue
+            if current != last:
+                last = current
+                logger.debug("[LivingLoop] 检测到配置变更 → 重置定时器")
+                self.notify_config_changed()
+
+    def _config_hash(self) -> str:
+        return json.dumps(
+            self._config_getter() or {},
+            sort_keys=True,
+            ensure_ascii=False,
+            default=str,
+        )
 
     async def _run(self) -> None:
         while True:
@@ -113,26 +185,175 @@ class LivingLoop:
                 ),
                 1440.0,
             )
-            # 先睡再查：插件刚加载不要立刻"活蹦乱跳"，等第一个心跳
-            await self._sleep(interval_min * 60)
+            # 双事件等待（任务书 A1）：任一事件或超时都会打断睡眠
+            config_wait = asyncio.ensure_future(self._config_event.wait())
+            wake_wait = asyncio.ensure_future(self._wake_event.wait())
+            done, pending = await asyncio.wait(
+                {config_wait, wake_wait},
+                timeout=interval_min * 60,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+
+            if wake_wait in done:
+                # 手动/吵醒唤醒：触发一次 force 判定（概率豁免、约束保留）
+                self._wake_event.clear()
+                logger.debug("[LivingLoop] 被唤醒（wake_event），执行 force 判定")
+                try:
+                    await self.heartbeat_once(force=True)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("[LivingLoop] 强制心跳异常（主循环继续）")
+                continue
+            if config_wait in done:
+                # 配置变更：只重置定时器，**不判定**（任务书 A1 定稿语义）
+                self._config_event.clear()
+                logger.debug("[LivingLoop] 配置变更，定时器已重置（本轮不判定）")
+                continue
+            # 超时 → 正常心跳
             try:
                 await self.heartbeat_once()
             except asyncio.CancelledError:
                 raise
             except Exception:
-                # 心跳自身的意外异常不中断主循环
                 logger.exception("[LivingLoop] 心跳异常（主循环继续）")
 
     # ------------------------------------------------------------------
     # 心跳与活动周期
     # ------------------------------------------------------------------
-    async def heartbeat_once(self, now: datetime | None = None) -> bool:
-        """一次冲动检查。返回是否真的进入了活动周期。"""
-        allow, reason = await self._gate.should_wake(now)
+    async def heartbeat_once(
+        self, now: datetime | None = None, force: bool = False
+    ) -> bool:
+        """一次冲动检查。返回是否真的进入了活动周期。
+
+        force=True（任务书 A2）：豁免概率掷点，仍受休眠窗/上限/冷却约束；
+        休眠窗内的强制唤醒会触发吵醒结算（起床气/睡眠债）。
+        """
+        awake, _reason, _activity = await self.heartbeat_once_detailed(now, force)
+        return awake
+
+    async def heartbeat_once_detailed(
+        self, now: datetime | None = None, force: bool = False
+    ) -> tuple[bool, str, str | None]:
+        """带详情的心跳：/living_wake 命令用反馈给主人（唤醒/拦截原因）。"""
+        now = now or datetime.now()
+
+        # 睡眠状态跟踪（任务书 B2/B5）：入睡写睡前回顾，醒来掷梦
+        try:
+            in_window = self._gate.in_sleep_window(now)
+        except Exception:
+            in_window = False
+        if in_window and not self._asleep:
+            self._asleep = True
+            await self._write_bedtime_review(now)
+        elif not in_window and self._asleep:
+            self._asleep = False
+            self._pending_dream = True  # 自然醒，醒来也许有梦
+
+        allow, reason = await self._gate.should_wake(now, force=force)
         if not allow:
-            return False
-        await self.run_activity_cycle(now=now)
-        return True
+            return False, reason, None
+
+        if reason == "woken_from_sleep":
+            # 吵醒结算（任务书 B3）：起床气 + 睡眠债，然后带着情绪醒来
+            if self._sleep_manager is not None:
+                try:
+                    await self._sleep_manager.apply_woken_in_sleep(now)
+                except Exception as e:
+                    logger.warning(f"[LivingLoop] 吵醒结算失败（不影响唤醒）: {e}")
+            self._pending_dream = True
+
+        result = await self.run_activity_cycle(now=now)
+        activity_name = result.get("activity") if isinstance(result, dict) else None
+
+        if self._pending_dream:
+            self._pending_dream = False
+            await self._maybe_dream(now)
+        return True, reason, activity_name
+
+    async def _write_bedtime_review(self, now: datetime) -> None:
+        """睡前回顾（任务书 B2）：把今天的活动记忆聚成一句话存起来。
+
+        用脚本聚合而非 LLM：回顾的价值在"记下来了"，不在辞藻——省下的
+        token 留给梦。
+        """
+        try:
+            memory = await self._get_memory()
+        except Exception as e:
+            logger.debug(f"[LivingLoop] 睡前回顾：记忆不可用，跳过（{e}）")
+            return
+        date_key = f"{now.month}月{now.day}日"
+        try:
+            rows = await memory.search(date_key, k=5)
+        except Exception as e:
+            logger.debug(f"[LivingLoop] 睡前回顾检索失败: {e}")
+            rows = []
+        contents = [str(r.get("content", "")).strip() for r in rows or []]
+        contents = [c for c in contents if c][:3]
+        if contents:
+            review = f"{date_key}睡前想了想今天：{'；'.join(c[:40] for c in contents)}。该睡了，晚安。"
+        else:
+            review = (
+                f"{date_key}是安静的一天，没做成什么事。该睡了，晚安。"
+            )
+        try:
+            await memory.add(review, importance=0.6)
+            logger.info("[LivingLoop] 已写入睡前回顾")
+        except Exception as e:
+            logger.warning(f"[LivingLoop] 睡前回顾写入失败: {e}")
+
+    async def _maybe_dream(self, now: datetime) -> None:
+        """梦（任务书 B5）：醒来后的低概率彩蛋，任何失败都静默。"""
+        if self._dream_llm_call is None:
+            return
+        try:
+            from .living_state import _conf_group
+
+            probability = _to_float(
+                _conf_group(self._config_getter(), "sleep").get("dream_probability"),
+                0.3,
+            )
+        except Exception:
+            probability = 0.3
+        if self._rng.random() >= max(probability, 0.0):
+            return
+
+        try:
+            memory = await self._get_memory()
+            rows = await memory.search("", k=3)
+        except Exception as e:
+            logger.debug(f"[LivingLoop] 梦的素材取不到，今晚不做梦: {e}")
+            return
+        fragments = [str(r.get("content", "")).strip()[:60] for r in rows or []]
+        fragments = [f for f in fragments if f]
+        if not fragments:
+            return
+        prompt = (
+            "你刚从睡梦中醒来，还带着睡意。下面是你最近的记忆碎片：\n"
+            + "\n".join(f"- {f}" for f in fragments)
+            + "\n\n请说一句你刚才做的梦，80 字以内，第一人称，语气朦胧含糊，"
+            "把碎片搅在一起也没关系，梦本来就是不讲道理的。只输出梦话本身。"
+        )
+        try:
+            text = await self._dream_llm_call(prompt, None)
+        except Exception as e:
+            logger.debug(f"[LivingLoop] 梦生成失败（梦丢了就丢了）: {e}")
+            return
+        dream = str(text or "").strip()[:DREAM_MAX_CHARS]
+        if not dream:
+            return
+        date_key = f"{now.month}月{now.day}日"
+        try:
+            await memory.add(f"{date_key}我做了个梦：{dream}", importance=0.2)
+        except Exception as e:
+            logger.debug(f"[LivingLoop] 梦的记忆写入失败: {e}")
+            return
+        logger.info("[LivingLoop] 醒来做了个梦（已写入记忆）")
+        await self._maybe_share(f"我好像做了个梦：{dream}", now)
 
     async def run_activity_cycle(self, now: datetime | None = None) -> dict:
         """一次完整活动周期：起念 → 活动 → 记忆（双路径）→ 收账 → 候选分享。"""
@@ -163,10 +384,12 @@ class LivingLoop:
             rng=self._rng,
             now=now,
             params=params,
+            agent=self._agent_callable(activity.name),
         )
 
         outcome = None
         error_note: str | None = None
+        real_start = datetime.now()  # 疲惫按真实耗时折算，不用注入的 now
         # 非正值/脏值回默认；上限 1h 防止配置手滑把一次活动拖成半天
         max_run = min(
             _to_float(
@@ -192,8 +415,11 @@ class LivingLoop:
             error_note = f"活动 {activity.name} 失败: {e}"
             logger.error(f"[LivingLoop] {error_note}")
 
-        # 心境演化与记忆重要度调节（M2 需求 D）
-        importance_adjust = await self._update_mood(activity, outcome, params)
+        # 心境演化与记忆重要度调节（M2-D；M3 起疲惫按活动耗时折算）
+        duration_seconds = (datetime.now() - real_start).total_seconds()
+        importance_adjust = await self._update_mood(
+            activity, outcome, params, duration_seconds
+        )
         # 记忆双路径：无论成败都写（任务书 D）
         await self._write_memory(
             activity, outcome, error_note, ctx, importance_adjust
@@ -210,6 +436,24 @@ class LivingLoop:
             "error": error_note,
         }
 
+    def _agent_callable(self, activity_name: str) -> Callable[..., Any] | None:
+        """按配置 decision.agent_activities 决定该活动是否走 agent 模式
+        （任务书 C1）。返回 None = 脚本模式。"""
+        if self._agent_loop is None:
+            return None
+        try:
+            enabled = (
+                _conf_group(self._config_getter(), "decision").get("agent_activities")
+                or list(DEFAULT_AGENT_ACTIVITIES)
+            )
+        except Exception:
+            enabled = list(DEFAULT_AGENT_ACTIVITIES)
+        if isinstance(enabled, str):
+            enabled = [enabled]
+        if activity_name not in list(enabled):
+            return None
+        return self._agent_loop.run
+
     async def _choose_activity(self, now: datetime) -> tuple[Activity, dict]:
         """M2：决策层优先（rules/hybrid/llm 三档），未接线时退回 M1 随机。"""
         if self._decider is not None:
@@ -222,21 +466,34 @@ class LivingLoop:
         return self._pick_activity(), {}
 
     async def _update_mood(
-        self, activity: Activity, outcome: Any, params: dict | None
+        self,
+        activity: Activity,
+        outcome: Any,
+        params: dict | None,
+        duration_seconds: float = 0.0,
     ) -> float:
         """活动结束后更新心境；返回记忆重要度调节量。
 
         低谷时的小确幸记得更牢：valence < 0 时成功活动的记忆重要度 +0.1
-        （任务书 M2-D）。心境更新失败不影响活动记账。
+        （任务书 M2-D）。M3 起疲惫按活动实际耗时折算（fatigue_rate_per_hour
+        配置热读）。心境更新失败不影响活动记账。
         """
         if self._mood is None:
             return 0.0
         ok = outcome is not None
         valence_before = self._mood.valence
         topic = (params or {}).get("topic")
+        fatigue_rate = _to_float(
+            _conf_group(self._config_getter(), "sleep").get("fatigue_rate_per_hour"),
+            4.0,
+        )
         try:
             await self._mood.record_activity(
-                activity.name, ok, topic=topic if isinstance(topic, str) else None
+                activity.name,
+                ok,
+                topic=topic if isinstance(topic, str) else None,
+                duration_seconds=duration_seconds,
+                fatigue_rate_per_hour=fatigue_rate,
             )
         except Exception as e:
             logger.warning(f"[LivingLoop] 心境更新失败（活动仍算完成）: {e}")
