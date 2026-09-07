@@ -45,7 +45,7 @@ class FakeGate:
         self.message_sends = 0
         self.message_verdicts = []
 
-    async def should_wake(self, now=None):
+    async def should_wake(self, now=None, force=False):
         return self.allow, self.reason
 
     async def should_send_message(self, now=None):

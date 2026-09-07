@@ -30,7 +30,7 @@ class FakeGate:
         self.started = 0
         self.finished = 0
 
-    async def should_wake(self, now=None):
+    async def should_wake(self, now=None, force=False):
         return True, "ok"
 
     async def should_send_message(self, now=None):
@@ -69,7 +69,7 @@ class RecordingMood:
         self.energy = energy
         self.records = []
 
-    async def record_activity(self, activity_name, ok, topic=None):
+    async def record_activity(self, activity_name, ok, topic=None, **kwargs):
         self.records.append((activity_name, ok, topic))
 
     def digest(self):
