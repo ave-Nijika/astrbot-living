@@ -6,3 +6,6 @@ scripts/_verify_*.db
 scripts/_verify_*.db-wal
 scripts/_verify_*.db-shm
 scripts/_vm_*.db
+
+# 项目文档(任务书/报告/总纲)不入库——内部协作文档, 本地保留
+docs/
