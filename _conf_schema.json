@@ -1,0 +1,197 @@
+{
+  "decision": {
+    "description": "决策层（M1 生效，M0 先占位）",
+    "type": "object",
+    "items": {
+      "decision_mode": {
+        "description": "决策模式",
+        "hint": "rules=纯规则零成本；hybrid=规则筛+LLM复核；llm=全LLM自由决策。M0 阶段不生效。",
+        "type": "string",
+        "options": ["rules", "hybrid", "llm"],
+        "default": "hybrid"
+      },
+      "impulse_check_interval_minutes": {
+        "description": "冲动检查间隔（分钟）",
+        "hint": "主循环每隔多少分钟做一次'要不要干点什么'的检查。",
+        "type": "int",
+        "default": 45
+      },
+      "daily_impulse_limit": {
+        "description": "每日冲动上限",
+        "hint": "0 = 不限制。",
+        "type": "int",
+        "default": 3
+      },
+      "single_run_token_budget": {
+        "description": "单次活动 token 预算",
+        "hint": "单次自主活动允许消耗的最大 token 数。",
+        "type": "int",
+        "default": 20000
+      },
+      "max_tool_rounds": {
+        "description": "单循环最大工具轮数",
+        "type": "int",
+        "default": 8
+      },
+      "max_run_seconds": {
+        "description": "单循环最长时长（秒）",
+        "type": "int",
+        "default": 300
+      }
+    }
+  },
+  "output_gate": {
+    "description": "输出闸门",
+    "type": "object",
+    "items": {
+      "daily_message_limit": {
+        "description": "每日主动消息上限",
+        "hint": "0 = 不限制。",
+        "type": "int",
+        "default": 10
+      },
+      "message_min_interval_minutes": {
+        "description": "两条主动消息最小间隔（分钟）",
+        "type": "int",
+        "default": 30
+      },
+      "target_sessions": {
+        "description": "输出目标会话列表",
+        "hint": "每行一个 unified_msg_origin（格式：平台:消息类型:会话ID），留空则不主动发消息。",
+        "type": "text",
+        "default": ""
+      },
+      "quiet_hours": {
+        "description": "静默时段（可选）",
+        "hint": "格式 'HH:MM-HH:MM'，该时段不发主动消息。与休眠无关。",
+        "type": "string",
+        "default": ""
+      }
+    }
+  },
+  "sleep": {
+    "description": "休眠（M3 生效，M0 先占位）",
+    "type": "object",
+    "items": {
+      "sleep_window": {
+        "description": "作息窗口",
+        "hint": "格式 'HH:MM-HH:MM'。",
+        "type": "string",
+        "default": "00:30-08:00"
+      },
+      "fatigue_threshold": {
+        "description": "疲惫阈值（0-100）",
+        "type": "int",
+        "default": 80
+      },
+      "fatigue_rate_per_hour": {
+        "description": "疲惫积累速率（每小时）",
+        "type": "float",
+        "default": 4.0
+      },
+      "sleep_debt_decay_per_day": {
+        "description": "睡眠债每日消退量",
+        "type": "float",
+        "default": 30.0
+      },
+      "wake_n_messages": {
+        "description": "吵醒所需消息条数",
+        "type": "int",
+        "default": 3
+      },
+      "wake_window_minutes": {
+        "description": "吵醒判定时间窗（分钟）",
+        "type": "int",
+        "default": 10
+      },
+      "grouchiness_percent": {
+        "description": "起床气概率（0-100%）",
+        "type": "int",
+        "default": 20
+      }
+    }
+  },
+  "capabilities": {
+    "description": "能力开关",
+    "type": "object",
+    "items": {
+      "enable_search": {
+        "description": "启用搜索能力",
+        "type": "bool",
+        "default": true
+      },
+      "enable_fetch": {
+        "description": "启用网页抓取能力",
+        "type": "bool",
+        "default": true
+      },
+      "enable_sandbox": {
+        "description": "启用沙箱代码执行能力",
+        "type": "bool",
+        "default": true
+      },
+      "enable_send": {
+        "description": "启用主动发消息能力",
+        "type": "bool",
+        "default": true
+      },
+      "sandbox_timeout_seconds": {
+        "description": "沙箱超时（秒）",
+        "type": "int",
+        "default": 10
+      },
+      "sandbox_max_memory_mb": {
+        "description": "沙箱内存上限（MB，M0 预留，Windows 强化在 M4）",
+        "type": "int",
+        "default": 256
+      }
+    }
+  },
+  "memory": {
+    "description": "记忆",
+    "type": "object",
+    "items": {
+      "backend": {
+        "description": "记忆后端",
+        "hint": "auto=优先探测 LivingMemory 插件，不可用则降级内置 SQLite；也可强制指定。",
+        "type": "string",
+        "options": ["auto", "livingmemory", "simple"],
+        "default": "auto"
+      },
+      "default_importance": {
+        "description": "活动记忆默认重要度（0-1）",
+        "type": "float",
+        "default": 0.5
+      },
+      "recall_count": {
+        "description": "分享时召回记忆条数",
+        "type": "int",
+        "default": 5
+      }
+    }
+  },
+  "model": {
+    "description": "模型",
+    "type": "object",
+    "items": {
+      "provider_id": {
+        "description": "自主活动专用 Provider ID",
+        "hint": "强烈建议配置一个与聊天模型不同的 provider，避免自主活动烧聊天模型的额度。留空则回退到默认聊天模型。",
+        "type": "string",
+        "default": ""
+      }
+    }
+  },
+  "misc": {
+    "description": "杂项",
+    "type": "object",
+    "items": {
+      "log_level": {
+        "description": "日志级别",
+        "type": "string",
+        "options": ["DEBUG", "INFO", "WARNING", "ERROR"],
+        "default": "INFO"
+      }
+    }
+  }
+}
