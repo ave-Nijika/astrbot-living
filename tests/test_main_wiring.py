@@ -148,9 +148,11 @@ def make_plugin(db_path):
     plugin.memory_note = "尚未初始化"
     plugin.gate = None
     plugin.loop = None
+    plugin.mood = main_module.MoodState(db_path=str(db_path) + ".mood")
     # 屏蔽真实插件数据目录（不写 AstrBot 的 data/）与网络能力
     plugin._gate_db_path = lambda: str(db_path) + ".gate"
     plugin._memory_db_path = lambda: str(db_path)
+    plugin._mood_db_path = lambda: str(db_path) + ".mood"
     plugin.searcher = types.SimpleNamespace(close=lambda: asyncio.sleep(0))
     plugin.fetcher = types.SimpleNamespace(close=lambda: asyncio.sleep(0))
     plugin.sandbox = types.SimpleNamespace()  # initialize 接线时仅引用不调用
@@ -191,5 +193,116 @@ def test_plugin_uses_lazy_memory_getter(tmp_path):
         assert isinstance(backend, SimpleBackend)  # 注册表为空 → 降级
         assert plugin.memory_note != "尚未初始化"
         await plugin.terminate()
+
+    asyncio.run(flow())
+
+
+# ---------------------------------------------------------------------------
+# M2-C/E：persona 读取与决策 LLM 接线
+# ---------------------------------------------------------------------------
+def test_persona_prompt_read_success(tmp_path):
+    """persona_manager 正常时返回 Personality['prompt']（TypedDict）。"""
+
+    async def flow():
+        plugin = make_plugin(tmp_path / "m.db")
+
+        class FakePersonaManager:
+            async def get_default_persona_v3(self, umo=None):
+                return {"prompt": "你是一只住在机器人里的猫。", "name": "猫"}
+
+        plugin.context = types.SimpleNamespace(persona_manager=FakePersonaManager())
+        return await plugin._persona_prompt()
+
+    assert asyncio.run(flow()) == "你是一只住在机器人里的猫。"
+
+
+def test_persona_prompt_read_failure_silent(tmp_path):
+    """persona 缺失/异常/空 prompt：一律静默返回 None（决策仍可用）。"""
+
+    class BrokenManager:
+        async def get_default_persona_v3(self, umo=None):
+            raise RuntimeError("gone")
+
+    class EmptyPersonaManager:
+        async def get_default_persona_v3(self, umo=None):
+            return {"prompt": "  ", "name": "空"}
+
+    async def flow_broken():
+        plugin = make_plugin(tmp_path / "m1.db")
+        plugin.context = types.SimpleNamespace(persona_manager=BrokenManager())
+        return await plugin._persona_prompt()
+
+    async def flow_missing():
+        plugin = make_plugin(tmp_path / "m2.db")
+        plugin.context = types.SimpleNamespace()  # 没有 persona_manager
+        return await plugin._persona_prompt()
+
+    async def flow_empty():
+        plugin = make_plugin(tmp_path / "m3.db")
+        plugin.context = types.SimpleNamespace(persona_manager=EmptyPersonaManager())
+        return await plugin._persona_prompt()
+
+    assert asyncio.run(flow_broken()) is None
+    assert asyncio.run(flow_missing()) is None
+    assert asyncio.run(flow_empty()) is None
+
+
+def test_decision_llm_call_uses_configured_provider(tmp_path):
+    """model.provider_id 配置优先，且把 completion_text 透出。"""
+    captured = {}
+
+    async def flow():
+        plugin = make_plugin(tmp_path / "m.db")
+        plugin.config = {"model": {"provider_id": "my-decision-llm"}}
+
+        class FakeContext:
+            async def llm_generate(self, *, chat_provider_id, prompt,
+                                   system_prompt=None, **kw):
+                captured["provider"] = chat_provider_id
+                captured["prompt"] = prompt
+                captured["system"] = system_prompt
+                return types.SimpleNamespace(
+                    completion_text='{"topic": "x"}', result_chain=None
+                )
+
+        plugin.context = FakeContext()
+        return await plugin._decision_llm_call("提示词", "系统提示")
+
+    text = asyncio.run(flow())
+    assert text == '{"topic": "x"}'
+    assert captured["provider"] == "my-decision-llm"
+    assert captured["prompt"] == "提示词"
+    assert captured["system"] == "系统提示"
+
+
+def test_decision_llm_call_failure_returns_none(tmp_path):
+    """LLM 调用任何失败 → None → decider 静默回退（默认配置能跑的底线）。"""
+
+    async def flow():
+        plugin = make_plugin(tmp_path / "m.db")
+
+        class BoomContext:
+            async def llm_generate(self, **kw):
+                raise RuntimeError("no provider")
+
+        plugin.context = BoomContext()
+        # provider_id 留空 + get_current_chat_provider_id 也挂 → None
+        return await plugin._decision_llm_call("p", None)
+
+    assert asyncio.run(flow()) is None
+
+
+def test_initialize_wires_mood_and_decider(tmp_path):
+    """M2 接线：loop 持有 mood 与 decider；terminate 清理 mood。"""
+
+    async def flow():
+        plugin = make_plugin(tmp_path / "m.db")
+        await plugin.initialize()
+        try:
+            assert plugin.loop._mood is plugin.mood
+            assert plugin.loop._decider is not None
+        finally:
+            await plugin.terminate()
+        assert plugin.loop is None
 
     asyncio.run(flow())
