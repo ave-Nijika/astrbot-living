@@ -34,9 +34,13 @@ TOPIC_POOL = [
 class ActivityContext:
     """一次活动的上下文。
 
-    event 是幽灵事件（core/ghost_event.py，M0-R0 结论）：M1 活动直接调用
-    能力方法用不到它，但保留在上下文里作为 M2 接入 tool_loop_agent 的
+    event 是幽灵事件（core/ghost_event.py，M0-R0 结论）：M1/M2 活动直接调用
+    能力方法用不到它，但保留在上下文里作为 M3 接入 tool_loop_agent 的
     统一入口——届时 agent 循环必须携带它。
+
+    params 是决策层（core/decider.py）给活动的执行参数，如
+    {"topic": "深海生物"}（冲浪/读文章的主题）或 {"style": "骰子"}
+    （小游戏风格）；活动拿不到合理参数时自行回退随机选择。
     """
 
     searcher: Any
@@ -47,10 +51,16 @@ class ActivityContext:
     event: Any  # 幽灵 AstrMessageEvent
     rng: Any  # random.Random 实例
     now: datetime = field(default_factory=datetime.now)
+    params: dict = field(default_factory=dict)
 
     def date_prefix(self) -> str:
         # 不用 strftime 的 %-m：Windows 平台不支持该转义
         return f"{self.now.month}月{self.now.day}日"
+
+    def pick_topic(self) -> str:
+        """主题词来源：决策参数优先，否则固定候选池随机（M2 前的唯一来源）。"""
+        topic = (self.params or {}).get("topic")
+        return str(topic).strip() if topic and str(topic).strip() else self.rng.choice(TOPIC_POOL)
 
 
 @dataclass
@@ -64,9 +74,11 @@ class ActivityOutcome:
 
 
 class Activity(ABC):
-    """活动基类。name 用于日志与"避免连续两次同活动"。"""
+    """活动基类。name 用于日志与"避免连续两次同活动"；description 给决策
+    LLM 的一句话介绍（llm 档要知道"有哪些可选"）。"""
 
     name: str = "activity"
+    description: str = "做一件小事"
 
     @abstractmethod
     async def run(self, ctx: ActivityContext) -> ActivityOutcome:
@@ -74,12 +86,13 @@ class Activity(ABC):
 
 
 class SurfActivity(Activity):
-    """冲浪：随机挑个主题搜一搜，看一眼标题们。"""
+    """冲浪：挑个主题搜一搜，看一眼标题们。"""
 
     name = "surf"
+    description = "上网冲浪：挑个感兴趣的主题搜一搜，看看有什么新东西"
 
     async def run(self, ctx: ActivityContext) -> ActivityOutcome:
-        topic = ctx.rng.choice(TOPIC_POOL)
+        topic = ctx.pick_topic()
         results = await ctx.searcher.search(topic, count=5)
         if not results:
             raise RuntimeError(f"搜「{topic}」没有任何结果")
@@ -96,12 +109,13 @@ class SurfActivity(Activity):
 
 
 class ReadArticleActivity(Activity):
-    """读文章：搜个主题，挑一条结果真的点进去读正文。"""
+    """读文章：挑个主题，真的点进去读一篇正文。"""
 
     name = "read"
+    description = "读文章：搜一个主题，挑一条结果认真读正文"
 
     async def run(self, ctx: ActivityContext) -> ActivityOutcome:
-        topic = ctx.rng.choice(TOPIC_POOL)
+        topic = ctx.pick_topic()
         results = await ctx.searcher.search(topic, count=5)
         target = next((r for r in results if r.get("url")), None)
         if target is None:
@@ -158,9 +172,10 @@ class MiniGameActivity(Activity):
     """玩小游戏：写一段秒级小游戏脚本，丢进沙箱试玩。"""
 
     name = "game"
+    description = "写个小游戏自己玩：写一段秒级小游戏代码丢进沙箱试玩"
 
     async def run(self, ctx: ActivityContext) -> ActivityOutcome:
-        game_name, code = ctx.rng.choice(_GAME_TEMPLATES)
+        game_name, code = self._pick_template(ctx)
         result = await ctx.sandbox.run(code, timeout=10)
         if not result.get("ok"):
             detail = result.get("refused_reason") or result.get("stderr") or "未知原因"
@@ -176,16 +191,30 @@ class MiniGameActivity(Activity):
             ),
         )
 
+    def _pick_template(self, ctx: ActivityContext) -> tuple[str, str]:
+        """小游戏模板选择：决策参数 style 做模糊匹配，不中则随机。
+
+        为什么模糊匹配：决策 LLM 给的是自然语言风格（如"掷骰子"），
+        模板名是"掷骰子统计"，取子串双向匹配已够用，不值得上向量检索。
+        """
+        style = str((ctx.params or {}).get("style") or "").strip()
+        if style:
+            for game_name, code in _GAME_TEMPLATES:
+                if style in game_name or game_name in style:
+                    return game_name, code
+        return ctx.rng.choice(_GAME_TEMPLATES)
+
 
 class PeekFeedbackActivity(Activity):
-    """看评价（弱触发）：M1 只空走消息闸门验证链路，不真正发送。
+    """看评价（弱触发）：只空走消息闸门验证链路，不真正发送。
 
-    为什么存在：任务书要求 M1 验证"闸门放了才发"的链路，但默认不打扰主人——
+    为什么存在：任务书要求验证"闸门放了才发"的链路，但默认不打扰主人——
     所以这个活动只调 should_send_message 看看"现在能不能说话"，把结果留在
     DEBUG 日志里；真正的发送由 LivingLoop._maybe_share 统一管理（同样过闸门）。
     """
 
     name = "peek"
+    description = "看看有没有人给我留了话（不发言，只是看一眼）"
 
     async def run(self, ctx: ActivityContext) -> ActivityOutcome:
         allow, reason = await ctx.gate.should_send_message(ctx.now)
@@ -198,6 +227,7 @@ class MemoryBrowsingActivity(Activity):
     """整理：随机捞一段旧记忆翻一翻，像人翻旧相册。"""
 
     name = "reminisce"
+    description = "翻翻自己的旧记忆，回味一下最近经历过的事"
 
     async def run(self, ctx: ActivityContext) -> ActivityOutcome:
         rows = await ctx.memory.search("", k=5)
