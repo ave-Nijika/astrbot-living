@@ -5,3 +5,4 @@ reference/
 scripts/_verify_*.db
 scripts/_verify_*.db-wal
 scripts/_verify_*.db-shm
+scripts/_vm_*.db
