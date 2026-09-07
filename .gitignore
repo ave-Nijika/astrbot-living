@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 .pytest_cache/
 reference/
+scripts/_verify_*.db
+scripts/_verify_*.db-wal
+scripts/_verify_*.db-shm
