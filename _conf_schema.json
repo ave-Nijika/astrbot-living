@@ -43,6 +43,12 @@
         "description": "单循环最长时长（秒）",
         "type": "int",
         "default": 300
+      },
+      "agent_activities": {
+        "description": "走 agent 模式的活动",
+        "hint": "列表内的活动由 LLM 拿着工具集（搜索/抓取/沙箱/记忆）自己决定怎么玩，其余走脚本模式。受 single_run_token_budget 硬闸保护。",
+        "type": "list",
+        "default": ["surf", "read", "game"]
       }
     }
   },
@@ -114,6 +120,31 @@
         "description": "起床气概率（0-100%）",
         "type": "int",
         "default": 20
+      },
+      "wake_source": {
+        "description": "吵醒计数来源",
+        "hint": "all=所有消息都算吵（群聊里别人聊天也算）；owner_only=只数主人（需配置 owner_id）。",
+        "type": "string",
+        "options": ["all", "owner_only"],
+        "default": "all"
+      },
+      "owner_id": {
+        "description": "主人 ID（wake_source=owner_only 时用）",
+        "hint": "填主人的用户 ID；wake_source 为 all 时忽略。",
+        "type": "string",
+        "default": ""
+      },
+      "sleep_mute_replies": {
+        "description": "睡眠期静默回复",
+        "hint": "开启后休眠窗内收到的消息会被拦截，AstrBot 与所有插件都不回复（真正休息）。达到吵醒阈值的那条消息与本插件命令不受影响。关掉则休眠期照常回复、只是插件自己不活动。",
+        "type": "bool",
+        "default": true
+      },
+      "dream_probability": {
+        "description": "做梦概率（0-1）",
+        "hint": "醒来后按此概率生成一条梦话，写入记忆（默认不外发）。",
+        "type": "float",
+        "default": 0.3
       }
     }
   },

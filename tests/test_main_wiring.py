@@ -15,6 +15,7 @@ import pytest
 
 from core.lazy_memory import LazyMemory
 from core.memory_backend import LivingMemoryBackend, SimpleBackend
+from core.sleep import SleepManager
 
 WORKDIR = Path(__file__).resolve().parents[1]
 
@@ -306,3 +307,142 @@ def test_initialize_wires_mood_and_decider(tmp_path):
         assert plugin.loop is None
 
     asyncio.run(flow())
+
+
+# ---------------------------------------------------------------------------
+# M3：/living_wake 命令 与 消息监听（吵醒计数 / 静默拦截）
+# ---------------------------------------------------------------------------
+def _living_gate():
+    """一个"当前时刻在休眠窗内"的闸门：窗口按真实时间动态生成。"""
+    from datetime import datetime, timedelta
+
+    from core.living_state import LivingGate
+
+    now = datetime.now()
+    start = (now - timedelta(minutes=30)).strftime("%H:%M")
+    end = (now + timedelta(minutes=30)).strftime("%H:%M")
+    config = {
+        "decision": {"daily_impulse_limit": 3, "activity_probability": 0.8},
+        "capabilities": {"cooldown_between_activities_hours": 2.0},
+        "sleep": {
+            "sleep_window": f"{start}-{end}",
+            "wake_n_messages": 3,
+            "wake_window_minutes": 10,
+            "grouchiness_percent": 20,
+            "wake_source": "all",
+            "sleep_mute_replies": True,
+        },
+        "output_gate": {"daily_message_limit": 10, "message_min_interval_minutes": 30},
+    }
+    return LivingGate(config_getter=lambda: config, db_path=":memory:", rng=lambda: 0.5)
+
+
+class FakeEvent:
+    def __init__(self, message_str="", sender_id="u1"):
+        self.message_str = message_str
+        self._sender_id = sender_id
+        self.replies = []
+        self.stopped = False
+
+    def plain_result(self, text):
+        self.replies.append(text)
+        return text
+
+    def get_sender_id(self):
+        return self._sender_id
+
+    def stop_event(self):
+        self.stopped = True
+
+
+class FakeLoop:
+    def __init__(self, awake=True, reason="ok", activity="surf"):
+        self.awake = awake
+        self.reason = reason
+        self.activity = activity
+        self.kwargs_seen = None
+        self.woke_requested = False
+
+    async def heartbeat_once_detailed(self, now=None, force=False):
+        self.kwargs_seen = {"force": force}
+        return self.awake, self.reason, self.activity
+
+    def request_wake(self):
+        self.woke_requested = True
+
+
+def test_living_wake_command_reports_awake(tmp_path):
+    async def flow():
+        plugin = make_plugin(tmp_path / "m.db")
+        plugin.loop = FakeLoop(awake=True, activity="surf")
+        event = FakeEvent()
+        results = [r async for r in plugin.living_wake(event)]
+        return results, plugin.loop
+
+    results, loop = asyncio.run(flow())
+    assert results[0] == "收到，判定中…"
+    assert any("surf" in r for r in results)
+    assert loop.kwargs_seen == {"force": True}
+
+
+def test_living_wake_command_reports_blocked_reason(tmp_path):
+    async def flow():
+        plugin = make_plugin(tmp_path / "m.db")
+        plugin.loop = FakeLoop(awake=False, reason="cooldown")
+        event = FakeEvent()
+        return [r async for r in plugin.living_wake(event)]
+
+    results = asyncio.run(flow())
+    assert any("冷却" in r for r in results)
+
+
+def test_on_any_message_mutes_during_sleep(tmp_path):
+    """睡眠窗内的普通消息：计数、静默拦截（stop_event）。"""
+
+    async def flow():
+        plugin = make_plugin(tmp_path / "m.db")
+        plugin.sleep_manager = SleepManager(
+            config_getter=lambda: plugin.config, gate=_living_gate(), mood=None,
+        )
+        event = FakeEvent(message_str="有人说话")
+        await plugin.on_any_message(event)
+        return event
+
+    assert asyncio.run(flow()).stopped is True
+
+
+def test_on_any_message_command_not_muted(tmp_path):
+    """本插件命令不拦（任务书 B4 例外）。"""
+
+    async def flow():
+        plugin = make_plugin(tmp_path / "m.db")
+        plugin.sleep_manager = SleepManager(
+            config_getter=lambda: plugin.config, gate=_living_gate(), mood=None,
+        )
+        event = FakeEvent(message_str="/living_wake")
+        await plugin.on_any_message(event)
+        return event
+
+    assert asyncio.run(flow()).stopped is False
+
+
+def test_on_any_message_wake_threshold_requests_wake_not_muted(tmp_path):
+    """连续 3 条消息达到吵醒阈值：第 3 条不拦 + 请求主循环唤醒。"""
+
+    async def flow():
+        plugin = make_plugin(tmp_path / "m.db")
+        plugin.sleep_manager = SleepManager(
+            config_getter=lambda: plugin.config, gate=_living_gate(), mood=None,
+        )
+        loop = FakeLoop()
+        plugin.loop = loop
+        events = []
+        for i in range(3):
+            event = FakeEvent(message_str=f"第{i}条")
+            await plugin.on_any_message(event)
+            events.append(event)
+        return loop, events
+
+    loop, events = asyncio.run(flow())
+    assert loop.woke_requested is True  # 第 3 条触发吵醒 → 请求唤醒
+    assert [e.stopped for e in events] == [True, True, False]  # 触发那条不拦

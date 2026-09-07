@@ -50,6 +50,19 @@ def test_conf_schema_valid_and_groups_complete():
     assert life_extra["type"] == "text"
     assert "生活补充设定" in life_extra["default"]
     assert "作息习惯" in life_extra["default"]
+    # M3：休眠与 agent 循环配置项
+    sleep_items = schema["sleep"]["items"]
+    assert sleep_items["sleep_mute_replies"]["type"] == "bool"
+    assert sleep_items["sleep_mute_replies"]["default"] is True
+    assert sleep_items["wake_source"]["options"] == ["all", "owner_only"]
+    assert sleep_items["dream_probability"]["default"] == 0.3
+    assert "owner_id" in sleep_items
+    assert schema["decision"]["items"]["agent_activities"]["type"] == "list"
+    assert schema["decision"]["items"]["agent_activities"]["default"] == [
+        "surf", "read", "game"
+    ]
+    assert schema["decision"]["items"]["single_run_token_budget"]["default"] == 20000
+    assert schema["decision"]["items"]["max_tool_rounds"]["default"] == 8
 
 
 def test_main_py_compiles():
