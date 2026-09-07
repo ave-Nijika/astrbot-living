@@ -1,5 +1,5 @@
 name: astrbot_plugin_living
 author: ave-Nijika
-version: 0.2.0
-description: 让 AstrBot 在无消息时拥有自己的生活——闲时由心境与记忆驱动的冲动，自主冲浪、读文章、写小游戏、整理回忆。可配置决策模式（rules/hybrid/llm），复用 AstrBot 人设，内置生活记忆（支持 LivingMemory 联动）。
+version: 0.3.0
+description: 让 AstrBot 在无消息时拥有自己的生活——闲时由心境与记忆驱动的冲动，自主冲浪、读文章、现场写小游戏、整理回忆；有心境状态机、会睡觉、会做梦、能被连续消息吵醒；支持决策模式（rules/hybrid/llm）与带 token 硬闸的 agent 循环，复用 AstrBot 人设，支持 LivingMemory 联动。
 repo: https://github.com/ave-Nijika/astrbot-living
