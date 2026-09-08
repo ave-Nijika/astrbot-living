@@ -31,8 +31,14 @@ class MemoryBackend(ABC):
         content: str,
         importance: float = 0.5,
         metadata: dict | None = None,
+        session_id: str | None = None,
+        persona_id: str | None = None,
     ) -> int:
-        """写入一条记忆，返回其 id。"""
+        """写入一条记忆，返回其 id。
+
+        session_id/persona_id 供 LivingMemory 的图谱提取器生成参与者边
+        （任务书问题 3）；SimpleBackend 接受但忽略——本地 SQLite 无图谱。
+        """
 
     @abstractmethod
     async def search(self, query: str, k: int = 5) -> list[dict]:
@@ -99,10 +105,15 @@ class LivingMemoryBackend(MemoryBackend):
         content: str,
         importance: float = 0.5,
         metadata: dict | None = None,
+        session_id: str | None = None,
+        persona_id: str | None = None,
     ) -> int:
+        """写入 LivingMemory。session_id/persona_id 原样透传给引擎——
+        图谱提取器靠它们给自主活动的记忆生成参与者边（任务书问题 3）。"""
         doc_id = await self._engine.add_memory(
             content,
-            session_id=None,
+            session_id=session_id,
+            persona_id=persona_id,
             importance=importance,
             metadata=metadata,
         )
@@ -158,7 +169,11 @@ class SimpleBackend(MemoryBackend):
         content: str,
         importance: float = 0.5,
         metadata: dict | None = None,
+        session_id: str | None = None,
+        persona_id: str | None = None,
     ) -> int:
+        # session_id/persona_id 在本地 SQLite 里没有对应概念（无图谱），
+        # 接受但忽略——保持与 LivingMemoryBackend 相同的调用面
         db = await self._get_db()
         cur = await db.execute(
             "INSERT INTO memories (content, importance, metadata_json, created_at) "

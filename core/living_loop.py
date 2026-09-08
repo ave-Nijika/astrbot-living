@@ -26,8 +26,9 @@ from typing import Any, Callable
 
 from astrbot.api import logger
 
-from .activities import Activity, ActivityContext, default_activities
+from .activities import Activity, ActivityContext, ActivityOutcome, default_activities
 from .ghost_event import build_ghost_event
+from .llm_failover import looks_like_llm_error_output
 
 DEFAULT_CHECK_INTERVAL_MIN = 45.0
 DEFAULT_MAX_RUN_SECONDS = 300.0
@@ -71,6 +72,7 @@ class LivingLoop:
         sleep_manager: Any = None,
         agent_loop: Any = None,
         dream_llm_call: Callable[..., Any] | None = None,
+        persona_id_getter: Callable[..., Any] | None = None,
     ) -> None:
         self._gate = gate
         self._get_memory = memory_getter
@@ -88,6 +90,8 @@ class LivingLoop:
         self._sleep_manager = sleep_manager
         self._agent_loop = agent_loop
         self._dream_llm_call = dream_llm_call
+        # M3 补丁：记忆写入时携带 persona id（问题 3，图谱参与者边的原料）
+        self._persona_id_getter = persona_id_getter
         self._task: asyncio.Task | None = None
         self._watcher_task: asyncio.Task | None = None
         self._last_activity_name: str | None = None
@@ -301,7 +305,12 @@ class LivingLoop:
                 f"{date_key}是安静的一天，没做成什么事。该睡了，晚安。"
             )
         try:
-            await memory.add(review, importance=0.6)
+            await memory.add(
+                review,
+                importance=0.6,
+                session_id=self._session_id(None),
+                persona_id=await self._persona_id(),
+            )
             logger.info("[LivingLoop] 已写入睡前回顾")
         except Exception as e:
             logger.warning(f"[LivingLoop] 睡前回顾写入失败: {e}")
@@ -348,7 +357,12 @@ class LivingLoop:
             return
         date_key = f"{now.month}月{now.day}日"
         try:
-            await memory.add(f"{date_key}我做了个梦：{dream}", importance=0.2)
+            await memory.add(
+                f"{date_key}我做了个梦：{dream}",
+                importance=0.2,
+                session_id=self._session_id(None),
+                persona_id=await self._persona_id(),
+            )
         except Exception as e:
             logger.debug(f"[LivingLoop] 梦的记忆写入失败: {e}")
             return
@@ -415,14 +429,35 @@ class LivingLoop:
             error_note = f"活动 {activity.name} 失败: {e}"
             logger.error(f"[LivingLoop] {error_note}")
 
+        # 任务书问题 2：LLM 错误文本不进记忆。VM 实测里 provider 全挂时
+        # agent 的"产出"就是 "All chat models failed: ..." 这类错误串——
+        # 当成果写进记忆会污染记忆库、拖垮后续决策 prompt 的质量。
+        model_failure = False
+        if outcome is not None and looks_like_llm_error_output(
+            f"{outcome.summary or ''} {outcome.memory_content or ''}"
+        ):
+            logger.warning(
+                f"[LivingLoop] 活动 {activity.name} 的产出是 LLM 错误信息，按失败处理"
+            )
+            model_failure = True
+            error_note = "LLM 错误信息，已拦截不入记忆"
+            outcome = None  # 失败路径：心境记失败、不分享、用专属失败文案
+
         # 心境演化与记忆重要度调节（M2-D；M3 起疲惫按活动耗时折算）
         duration_seconds = (datetime.now() - real_start).total_seconds()
         importance_adjust = await self._update_mood(
             activity, outcome, params, duration_seconds
         )
         # 记忆双路径：无论成败都写（任务书 D）
+        failure_text = (
+            f"{ctx.date_prefix()}我想做{activity.name}来着，"
+            "但脑子转不动（模型全挂了）。"
+            if model_failure
+            else None
+        )
         await self._write_memory(
-            activity, outcome, error_note, ctx, importance_adjust
+            activity, outcome, error_note, ctx, importance_adjust,
+            failure_text=failure_text,
         )
         await self._gate.note_activity_finished()
         logger.info(f"[LivingLoop] 活动结束 name={activity.name}")
@@ -508,26 +543,60 @@ class LivingLoop:
         error_note: str | None,
         ctx: ActivityContext,
         importance_adjust: float = 0.0,
+        failure_text: str | None = None,
     ) -> None:
         if outcome is not None and outcome.memory_content:
             content = outcome.memory_content
             importance = outcome.importance
         else:
-            # 失败也是生活的一部分：记一句"今天没干成什么"
+            # 失败也是生活的一部分；模型故障用专属文案（任务书问题 2 定稿）
             detail = f"（{error_note}）" if error_note else ""
-            content = f"{ctx.date_prefix()}我想{activity.name}来着，没成{detail}。"
+            content = failure_text or (
+                f"{ctx.date_prefix()}我想{activity.name}来着，没成{detail}。"
+            )
             importance = 0.2
         # 心境调节后的重要度仍要钳在合理区间
         importance = max(0.0, min(1.0, importance + importance_adjust))
         try:
             memory = await self._get_memory()
             await asyncio.wait_for(
-                memory.add(content, importance=importance),
+                memory.add(
+                    content,
+                    importance=importance,
+                    # 任务书问题 3：带上会话与人格上下文——LivingMemory 的
+                    # 图谱提取器靠它们生成参与者边，传 None 只会得到孤立节点。
+                    # 幽灵事件的 uwo 是自主活动记忆在图谱里的"家"
+                    session_id=self._session_id(ctx),
+                    persona_id=await self._persona_id(),
+                ),
                 timeout=MEMORY_WRITE_TIMEOUT,
             )
         except Exception as e:
             # 记忆失败只记 WARN：活动本身已经完成，不能因为记账失败翻脸
             logger.warning(f"[LivingLoop] 记忆写入失败（活动仍算完成）: {e}")
+
+    def _session_id(self, ctx: ActivityContext | None) -> str | None:
+        """记忆归属会话：自主活动统一落在幽灵会话里（图谱上的自留地）。"""
+        if ctx is not None and getattr(ctx, "event", None) is not None:
+            try:
+                return ctx.event.unified_msg_origin
+            except Exception:
+                pass
+        try:
+            return build_ghost_event().unified_msg_origin
+        except Exception:
+            return None
+
+    async def _persona_id(self) -> str:
+        """当前生效 persona 的 id；任何失败都回 "default"（任务书问题 3）。"""
+        if self._persona_id_getter is None:
+            return "default"
+        try:
+            pid = await self._persona_id_getter()
+        except Exception:
+            return "default"
+        text = str(pid or "").strip()
+        return text or "default"
 
     # ------------------------------------------------------------------
     # 分享（输出闸门链路，任务书 E）

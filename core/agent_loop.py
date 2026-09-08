@@ -33,6 +33,12 @@ from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
 from astrbot.core.provider.entities import ProviderRequest
 
 from .ghost_event import build_ghost_event
+from .llm_failover import (
+    build_provider_chain,
+    is_retryable_llm_error,
+    looks_like_llm_error_output,
+    summarize_provider_error,
+)
 
 
 @dataclass
@@ -109,17 +115,79 @@ class LivingAgentLoop:
 
     # ------------------------------------------------------------------
     async def run(self, intent: str) -> AgentRunResult:
+        """按故障转移链执行 agent 循环（任务书 M3-补丁 问题 1）。
+
+        预算语义（红线：token 硬闸不变）：预算是**整个活动的**——链上多次
+        尝试的累计消耗一起计数，剩余预算递减传给下一次尝试。这样"换 provider
+        重试"不可能变成绕过预算闸的后门。
+        """
         decision_cfg = self._group("decision")
         budget = self._number(decision_cfg.get("single_run_token_budget"), 20000)
         max_steps = int(self._number(decision_cfg.get("max_tool_rounds"), 8))
         max_steps = max(1, min(max_steps, 30))
 
-        provider = await self._resolve_provider()
-        if provider is None:
+        chain = await build_provider_chain(self._context, self._config_getter)
+        if not chain:
             return AgentRunResult(
-                ok=False, error="provider 不可用", max_steps=max_steps
+                ok=False, error="无可用聊天 provider", max_steps=max_steps
             )
 
+        cumulative_tokens = 0
+        last_result: AgentRunResult | None = None
+        for index, (provider_id, provider) in enumerate(chain):
+            remaining = budget - cumulative_tokens if budget > 0 else budget
+            result = await self._run_with_provider(
+                provider, provider_id, intent, remaining, max_steps
+            )
+            cumulative_tokens += result.tokens_used
+            last_result = result
+
+            # VM 现场形态防御：provider 可能把错误包成"正常文本产出"——
+            # 统一归一化为失败，交给下面的切换逻辑
+            if result.ok and looks_like_llm_error_output(result.text):
+                logger.warning(
+                    f"[AgentLoop] provider {provider_id} 返回错误文本，按失败处理"
+                )
+                result = AgentRunResult(
+                    ok=False,
+                    text=result.text,
+                    tokens_used=result.tokens_used,
+                    steps_used=result.steps_used,
+                    max_steps=max_steps,
+                    error=(
+                        f"provider {provider_id} 返回错误文本: "
+                        f"{summarize_provider_error(result.text)}"
+                    ),
+                )
+
+            if result.ok or result.budget_exceeded:
+                # 成功收工；或预算被整个活动耗尽——硬闸语义优先，不再换链
+                return result
+
+            error_text = result.error or ""
+            if index < len(chain) - 1 and is_retryable_llm_error(error_text):
+                # 只有"换模型可能有用"的错误才切下一个（任务书错误分类）
+                logger.warning(
+                    f"[AgentLoop] provider {provider_id} 失败"
+                    f"（{summarize_provider_error(error_text)}），切换下一个"
+                )
+                continue
+            # 不可重试（如 401）或已是最后一个：按失败收场
+            return result
+
+        return last_result or AgentRunResult(
+            ok=False, error="故障转移链异常终止", max_steps=max_steps
+        )
+
+    async def _run_with_provider(
+        self,
+        provider: Any,
+        provider_id: str,
+        intent: str,
+        budget: float,
+        max_steps: int,
+    ) -> AgentRunResult:
+        """用指定 provider 跑一轮完整 agent 循环（单次尝试）。"""
         system_prompt = await self._system_prompt(intent)
         agent_context = AstrAgentContext(context=self._context, event=build_ghost_event())
         request = ProviderRequest(
@@ -145,13 +213,14 @@ class LivingAgentLoop:
                 runner, budget, max_steps
             )
         except Exception as e:
-            logger.warning(f"[AgentLoop] 循环异常: {e}")
+            error = f"{type(e).__name__}: {e}"
+            logger.warning(f"[AgentLoop] 循环异常（provider={provider_id}）: {error}")
             return AgentRunResult(
                 ok=False,
                 tokens_used=runner.stats.token_usage.total,
                 steps_used=0,
                 max_steps=max_steps,
-                error=f"{type(e).__name__}: {e}",
+                error=error,
             )
 
         tokens = runner.stats.token_usage.total
@@ -181,38 +250,37 @@ class LivingAgentLoop:
                 error=f"token 预算 {budget} 已用尽（实际 {tokens}）",
             )
 
-        ok = bool(text.strip())
+        if not text.strip():
+            # LLM 层失败常以"空产出"形态出现
+            return AgentRunResult(
+                ok=False,
+                text=text,
+                tokens_used=tokens,
+                steps_used=llm_calls,
+                max_steps=max_steps,
+                error=f"agent 没有产出文本（provider={provider_id}）",
+            )
+
+        if looks_like_llm_error_output(text):
+            # VM 实测形态：provider 层把错误包装成"正常文本产出"——
+            # 必须按失败处理，交给故障转移链切换（任务书问题 1 现场形态）
+            return AgentRunResult(
+                ok=False,
+                text=text,
+                tokens_used=tokens,
+                steps_used=llm_calls,
+                max_steps=max_steps,
+                error=f"provider {provider_id} 返回了错误文本: {text[:160]}",
+            )
+
+        logger.debug(f"[LivingLoop] 使用 provider: {provider_id}")
         return AgentRunResult(
-            ok=ok,
+            ok=True,
             text=text,
             tokens_used=tokens,
             steps_used=llm_calls,
             max_steps=max_steps,
-            error=None if ok else "agent 没有产出文本",
         )
-
-    # ------------------------------------------------------------------
-    async def _resolve_provider(self) -> Any:
-        """provider 解析：model.provider_id 优先，留空回退默认聊天 provider。"""
-        provider_id = str(self._group("model").get("provider_id", "") or "")
-        if not provider_id:
-            try:
-                umo = build_ghost_event().unified_msg_origin
-                provider_id = await self._context.get_current_chat_provider_id(umo)
-            except Exception as e:
-                logger.debug(f"[AgentLoop] 默认 provider 解析失败: {e}")
-                return None
-        try:
-            provider = await self._context.provider_manager.get_provider_by_id(
-                provider_id
-            )
-        except Exception as e:
-            logger.debug(f"[AgentLoop] provider 获取失败: {e}")
-            return None
-        # 防御：拿到的必须是能 text_chat 的聊天 provider（嵌入/STT 不算）
-        if provider is None or not hasattr(provider, "text_chat"):
-            return None
-        return provider
 
     async def _system_prompt(self, intent: str) -> str | None:
         parts = []

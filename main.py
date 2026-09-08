@@ -27,6 +27,12 @@ from .core.lazy_memory import LazyMemory
 from .core.living_loop import LivingLoop
 from .core.living_state import LivingGate
 from .core.living_tools import build_living_tools
+from .core.llm_failover import (
+    build_provider_chain,
+    is_retryable_llm_error,
+    looks_like_llm_error_output,
+    summarize_provider_error,
+)
 from .core.mood import MoodState
 from .core.sandbox import Sandbox
 from .core.search import BochaSearcher
@@ -130,40 +136,78 @@ class LivingPlugin(Star):
     # 决策层支持（M2：LLM 调用 + persona 读取）
     # ------------------------------------------------------------------
     async def _decision_llm_call(self, prompt: str, system_prompt: str | None):
-        """决策 LLM 调用（decider 注入用）。
+        """决策 LLM 调用（decider/梦共用），带模型故障转移链。
 
-        provider 选择：model.provider_id 配置优先（总纲：自主活动专用模型，
-        防烧聊天模型）；留空回退当前默认聊天 provider。任何失败返回 None
-        由 decider 静默回退——默认配置下没配专用 provider 也能跑。
+        provider 选择（任务书 M3-补丁 问题 1）：fallback_chain 配置链在前，
+        全部已启用 chat provider 兜底；只有 404/429/超时/连接类错误才切换，
+        401 等换模型解决不了的直接放弃（返回 None，由决策层静默回退）。
         """
-        provider_id = str(self._cfg("model", "provider_id", "") or "")
-        if not provider_id:
+        chain = await build_provider_chain(self.context, lambda: self.config)
+        if not chain:
+            return None
+        for provider_id, _provider in chain:
             try:
-                umo = build_ghost_event().unified_msg_origin
-                provider_id = await self.context.get_current_chat_provider_id(umo)
-            except Exception:
+                resp = await self.context.llm_generate(
+                    chat_provider_id=provider_id,
+                    prompt=prompt,
+                    system_prompt=system_prompt or None,
+                )
+            except Exception as e:
+                if is_retryable_llm_error(e):
+                    logger.warning(
+                        f"[Failover] 决策调用 provider {provider_id} 失败，"
+                        f"尝试下一个: {summarize_provider_error(e)}"
+                    )
+                    continue
+                logger.debug(f"[Failover] 不可重试错误，放弃决策调用: {e}")
                 return None
-        if not provider_id:
-            return None
+            text = getattr(resp, "completion_text", None)
+            if not text:
+                # completion_text 已过时但仍在；兜底从 result_chain 取首个文本组件
+                try:
+                    chain_components = getattr(resp, "result_chain", None)
+                    components = getattr(chain_components, "chain", None) or []
+                    if components:
+                        text = getattr(components[0], "text", None)
+                except Exception:
+                    text = None
+            if not text:
+                continue  # 空产出：换下一个 provider
+            if looks_like_llm_error_output(text):
+                # VM 实测形态：错误被包成正常产出（"All chat models failed"）
+                logger.warning(
+                    f"[Failover] provider {provider_id} 返回错误文本，尝试下一个"
+                )
+                continue
+            logger.debug(f"[LivingLoop] 使用 provider: {provider_id}")
+            return text
+        return None
+
+    async def _persona_id(self) -> str:
+        """当前生效 persona 的 id（问题 3：记忆图谱的参与者边原料）。
+
+        v3 Personality 字典里 name 字段存的就是 persona_id（源码核实）；
+        任何失败回 "default"——图谱归属不能因为取不到 id 而阻塞写入。
+        """
         try:
-            resp = await self.context.llm_generate(
-                chat_provider_id=provider_id,
-                prompt=prompt,
-                system_prompt=system_prompt or None,
-            )
+            persona_manager = getattr(self.context, "persona_manager", None)
+            if persona_manager is None:
+                return "default"
+            getter = getattr(persona_manager, "get_default_persona_v3", None)
+            if not callable(getter):
+                return "default"
+            umo = build_ghost_event().unified_msg_origin
+            persona = await getter(umo)
         except Exception:
-            return None
-        text = getattr(resp, "completion_text", None)
-        if not text:
-            # completion_text 已过时但仍在；兜底从 result_chain 取首个文本组件
-            try:
-                chain = getattr(resp, "result_chain", None)
-                components = getattr(chain, "chain", None) or []
-                if components:
-                    text = getattr(components[0], "text", None)
-            except Exception:
-                text = None
-        return text or None
+            return "default"
+        if isinstance(persona, dict):
+            pid = persona.get("persona_id") or persona.get("name")
+        else:
+            pid = getattr(persona, "persona_id", None) or getattr(
+                persona, "name", None
+            )
+        text = str(pid or "").strip()
+        return text or "default"
 
     async def _persona_prompt(self) -> str | None:
         """读取当前生效 persona 的 system_prompt（总纲 D4：主人格复用）。
@@ -257,6 +301,7 @@ class LivingPlugin(Star):
             sleep_manager=self.sleep_manager,
             agent_loop=agent_loop,
             dream_llm_call=self._decision_llm_call,
+            persona_id_getter=self._persona_id,
         )
         await self.loop.start()
 

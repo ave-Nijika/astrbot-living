@@ -249,23 +249,44 @@ def test_persona_prompt_read_failure_silent(tmp_path):
 
 
 def test_decision_llm_call_uses_configured_provider(tmp_path):
-    """model.provider_id 配置优先，且把 completion_text 透出。"""
+    """model.provider_id 链首优先，且把 completion_text 透出（M3 补丁：链式）。"""
     captured = {}
+
+    class FakeMeta:
+        def __init__(self, pid):
+            self.id = pid
+
+    class FakeProvider:
+        def __init__(self, pid):
+            self._pid = pid
+            self.text_chat = object()
+
+        def meta(self):
+            return FakeMeta(self._pid)
+
+    class FakePM:
+        async def get_provider_by_id(self, pid):
+            return FakeProvider(pid)
+
+    class FakeContext:
+        provider_manager = FakePM()
+
+        @staticmethod
+        def get_all_providers():
+            return [FakeProvider("my-decision-llm")]
+
+        async def llm_generate(self, *, chat_provider_id, prompt,
+                               system_prompt=None, **kw):
+            captured["provider"] = chat_provider_id
+            captured["prompt"] = prompt
+            captured["system"] = system_prompt
+            return types.SimpleNamespace(
+                completion_text='{"topic": "x"}', result_chain=None
+            )
 
     async def flow():
         plugin = make_plugin(tmp_path / "m.db")
         plugin.config = {"model": {"provider_id": "my-decision-llm"}}
-
-        class FakeContext:
-            async def llm_generate(self, *, chat_provider_id, prompt,
-                                   system_prompt=None, **kw):
-                captured["provider"] = chat_provider_id
-                captured["prompt"] = prompt
-                captured["system"] = system_prompt
-                return types.SimpleNamespace(
-                    completion_text='{"topic": "x"}', result_chain=None
-                )
-
         plugin.context = FakeContext()
         return await plugin._decision_llm_call("提示词", "系统提示")
 
