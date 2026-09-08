@@ -42,6 +42,10 @@ class SleepManager:
         # 上次触发吵醒的时刻：触发后冷却一个窗口时长，避免同一波聊天
         # 反复把主循环踹醒
         self._last_wake_trigger: datetime | None = None
+        # 会话追踪（任务书 M3 补丁 II 二/三）：确认消息发给"吵醒我们的
+        # 最后一个会话"，告别消息发给"待机期里最后活跃的会话"
+        self.last_wake_session: str | None = None
+        self.last_active_session: str | None = None
 
     # ------------------------------------------------------------------
     # 配置
@@ -82,12 +86,16 @@ class SleepManager:
         return str(sender_id or "").strip() == owner_id
 
     def register_message(
-        self, now: datetime | None = None, sender_id: str | None = None
+        self,
+        now: datetime | None = None,
+        sender_id: str | None = None,
+        session: str | None = None,
     ) -> tuple[bool, int]:
         """记录一条消息，返回 (是否触发吵醒, 窗内计数)。
 
         只有休眠窗内、且计入吵醒（wake_source 过滤后）的消息才进滑动窗——
         否则陌生消息会把主人的"3 条达标"时机垫早，吵醒语义就乱了。
+        触发吵醒时记录来源会话（唤醒确认消息的发往地）。
         """
         now = now or self._now()
         window_minutes = max(
@@ -117,7 +125,44 @@ class SleepManager:
 
         self._last_wake_trigger = now
         self._stamps.clear()  # 这一波已经把人吵醒了，清窗重新计数
+        if session:
+            self.last_wake_session = session
         return True, threshold
+
+    # ------------------------------------------------------------------
+    # 清醒待机（任务书 M3 补丁 II 一）
+    # ------------------------------------------------------------------
+    def standby_minutes(self) -> float:
+        return max(
+            self._f(self._group("sleep").get("awake_standby_minutes"), 30), 0.0
+        )
+
+    async def refresh_standby(
+        self, now: datetime | None = None, session: str | None = None
+    ) -> bool:
+        """若处于待机期，按滑动窗口语义刷新待机时长。
+
+        Returns:
+            True = 当前在待机期（调用方应跳过吵醒计数与静默拦截——
+            待机期的消息是"醒着聊天"，不是"吵"）；
+            False = 不在待机期，调用方走原有吵醒计数逻辑。
+        """
+        now = now or self._now()
+        if not self._gate.awake_standby_active(now):
+            return False
+        if session:
+            self.last_active_session = session
+        await self._gate.refresh_awake_until(self.standby_minutes(), now)
+        logger.debug(
+            f"[Sleep] 待机期消息，待机刷新 {self.standby_minutes():.0f} 分钟"
+        )
+        return True
+
+    async def begin_standby(self, now: datetime | None = None) -> float:
+        """被吵醒后进入清醒待机。返回待机分钟数（供日志）。"""
+        minutes = self.standby_minutes()
+        await self._gate.refresh_awake_until(minutes, now)
+        return minutes
 
     # ------------------------------------------------------------------
     # 吵醒结算（任务书 B3：起床气 + 睡眠债）
@@ -165,12 +210,15 @@ class SleepManager:
     def should_mute_message(self, now: datetime | None, message_str: str | None) -> bool:
         """这条消息是否应被拦截（不进入回复管线）。
 
-        拦截条件全部满足才拦：配置开启 + 休眠窗内 + 不是本插件命令。
+        拦截条件全部满足才拦：配置开启 + 休眠窗内 + 不在清醒待机期
+        + 不是本插件命令。待机期是"醒着聊天"，拦了就自相矛盾。
         达到吵醒阈值的那条消息由调用方（main 的消息 handler）先判 wake
         再判 mute——触发的消息不拦（被吵醒了就该回应）。
         """
         enabled = bool(self._group("sleep").get("sleep_mute_replies", True))
         if not enabled:
+            return False
+        if self._gate.awake_standby_active(now):
             return False
         if not self._gate.in_sleep_window(now):
             return False

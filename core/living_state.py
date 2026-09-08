@@ -25,6 +25,16 @@ KEY_MESSAGE_COUNT = "today_message_count"
 KEY_LAST_MESSAGE_AT = "last_message_at"
 
 
+def _parse_iso(raw: str | None) -> datetime | None:
+    """ISO 时间戳解析；空串/坏值返回 None（awake_until 的宽容读取）。"""
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
 def _to_float(value: Any, default: float) -> float:
     try:
         return float(value)
@@ -90,6 +100,54 @@ class LivingGate:
         # 概率掷点可注入：测试需要确定性的"骰子"
         self._rng = rng or random.random
         self._db: Any = None
+        # 清醒待机（任务书 M3 补丁 II）：awake_until 的内存镜像为运行期权威，
+        # SQLite 为持久化镜像（跨重启恢复）。为什么需要内存镜像：
+        # should_mute_message / awake_standby_active 是同步方法，
+        # 不能每次都 await 数据库
+        self._awake_until: datetime | None = None
+
+    # ------------------------------------------------------------------
+    # 清醒待机（任务书 M3 补丁 II 一）
+    # ------------------------------------------------------------------
+    async def load_state(self) -> None:
+        """启动时恢复待机状态（跨重启：AstrBot 重启时若仍在待机期内则延续）。"""
+        raw = await self._get_raw("awake_until")
+        self._awake_until = _parse_iso(raw)
+
+    def awake_standby_active(self, now: datetime | None = None) -> bool:
+        """当前是否处于清醒待机期（同步；供消息路径的同步判定用）。"""
+        now = now or datetime.now()
+        return self._awake_until is not None and now < self._awake_until
+
+    async def refresh_awake_until(
+        self, minutes: float, now: datetime | None = None
+    ) -> None:
+        """设置/刷新待机截止时间（now + minutes）。"""
+        now = now or datetime.now()
+        self._awake_until = now + timedelta(minutes=max(minutes, 0.0))
+        await self._set_raw("awake_until", self._awake_until.isoformat())
+
+    async def clear_awake_until(self) -> None:
+        """清除待机状态（自然回落时调用）。"""
+        self._awake_until = None
+        # 写空串而非删键：UPSERT 简单一致，读取端把空串解析为 None
+        await self._set_raw("awake_until", "")
+
+    async def consume_standby_expiry(self, now: datetime | None = None) -> bool:
+        """待机"刚过期"检测：已设置且 now 已越过截止 → 清除并返回 True。
+
+        供主循环心跳做"恢复睡眠/告别消息"的状态切换；从未设置或仍在
+        待机期内返回 False。
+        """
+        now = now or datetime.now()
+        if self._awake_until is None or now < self._awake_until:
+            return False
+        await self.clear_awake_until()
+        return True
+
+    def _awake_standby_skip_sleeping(self, now: datetime) -> bool:
+        """待机期内跳过 sleeping 判定（判定链首位，任务书定稿语义）。"""
+        return self.awake_standby_active(now)
 
     # ------------------------------------------------------------------
     # 状态存取（aiosqlite 键值表，惰性连接）
@@ -172,12 +230,19 @@ class LivingGate:
           - 休眠窗内不再直接拒绝，而是返回 (True, "woken_from_sleep")——
             由调用方执行吵醒流程（起床气/睡眠债）后再进活动周期；
           - 每日上限与冷却**仍然生效**：手动唤醒不是无限豁免。
+
+        清醒待机（任务书 M3 补丁 II）：判定链最前面先查 awake_until——
+        待机期内跳过 sleeping 判定（心跳可正常触发活动），force 也不会
+        再进 woken_from_sleep 分支（人已经醒了，不存在"吵醒"）。
         """
         now = now or datetime.now()
         config = self._config_getter() or {}
         state = await self.get_state(now)
 
-        allow, reason = self._evaluate_wake(now, config, state, force=force)
+        allow, reason = self._evaluate_wake(
+            now, config, state, force=force,
+            standby_active=self._awake_standby_skip_sleeping(now),
+        )
         last = state["last_activity_at"]
         hours_since = (
             f"{(now - last).total_seconds() / 3600:.1f}h" if last else "无记录"
@@ -193,17 +258,27 @@ class LivingGate:
         return allow, reason
 
     def _evaluate_wake(
-        self, now: datetime, config: Any, state: dict, force: bool = False
+        self, now: datetime, config: Any, state: dict, force: bool = False,
+        standby_active: bool = False,
     ) -> tuple[bool, str]:
         decision = _conf_group(config, "decision")
         capabilities = _conf_group(config, "capabilities")
 
-        # 1. 休眠窗口（M3：force 触发吵醒流程而非拒绝，M1 仅做时间窗判定）
-        window = parse_time_window(_conf_group(config, "sleep").get("sleep_window"))
-        if window and in_time_window(now, window):
+        # 0. 清醒待机（补丁 II）：跳过 sleeping 判定，其余链照常——
+        #    待机期内心跳可正常触发活动，force 也不触发吵醒结算
+        if standby_active:
             if force:
-                return True, "woken_from_sleep"
-            return False, "sleeping"
+                return True, "ok"
+            # 落到下面的上限/冷却/概率链：待机期是否"再干一件事"仍受约束
+        else:
+            # 1. 休眠窗口（M3：force 触发吵醒流程而非拒绝，M1 仅做时间窗判定）
+            window = parse_time_window(
+                _conf_group(config, "sleep").get("sleep_window")
+            )
+            if window and in_time_window(now, window):
+                if force:
+                    return True, "woken_from_sleep"
+                return False, "sleeping"
 
         # 2. 今日活动上限（0 = 不限制）
         limit = _to_int(decision.get("daily_impulse_limit"), 3)

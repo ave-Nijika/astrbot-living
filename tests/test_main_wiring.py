@@ -467,3 +467,41 @@ def test_on_any_message_wake_threshold_requests_wake_not_muted(tmp_path):
     loop, events = asyncio.run(flow())
     assert loop.woke_requested is True  # 第 3 条触发吵醒 → 请求唤醒
     assert [e.stopped for e in events] == [True, True, False]  # 触发那条不拦
+
+
+def test_on_any_message_standby_refreshes_and_never_mutes(tmp_path):
+    """补丁 II：待机期内消息 → 刷新待机（滑动窗）、不计数、不拦。"""
+    from core.sleep import SleepManager
+
+    async def flow():
+        plugin = make_plugin(tmp_path / "m.db")
+        gate = _living_gate()
+        plugin.sleep_manager = SleepManager(
+            config_getter=lambda: plugin.config, gate=gate, mood=None,
+        )
+        await gate.refresh_awake_until(30)
+        before = gate._awake_until
+        event = FakeEvent(message_str="醒着聊天")
+        await plugin.on_any_message(event)
+        return event, before, gate
+
+    event, before, gate = asyncio.run(flow())
+    assert event.stopped is False  # 待机期不拦
+    assert gate._awake_until > before  # 待机被刷新（滑动窗）
+
+def test_on_any_message_standby_refresh(tmp_path):
+    """待机期消息把 awake_until 往后推（滑动窗口语义验证）。"""
+
+    async def flow():
+        plugin = make_plugin(tmp_path / "m.db")
+        gate = _living_gate()
+        plugin.sleep_manager = SleepManager(
+            config_getter=lambda: plugin.config, gate=gate, mood=None,
+        )
+        await gate.refresh_awake_until(10)
+        first = gate._awake_until
+        await plugin.on_any_message(FakeEvent(message_str="hi"))
+        return first, gate._awake_until
+
+    first, after = asyncio.run(flow())
+    assert after > first
