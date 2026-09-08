@@ -11,3 +11,4 @@ scripts/_vm_*.db
 docs/
 scripts/test_thinking*.py
 scripts/test_thinking_result.txt
+scripts/_vm_*.py
