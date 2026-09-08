@@ -37,9 +37,10 @@ BASE_CONFIG = {
 # 替身
 # ---------------------------------------------------------------------------
 class FakeGate:
-    def __init__(self, allow=True, reason="ok"):
+    def __init__(self, allow=True, reason="ok", standby=False):
         self.allow = allow
         self.reason = reason
+        self.standby = standby
         self.started = 0
         self.finished = 0
         self.message_sends = 0
@@ -47,6 +48,15 @@ class FakeGate:
 
     async def should_wake(self, now=None, force=False):
         return self.allow, self.reason
+
+    def in_sleep_window(self, now=None):
+        return False
+
+    def awake_standby_active(self, now=None):
+        return False
+
+    async def consume_standby_expiry(self, now=None):
+        return False
 
     async def should_send_message(self, now=None):
         self.message_verdicts.append(self.allow)

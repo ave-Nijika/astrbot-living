@@ -259,6 +259,11 @@ class LivingPlugin(Star):
             config_getter=lambda: self.config,
             db_path=self._gate_db_path(),
         )
+        # 补丁 II：重启时若仍在清醒待机期内则延续待机状态（持久化恢复）
+        try:
+            await self.gate.load_state()
+        except Exception as e:
+            logger.warning(f"[{PLUGIN_NAME}] 待机状态恢复失败（按无待机继续）: {e}")
         self.sleep_manager = SleepManager(
             config_getter=lambda: self.config,
             gate=self.gate,
@@ -330,10 +335,14 @@ class LivingPlugin(Star):
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_any_message(self, event: AstrMessageEvent):
-        """所有消息的旁路监听：睡眠期吵醒计数 + 静默拦截（任务书 B3/B4）。
+        """所有消息的旁路监听：待机刷新 / 吵醒计数 / 静默拦截（B3/B4 + 补丁 II）。
 
-        顺序敏感：先计数再判拦——达到吵醒阈值的那条消息不拦（被吵醒了
-        就该回应）。本插件命令（/living_wake）不拦。
+        顺序敏感：
+          1. 待机期内（awake_until 未过期）→ 刷新待机时长（滑动窗）→
+             不计数、不拦（醒着聊天，AstrBot 正常回复）；
+          2. 否则走吵醒计数——达到阈值的那条消息不拦（被吵醒了就该回应），
+             并请求主循环唤醒；
+          3. 其余休眠窗内消息按 sleep_mute_replies 拦截。本插件命令不拦。
         """
         if self.sleep_manager is None:
             return
@@ -343,9 +352,22 @@ class LivingPlugin(Star):
         except Exception:
             sender_id = None
         try:
+            session = event.unified_msg_origin
+        except Exception:
+            session = None
+
+        # 补丁 II 一：待机期消息只刷新待机（滑动窗），不重复扣睡眠债/
+        # 起床气判定，也不拦截
+        try:
+            if await self.sleep_manager.refresh_standby(now, session=session):
+                return
+        except Exception as e:
+            logger.debug(f"[Living] 待机刷新异常（按非待机继续）: {e}")
+
+        try:
             # register_message 是同步方法（纯内存滑动窗），不要 await
             wake_triggered, _count = self.sleep_manager.register_message(
-                now, sender_id
+                now, sender_id, session=session
             )
         except Exception as e:
             logger.debug(f"[Living] 消息计数异常（跳过）: {e}")

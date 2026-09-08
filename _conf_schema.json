@@ -121,6 +121,24 @@
         "type": "int",
         "default": 20
       },
+      "awake_standby_minutes": {
+        "description": "清醒待机时长（分钟）",
+        "hint": "被吵醒后保持清醒的时长；期间主人每发一条消息都会重新计时（滑动窗口）。待机期内正常聊天不静默，结束后若仍在睡眠窗则继续睡。",
+        "type": "int",
+        "default": 30
+      },
+      "wake_ack_message": {
+        "description": "唤醒确认消息",
+        "hint": "被吵醒后立刻回给主人的一句话（零延迟、不经过 LLM）。留空 = 不发送。",
+        "type": "string",
+        "default": "醒了，怎么了？"
+      },
+      "sleep_farewell_message": {
+        "description": "入睡告别消息",
+        "hint": "清醒待机结束、继续入睡时告知主人的一句话（零 token）。留空 = 安静入睡不告知。",
+        "type": "string",
+        "default": ""
+      },
       "wake_source": {
         "description": "吵醒计数来源",
         "hint": "all=所有消息都算吵（群聊里别人聊天也算）；owner_only=只数主人（需配置 owner_id）。",

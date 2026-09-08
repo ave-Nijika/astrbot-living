@@ -246,29 +246,60 @@ class LivingLoop:
         """带详情的心跳：/living_wake 命令用反馈给主人（唤醒/拦截原因）。"""
         now = now or datetime.now()
 
-        # 睡眠状态跟踪（任务书 B2/B5）：入睡写睡前回顾，醒来掷梦
+        # 睡眠状态跟踪（任务书 B2/B5 + 补丁 II 三）：入睡写睡前回顾、
+        # 醒来掷梦、状态翻转打 INFO 日志（只在翻转时打，不是每次心跳）。
+        # "在睡" = 休眠窗内且不在清醒待机——被吵醒进待机后不算在睡。
         try:
             in_window = self._gate.in_sleep_window(now)
         except Exception:
             in_window = False
-        if in_window and not self._asleep:
+        standby_active = self._gate.awake_standby_active(now)
+        asleep_now = in_window and not standby_active
+
+        # 待机刚过期（补丁 II 三）：清除待机；仍在休眠窗内则发入睡告别
+        try:
+            standby_expired = await self._gate.consume_standby_expiry(now)
+        except Exception:
+            standby_expired = False
+        if standby_expired:
+            logger.info("[LivingLoop] 清醒待机结束")
+            if in_window:
+                await self._send_sleep_farewell(now)
+
+        if asleep_now and not self._asleep:
             self._asleep = True
+            self._log_sleep_entry(now)
             await self._write_bedtime_review(now)
         elif not in_window and self._asleep:
+            # 自然出窗：休眠结束（被吵醒导致的翻转在 woken 分支里消化）
             self._asleep = False
             self._pending_dream = True  # 自然醒，醒来也许有梦
+            logger.info("[LivingLoop] 休眠结束，恢复正常活动")
+        elif standby_active and self._asleep:
+            # 被吵醒进入待机：翻转在这里消化（"休眠结束"日志不出，
+            # 唤醒日志由 woken 分支负责）
+            self._asleep = False
 
         allow, reason = await self._gate.should_wake(now, force=force)
         if not allow:
             return False, reason, None
 
         if reason == "woken_from_sleep":
-            # 吵醒结算（任务书 B3）：起床气 + 睡眠债，然后带着情绪醒来
+            # 吵醒结算（任务书 B3）：起床气 + 睡眠债，然后带着情绪醒来；
+            # 随后进入清醒待机（补丁 II 一）并立刻回主人一句确认（补丁 II 二）
             if self._sleep_manager is not None:
                 try:
                     await self._sleep_manager.apply_woken_in_sleep(now)
                 except Exception as e:
                     logger.warning(f"[LivingLoop] 吵醒结算失败（不影响唤醒）: {e}")
+                try:
+                    minutes = await self._sleep_manager.begin_standby(now)
+                    logger.info(
+                        f"[LivingLoop] 被连续消息唤醒，进入清醒待机 {minutes:.0f} 分钟"
+                    )
+                except Exception as e:
+                    logger.warning(f"[LivingLoop] 进入待机失败: {e}")
+                await self._send_wake_ack()
             self._pending_dream = True
 
         result = await self.run_activity_cycle(now=now)
@@ -278,6 +309,72 @@ class LivingLoop:
             self._pending_dream = False
             await self._maybe_dream(now)
         return True, reason, activity_name
+
+    def _log_sleep_entry(self, now: datetime) -> None:
+        """进入休眠的 INFO 日志（任务书附加：状态切换可观测）。"""
+        window_raw = str(
+            _conf_group(self._config_getter(), "sleep").get("sleep_window", "") or ""
+        )
+        quiet_until = (
+            window_raw.split("-")[-1].strip() if "-" in window_raw else "?"
+        )
+        logger.info(
+            f"[LivingLoop] 进入休眠（窗口 {window_raw or '?'}），静默至 {quiet_until}"
+        )
+
+    async def _send_wake_ack(self) -> None:
+        """唤醒确认消息（补丁 II 二）：零延迟回主人一句，纯 sender 零 token。
+
+        发往触发吵醒的最后一个会话；留空配置/无会话/发送失败一律静默
+        （WARNING），不影响后续活动周期。
+        """
+        ack = str(
+            _conf_group(self._config_getter(), "sleep").get("wake_ack_message", "")
+            or ""
+        ).strip()
+        if not ack:
+            return
+        session = (
+            self._sleep_manager.last_wake_session
+            if self._sleep_manager is not None
+            else None
+        )
+        if not session or self._sender is None:
+            return
+        try:
+            sent = await self._sender.send(session, ack)
+            if not sent:
+                logger.warning("[LivingLoop] 唤醒确认消息未送达（无匹配平台）")
+        except Exception as e:
+            logger.warning(f"[LivingLoop] 唤醒确认消息发送失败: {e}")
+
+    async def _send_sleep_farewell(self, now: datetime) -> None:
+        """入睡告别消息（补丁 II 三）：待机结束且仍在休眠窗内时告知主人。
+
+        默认配置为空 = 安静入睡（自然回落语义）；发往待机期最后活跃
+        会话；失败静默。纯 sender 零 token。
+        """
+        farewell = str(
+            _conf_group(self._config_getter(), "sleep").get(
+                "sleep_farewell_message", ""
+            )
+            or ""
+        ).strip()
+        if not farewell:
+            return
+        session = (
+            self._sleep_manager.last_active_session
+            if self._sleep_manager is not None
+            else None
+        )
+        if not session or self._sender is None:
+            return
+        try:
+            sent = await self._sender.send(session, farewell)
+            if not sent:
+                logger.warning("[LivingLoop] 入睡告别消息未送达（无匹配平台）")
+        except Exception as e:
+            logger.warning(f"[LivingLoop] 入睡告别消息发送失败: {e}")
 
     async def _write_bedtime_review(self, now: datetime) -> None:
         """睡前回顾（任务书 B2）：把今天的活动记忆聚成一句话存起来。

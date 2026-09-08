@@ -57,6 +57,10 @@ def test_conf_schema_valid_and_groups_complete():
     assert sleep_items["wake_source"]["options"] == ["all", "owner_only"]
     assert sleep_items["dream_probability"]["default"] == 0.3
     assert "owner_id" in sleep_items
+    # M3 补丁 II：清醒待机与确认/告别消息
+    assert sleep_items["awake_standby_minutes"]["default"] == 30
+    assert sleep_items["wake_ack_message"]["default"] == "醒了，怎么了？"
+    assert sleep_items["sleep_farewell_message"]["default"] == ""
     assert schema["decision"]["items"]["agent_activities"]["type"] == "list"
     assert schema["decision"]["items"]["agent_activities"]["default"] == [
         "surf", "read", "game"

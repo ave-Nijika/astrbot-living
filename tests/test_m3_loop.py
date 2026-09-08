@@ -31,10 +31,13 @@ class FakeGate:
         self.allow = allow
         self.reason = reason
         self.in_sleep = in_sleep
+        self.standby = False
         self.calls = []  # (now, force)
 
     async def should_wake(self, now=None, force=False):
         self.calls.append((now, force))
+        if self.standby:
+            return (True, "ok") if force else (self.allow, self.reason)
         if self.in_sleep:
             if force:
                 return True, "woken_from_sleep"
@@ -43,6 +46,15 @@ class FakeGate:
 
     def in_sleep_window(self, now=None):
         return self.in_sleep
+
+    def awake_standby_active(self, now=None):
+        return self.standby
+
+    async def consume_standby_expiry(self, now=None):
+        return False
+
+    async def refresh_awake_until(self, minutes, now=None):
+        self.standby = True
 
     async def should_send_message(self, now=None):
         return False, "blocked"

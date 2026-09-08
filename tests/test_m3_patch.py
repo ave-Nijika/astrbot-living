@@ -328,6 +328,12 @@ def _make_plugin_with_ctx(tmp_path):
 # 问题 2：LLM 错误文本不进记忆
 # ---------------------------------------------------------------------------
 class FakeGate2:
+    def awake_standby_active(self, now=None):
+        return False
+
+    async def consume_standby_expiry(self, now=None):
+        return False
+
     async def should_wake(self, now=None, force=False):
         return True, "ok"
 
