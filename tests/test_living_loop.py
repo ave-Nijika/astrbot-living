@@ -70,7 +70,7 @@ class FakeMemory:
         self.added = []
         self.error = error
 
-    async def add(self, content, importance=0.5, metadata=None):
+    async def add(self, content, importance=0.5, metadata=None, **kwargs):
         if self.error:
             raise self.error
         self.added.append((content, importance))

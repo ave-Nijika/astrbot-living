@@ -50,7 +50,7 @@ class FakeMemory:
     def __init__(self):
         self.added = []
 
-    async def add(self, content, importance=0.5, metadata=None):
+    async def add(self, content, importance=0.5, metadata=None, **kwargs):
         self.added.append((content, importance))
         return len(self.added)
 

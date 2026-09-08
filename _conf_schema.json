@@ -234,6 +234,12 @@
         "hint": "强烈建议配置一个与聊天模型不同的 provider，避免自主活动烧聊天模型的额度。留空则回退到默认聊天模型。",
         "type": "string",
         "default": ""
+      },
+      "fallback_chain": {
+        "description": "模型故障转移链",
+        "hint": "按顺序尝试的 provider id 列表；链尾会自动兜底全部已启用的聊天模型。默认聊天模型 404/限流/超时时自动切换，全部失败才算活动失败。",
+        "type": "list",
+        "default": []
       }
     }
   },
