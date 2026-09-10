@@ -654,12 +654,21 @@ class LivingLoop:
             importance = 0.2
         # 心境调节后的重要度仍要钳在合理区间
         importance = max(0.0, min(1.0, importance + importance_adjust))
+        # 任务书 M3 补丁 III：topics 随 metadata 进 LivingMemory——图谱提取
+        # 器（_extract_legacy）靠它生成 topic 节点与 describes 边；失败路径
+        # outcome 为 None → 空 metadata → 裸 fact（失败记忆低价值，孤立可接受）
+        metadata = (
+            {"topics": outcome.topics}
+            if outcome is not None and outcome.topics
+            else {}
+        )
         try:
             memory = await self._get_memory()
             await asyncio.wait_for(
                 memory.add(
                     content,
                     importance=importance,
+                    metadata=metadata,
                     # 任务书问题 3：带上会话与人格上下文——LivingMemory 的
                     # 图谱提取器靠它们生成参与者边，传 None 只会得到孤立节点。
                     # 幽灵事件的 uwo 是自主活动记忆在图谱里的"家"

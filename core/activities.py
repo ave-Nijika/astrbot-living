@@ -73,13 +73,19 @@ class ActivityContext:
 
 @dataclass
 class ActivityOutcome:
-    """活动产出。summary 是"想说的话"（候选发送），memory_content 是要写的记忆。"""
+    """活动产出。summary 是"想说的话"（候选发送），memory_content 是要写的记忆。
+
+    topics 是本次活动涉及的主题词列表，随 metadata 进 LivingMemory——
+    图谱提取器（_extract_legacy）靠它生成 topic 节点和 describes 边，
+    不传的话记忆在图谱里就是孤立 fact（M3 补丁 III 根因）。
+    """
 
     name: str
     summary: str | None = None
     memory_content: str | None = None
     importance: float = 0.5
     agent_mode: bool = False
+    topics: list[str] | None = None
 
 
 class Activity(ABC):
@@ -111,6 +117,12 @@ class Activity(ABC):
         value = str((ctx.params or {}).get(key, "") or "").strip()
         return value
 
+    def agent_topics(self, ctx: ActivityContext) -> list[str] | None:
+        """agent 模式产出的主题词：从决策 params 里取偏好（脚本模式由
+        各活动给更精确的值——搜索主题/游戏名是当场才知道的）。"""
+        hint = self._params_hint(ctx, "topic") or self._params_hint(ctx, "style")
+        return [hint] if hint else None
+
     async def _try_agent_mode(self, ctx: ActivityContext) -> ActivityOutcome | None:
         """执行 agent 模式。返回 None = 回退脚本模式。"""
         intent = self.agent_intent(ctx)
@@ -141,6 +153,7 @@ class Activity(ABC):
                 memory_content=memory,
                 importance=0.3,
                 agent_mode=True,
+                topics=self.agent_topics(ctx),
             )
 
         if not getattr(result, "ok", False) or not text:
@@ -163,6 +176,7 @@ class Activity(ABC):
             memory_content=memory,
             importance=0.5,
             agent_mode=True,
+            topics=self.agent_topics(ctx),
         )
 
 
@@ -196,6 +210,7 @@ class SurfActivity(Activity):
                 f"{ctx.date_prefix()}我搜了「{topic}」，看到《{first}》，"
                 f"有点好奇后面讲了什么。"
             ),
+            topics=[topic],
         )
 
 
@@ -231,6 +246,7 @@ class ReadArticleActivity(Activity):
                 f"{ctx.date_prefix()}我读了《{title}》"
                 f"（搜「{topic}」找到的），印象最深的是：{digest}……"
             ),
+            topics=[topic],
         )
 
 
@@ -276,6 +292,10 @@ class MiniGameActivity(Activity):
     description = "写个小游戏自己玩：写一段秒级小游戏代码丢进沙箱试玩"
     supports_agent = True
 
+    def agent_topics(self, ctx: ActivityContext) -> list[str] | None:
+        style = self._params_hint(ctx, "style") or self._params_hint(ctx, "topic")
+        return ["小游戏", style] if style else ["小游戏"]
+
     def agent_intent(self, ctx: ActivityContext) -> str:
         hint = self._params_hint(ctx, "style") or self._params_hint(ctx, "topic")
         style_line = f"风格想法：{hint}。" if hint else "玩法你自己发挥。"
@@ -310,6 +330,7 @@ class MiniGameActivity(Activity):
                 f"{ctx.date_prefix()}我写了个{game_name}的小游戏自己玩，"
                 f"结果：{play_result}。"
             ),
+            topics=["小游戏", game_name],
         )
 
 
@@ -349,6 +370,7 @@ class MemoryBrowsingActivity(Activity):
                     f"翻到一条：{snippet}"
                 ),
                 importance=0.4,
+                topics=["记忆整理"],
             )
         return ActivityOutcome(
             name=self.name,
@@ -356,6 +378,7 @@ class MemoryBrowsingActivity(Activity):
             memory_content=f"{ctx.date_prefix()}我翻了翻自己的记忆，"
             f"发现还空得很，得多经历点事。",
             importance=0.3,
+            topics=["记忆整理"],
         )
 
 
