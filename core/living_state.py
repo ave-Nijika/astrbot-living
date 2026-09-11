@@ -365,6 +365,110 @@ class LivingGate:
         return True, "ok"
 
     # ------------------------------------------------------------------
+    # /living 命令体系支持（任务书 M3 补丁 III-B）
+    # ------------------------------------------------------------------
+    async def daily_limit_info(self, now: datetime | None = None) -> tuple[bool, int, int]:
+        """今日活动上限信息：(是否已达上限, 今日次数, 上限)。
+
+        /living do 用：强制执行可以跳过概率和冷却，但每日上限不能绕过
+        （任务书红线：防刷）。
+        """
+        now = now or datetime.now()
+        config = self._config_getter() or {}
+        state = await self.get_state(now)
+        limit = max(
+            _to_int(_conf_group(config, "decision").get("daily_impulse_limit"), 3), 0
+        )
+        count = state["activity_count"]
+        reached = limit > 0 and count >= limit
+        return reached, count, limit
+
+    async def debug_wake_chain(self, now: datetime | None = None) -> list[tuple[str, str]]:
+        """判定链逐步结果（/living debug 用，只读不改任何持久状态）。
+
+        概率步骤会真实掷一次骰子——它是判定的一部分，debug 展示的就是
+        这次评估的诚实结果。步骤一旦拦下即短路返回（与 should_wake 一致）。
+        """
+        now = now or datetime.now()
+        config = self._config_getter() or {}
+        state = await self.get_state(now)
+        decision = _conf_group(config, "decision")
+        capabilities = _conf_group(config, "capabilities")
+        sleep_cfg = _conf_group(config, "sleep")
+        steps: list[tuple[str, str]] = []
+
+        # 0. 清醒待机
+        if self.awake_standby_active(now):
+            until = (
+                self._awake_until.isoformat(timespec="minutes")
+                if self._awake_until
+                else "?"
+            )
+            steps.append(("清醒待机", f"生效中（至 {until}）→ 跳过休眠判定"))
+        else:
+            steps.append(("清醒待机", "未生效"))
+
+        # 1. 休眠窗口
+        window = parse_time_window(sleep_cfg.get("sleep_window"))
+        raw_window = str(sleep_cfg.get("sleep_window", "") or "")
+        if not window:
+            in_window = False
+            steps.append(("休眠窗口", f"未配置（{raw_window or '空'}）→ 跳过"))
+        else:
+            in_window = in_time_window(now, window)
+            steps.append((
+                "休眠窗口",
+                f"窗口 {raw_window}，当前{'在内' if in_window else '在外'}"
+                + ("→ sleeping" if in_window else ""),
+            ))
+        if in_window:
+            steps.append(("判定结果", "sleeping（休眠窗内，后续步骤不评估）"))
+            return steps
+
+        # 2. 每日活动上限
+        limit = _to_int(decision.get("daily_impulse_limit"), 3)
+        count = state["activity_count"]
+        if limit > 0 and count >= limit:
+            steps.append(("每日上限", f"{count}/{limit} → daily_limit（后续不评估）"))
+            steps.append(("判定结果", "daily_limit"))
+            return steps
+        steps.append(("每日上限", f"{count}/{limit if limit > 0 else '∞'} → 通过"))
+
+        # 3. 冷却
+        cooldown_hours = _to_float(
+            capabilities.get("cooldown_between_activities_hours"), 2.0
+        )
+        last_activity = state["last_activity_at"]
+        if last_activity is not None and cooldown_hours > 0:
+            elapsed_h = (now - last_activity).total_seconds() / 3600
+            if elapsed_h < cooldown_hours:
+                steps.append((
+                    "冷却",
+                    f"距上次 {elapsed_h:.1f}h < {cooldown_hours}h → cooldown（后续不评估）",
+                ))
+                steps.append(("判定结果", "cooldown"))
+                return steps
+            steps.append((
+                "冷却",
+                f"距上次 {elapsed_h:.1f}h ≥ {cooldown_hours}h → 通过",
+            ))
+        else:
+            steps.append(("冷却", "无记录或冷却关闭 → 通过"))
+
+        # 4. 概率掷点
+        probability = _to_float(decision.get("activity_probability"), 0.8)
+        roll = self._rng()
+        steps.append((
+            "概率掷点",
+            f"{roll:.2f} vs {probability:.2f} → {'通过' if roll < probability else 'rolled_off'}",
+        ))
+        steps.append((
+            "判定结果",
+            "ok（可以动起来）" if roll < probability else "rolled_off",
+        ))
+        return steps
+
+    # ------------------------------------------------------------------
     # 记账
     # ------------------------------------------------------------------
     async def note_activity_started(self, now: datetime | None = None) -> None:
