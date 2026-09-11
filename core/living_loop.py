@@ -95,6 +95,9 @@ class LivingLoop:
         self._task: asyncio.Task | None = None
         self._watcher_task: asyncio.Task | None = None
         self._last_activity_name: str | None = None
+        # /living pause：暂停的是"判定与活动"，心跳任务和定时器继续跑——
+        # 这样 resume 立刻生效，也不会丢掉配置变更等事件
+        self._paused = False
         # 双事件（任务书 A1）：配置变更重置定时器；手动/吵醒唤醒触发判定
         self._config_event = asyncio.Event()
         self._wake_event = asyncio.Event()
@@ -144,6 +147,25 @@ class LivingLoop:
             with suppress(asyncio.CancelledError):
                 await task
         logger.info("[LivingLoop] 主循环已停止")
+
+    async def pause(self) -> None:
+        """/living pause：暂停判定与活动（幂等）。心跳任务保持运行，
+        定时器照常转，唤醒/配置事件照常接收——只是不判定不活动。"""
+        if self._paused:
+            return
+        self._paused = True
+        logger.info("[LivingLoop] 已暂停（心跳保持，判定跳过）")
+
+    async def resume(self) -> None:
+        """/living resume：恢复判定（幂等）。"""
+        if not self._paused:
+            return
+        self._paused = False
+        logger.info("[LivingLoop] 已恢复")
+
+    @property
+    def paused(self) -> bool:
+        return self._paused
 
     async def _config_watcher(self) -> None:
         """配置变更兜底检测（任务书 A4）：每 5 秒序列化比对一次。
@@ -201,6 +223,16 @@ class LivingLoop:
                 task.cancel()
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
+
+            if self._paused:
+                # /living pause：定时器照常转，判定与活动全部跳过。
+                # 事件照常消费（清掉），避免 resume 后旧事件突然触发
+                if wake_wait in done:
+                    self._wake_event.clear()
+                if config_wait in done:
+                    self._config_event.clear()
+                logger.debug("[LivingLoop] 暂停中，跳过本轮判定")
+                continue
 
             if wake_wait in done:
                 # 手动/吵醒唤醒：触发一次 force 判定（概率豁免、约束保留）
@@ -405,6 +437,7 @@ class LivingLoop:
             await memory.add(
                 review,
                 importance=0.6,
+                metadata={"topics": ["睡前回顾"]},
                 session_id=self._session_id(None),
                 persona_id=await self._persona_id(),
             )
@@ -466,13 +499,45 @@ class LivingLoop:
         logger.info("[LivingLoop] 醒来做了个梦（已写入记忆）")
         await self._maybe_share(f"我好像做了个梦：{dream}", now)
 
-    async def run_activity_cycle(self, now: datetime | None = None) -> dict:
-        """一次完整活动周期：起念 → 活动 → 记忆（双路径）→ 收账 → 候选分享。"""
+    async def run_activity_cycle(
+        self,
+        now: datetime | None = None,
+        force_activity: str | None = None,
+        force_topic: str | None = None,
+    ) -> dict:
+        """一次完整活动周期：起念 → 活动 → 记忆（双路径）→ 收账 → 候选分享。
+
+        force_activity（/living do）：跳过决策与随机选择，直接执行指定活动；
+        force_topic 覆盖主题词。跳过概率与冷却（主人说了就做），但**每日
+        上限照拦**（红线：防刷）——拦下时不消耗配额。
+        """
         now = now or datetime.now()
         activity_id = now.strftime("%Y%m%d_%H%M%S")
         # 幽灵事件（M0-R0 结论）：M1 活动直接调能力用不到它，但它是 M2 接入
         # tool_loop_agent 的唯一合法事件形态，构造好放进活动上下文。
         ghost_event = build_ghost_event(session_id=f"living_{activity_id}")
+
+        forced = None
+        if force_activity:
+            forced = next(
+                (a for a in self._activities if a.name == force_activity), None
+            )
+            if forced is None:
+                known = "/".join(a.name for a in self._activities)
+                return {
+                    "activity": force_activity, "ok": False,
+                    "error": f"未知活动 {force_activity!r}（可选: {known}）",
+                }
+            # 每日上限是 force 也碰不了的红线（任务书：防刷）
+            reached, count, limit = await self._gate.daily_limit_info(now)
+            if reached:
+                logger.info(
+                    f"[LivingLoop] /living do 被每日上限拦下（{count}/{limit}）"
+                )
+                return {
+                    "activity": force_activity, "ok": False,
+                    "error": f"daily_limit（{count}/{limit}）",
+                }
 
         # 记忆后端先就位：它挂了的话活动没法写记忆，这轮直接放弃（不耗配额）
         try:
@@ -482,7 +547,11 @@ class LivingLoop:
             return {"activity": None, "ok": False, "error": "memory_unavailable"}
 
         await self._gate.note_activity_started(now)
-        activity, params = await self._choose_activity(now)
+        if forced is not None:
+            activity = forced
+            params = {"topic": force_topic} if force_topic else {}
+        else:
+            activity, params = await self._choose_activity(now)
         logger.info(f"[LivingLoop] 活动开始 name={activity.name} id={activity_id}")
 
         ctx = ActivityContext(
@@ -567,6 +636,10 @@ class LivingLoop:
             "ok": error_note is None,
             "error": error_note,
         }
+
+    @property
+    def activity_names(self) -> list[str]:
+        return [a.name for a in self._activities]
 
     def _agent_callable(self, activity_name: str) -> Callable[..., Any] | None:
         """按配置 decision.agent_activities 决定该活动是否走 agent 模式

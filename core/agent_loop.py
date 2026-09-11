@@ -112,9 +112,16 @@ class LivingAgentLoop:
         self._persona_getter = persona_getter
         self._life_extra_getter = life_extra_getter
         self._mood = mood
+        # 最近一次循环的结算（/living debug 展示 token 统计用）
+        self.last_result: AgentRunResult | None = None
 
     # ------------------------------------------------------------------
     async def run(self, intent: str) -> AgentRunResult:
+        result = await self._run_chain(intent)
+        self.last_result = result
+        return result
+
+    async def _run_chain(self, intent: str) -> AgentRunResult:
         """按故障转移链执行 agent 循环（任务书 M3-补丁 问题 1）。
 
         预算语义（红线：token 硬闸不变）：预算是**整个活动的**——链上多次
