@@ -91,7 +91,8 @@ def test_clamps_on_repeated_updates(tmp_path):
 
     low_valence, low_energy, interests = asyncio.run(flow())
     assert low_valence == pytest.approx(-1.0)
-    assert low_energy == 0.0
+    # 补丁 IV-B3：精力有保底 0.05，绝不触底为 0（防"永远不动"死锁）
+    assert low_energy == pytest.approx(0.05)
     assert interests["咖啡"] == pytest.approx(1.0)
 
 
