@@ -35,7 +35,10 @@ def test_conf_schema_valid_and_groups_complete():
     # 关键默认值抽查（总纲：默认保守）
     assert schema["decision"]["items"]["daily_impulse_limit"]["default"] == 3
     assert schema["decision"]["items"]["activity_probability"]["default"] == 0.8
-    assert schema["decision"]["items"]["impulse_check_interval_minutes"]["default"] == 45
+    # M3 补丁 IV：判定零 API 消耗，心跳默认提频到 5 分钟，频率由无聊曲线控制
+    assert schema["decision"]["items"]["impulse_check_interval_minutes"]["default"] == 5
+    assert schema["decision"]["items"]["activity_probability_min"]["default"] == 0.1
+    assert schema["decision"]["items"]["activity_probability_ramp_minutes"]["default"] == 60
     assert schema["decision"]["items"]["max_run_seconds"]["default"] == 300
     assert schema["decision"]["items"]["decision_mode"]["options"] == [
         "rules", "hybrid", "llm"

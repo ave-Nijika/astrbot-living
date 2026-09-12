@@ -11,6 +11,7 @@ R0 风险验证结论（2026-09-07 实测，详见 docs/archive/m0_report.md）�
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from typing import Any
 
@@ -183,6 +184,49 @@ class LivingPlugin(Star):
             return text
         return None
 
+    def _bot_identity(self) -> dict | None:
+        """bot 自己的身份（M3 补丁 IV-B2：participant_identities 原料）。
+
+        全部从 AstrBot 平台配置/实例动态取，不硬编码 persona 名或平台名——
+        换平台/换账号自动适配。提取链（全防御式，任何一步缺失即降级）：
+          platform_id  = inst.meta().id
+          bot_id       = inst.config 的 self_id/account_id → client_self_id → platform_id
+          display_name = 配置 bot_name → 唤醒昵称第一项 → platform_id
+        取不到任何平台实例时返回 None（记忆照写，只是没有参与者边）。
+        """
+        try:
+            manager = getattr(self.context, "platform_manager", None)
+            insts = getattr(manager, "platform_insts", None) or []
+            inst = insts[0] if insts else None
+            if inst is None:
+                return None
+            meta = inst.meta()
+            platform_name = str(getattr(meta, "name", "") or meta.id)
+            platform_id = str(meta.id)
+
+            inst_config = getattr(inst, "config", None) or {}
+            bot_id = (
+                inst_config.get("self_id")
+                or inst_config.get("account_id")
+                or getattr(inst, "client_self_id", None)
+                or platform_id
+            )
+            bot_name = (
+                self.config.get("bot_name")
+                or (self.config.get("nickname") or [""])[0]
+                or platform_id
+            )
+            bot_id = str(bot_id)
+            return {
+                "identity_key": f"{platform_id}:{bot_id}",
+                "sender_id": bot_id,
+                "platform": platform_name,
+                "display_name": str(bot_name),
+                "is_bot": True,
+            }
+        except Exception:
+            return None
+
     async def _persona_id(self) -> str:
         """当前生效 persona 的 id（问题 3：记忆图谱的参与者边原料）。
 
@@ -307,6 +351,9 @@ class LivingPlugin(Star):
             agent_loop=agent_loop,
             dream_llm_call=self._decision_llm_call,
             persona_id_getter=self._persona_id,
+            bot_identity_getter=lambda: asyncio.get_running_loop().run_in_executor(
+                None, self._bot_identity
+            ),
         )
         await self.loop.start()
 

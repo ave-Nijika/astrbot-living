@@ -86,6 +86,30 @@ def _conf_group(config: Any, group: str) -> dict:
         return {}
 
 
+def boredom_probability(
+    base_prob: float,
+    min_prob: float,
+    ramp_minutes: float,
+    cooldown_hours: float,
+    last_activity_at: datetime | None,
+    now: datetime,
+) -> float:
+    """无聊曲线（任务书 M3 补丁 IV-A）：冲动概率随空闲时长递增。
+
+    冷却刚结束（t=0）→ min_prob（不太想动）；空闲每多一分钟向 base_prob
+    爬一点，爬满 ramp_minutes 后恒为 base_prob（很无聊了）。没有上次活动
+    记录（刚来到世界/重启后无账本）视为已经很闲 → 直接 base_prob。
+    """
+    base_prob = max(0.0, min(1.0, base_prob))
+    min_prob = max(0.0, min(base_prob, min_prob))  # 配错 min>base 时收敛到 base
+    if last_activity_at is None or ramp_minutes <= 0:
+        return base_prob
+    cooldown_min = max(cooldown_hours, 0.0) * 60.0
+    elapsed_min = max((now - last_activity_at).total_seconds(), 0.0) / 60.0
+    t = max(0.0, min(1.0, (elapsed_min - cooldown_min) / ramp_minutes))
+    return min_prob + (base_prob - min_prob) * t
+
+
 class LivingGate:
     """状态闸门。所有判定方法接受注入的 now（可测试），默认取本地时间。"""
 
@@ -295,11 +319,21 @@ class LivingGate:
             if elapsed < cooldown_hours * 3600:
                 return False, "cooldown"
 
-        # 4. 概率掷点：让"动不动"带点随机，不像闹钟。手动唤醒豁免——
-        #    主人都来叫了，还掷骰子就太不识趣了
+        # 4. 概率掷点：无聊曲线（补丁 IV-A）——越久没做事越"无聊"，
+        #    概率从 min_prob 爬向 base_prob。手动唤醒豁免——主人都来叫了，
+        #    还掷骰子就太不识趣了
         if force:
             return True, "ok"
-        probability = _to_float(decision.get("activity_probability"), 0.8)
+        probability = boredom_probability(
+            base_prob=_to_float(decision.get("activity_probability"), 0.8),
+            min_prob=_to_float(decision.get("activity_probability_min"), 0.1),
+            ramp_minutes=_to_float(
+                decision.get("activity_probability_ramp_minutes"), 60
+            ),
+            cooldown_hours=cooldown_hours,
+            last_activity_at=last_activity,
+            now=now,
+        )
         if self._rng() < probability:
             return True, "ok"
         return False, "rolled_off"
@@ -455,11 +489,22 @@ class LivingGate:
         else:
             steps.append(("冷却", "无记录或冷却关闭 → 通过"))
 
-        # 4. 概率掷点
-        probability = _to_float(decision.get("activity_probability"), 0.8)
+        # 4. 概率掷点（无聊曲线）
+        probability = boredom_probability(
+            base_prob=_to_float(decision.get("activity_probability"), 0.8),
+            min_prob=_to_float(decision.get("activity_probability_min"), 0.1),
+            ramp_minutes=_to_float(
+                decision.get("activity_probability_ramp_minutes"), 60
+            ),
+            cooldown_hours=_to_float(
+                capabilities.get("cooldown_between_activities_hours"), 2.0
+            ),
+            last_activity_at=state.get("last_activity_at"),
+            now=now,
+        )
         roll = self._rng()
         steps.append((
-            "概率掷点",
+            "概率掷点（无聊曲线）",
             f"{roll:.2f} vs {probability:.2f} → {'通过' if roll < probability else 'rolled_off'}",
         ))
         steps.append((

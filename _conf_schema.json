@@ -12,15 +12,27 @@
       },
       "impulse_check_interval_minutes": {
         "description": "冲动检查间隔（分钟）",
-        "hint": "主循环每隔多少分钟做一次'要不要干点什么'的检查。",
+        "hint": "主循环每隔多少分钟做一次'要不要干点什么'的检查。判定是纯内存/SQLite 读，零 API 消耗；活动频率实际由无聊曲线控制，心跳可以调得很勤。",
         "type": "int",
-        "default": 45
+        "default": 5
       },
       "activity_probability": {
-        "description": "冲动通过概率（0-1）",
-        "hint": "过了所有限制后，以该概率决定这次是否真的动起来——让生活有随机性，不像闹钟。",
+        "description": "冲动最高概率（0-1）",
+        "hint": "无聊曲线的封顶值：闲得越久越接近这个概率，过了封顶时间后恒定。",
         "type": "float",
         "default": 0.8
+      },
+      "activity_probability_min": {
+        "description": "冲动最低概率（0-1）",
+        "hint": "无聊曲线的起点：冷却刚结束时用这个低概率，避免刚忙完又立刻想动。",
+        "type": "float",
+        "default": 0.1
+      },
+      "activity_probability_ramp_minutes": {
+        "description": "无聊曲线爬升时间（分钟）",
+        "hint": "从最低概率爬升到最高概率所需的时间（自冷却结束起算）。0 = 不爬升，直接用最高概率。",
+        "type": "float",
+        "default": 60
       },
       "daily_impulse_limit": {
         "description": "每日冲动上限",

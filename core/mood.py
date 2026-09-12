@@ -36,6 +36,12 @@ NEUTRAL_INTEREST = 0.3  # interest_weight 对无记录主题的中性值
 VALENCE_MIN, VALENCE_MAX = -1.0, 1.0
 UNIT_MIN, UNIT_MAX = 0.0, 1.0
 FATIGUE_MIN, FATIGUE_MAX = 0.0, 100.0
+# 精力保底（任务书 M3 补丁 IV-B3）：energy 允许被消耗但绝不触底为 0——
+# 0 意味着"永远动不了"的死锁；保底相当于"再累也还剩一口气"
+ENERGY_FLOOR = 0.05
+# 兴趣清理阈值（任务书 M3 补丁 IV-B4）：每日衰减后低于它的条目直接删除，
+# 防止 interests 字典随时间无限膨胀
+INTEREST_PRUNE_THRESHOLD = 0.01
 # 每日恢复量：一夜安睡大致抵掉大半疲惫，但睡眠债高的人醒来仍带倦意
 DAILY_FATIGUE_RECOVERY = 60.0
 DELTA_AROUSAL_OK = 0.05  # 活动成功的兴奋值（M2 挂点兑现）
@@ -127,8 +133,8 @@ class MoodState:
             FATIGUE_MIN,
             FATIGUE_MAX,
         )
-        self.energy = _clamp(
-            _to_float(await self._get_raw("energy"), 0.8), UNIT_MIN, self._energy_cap()
+        self.energy = self._clamp_energy(
+            _to_float(await self._get_raw("energy"), 0.8)
         )
         self.fatigue = _clamp(
             _to_float(await self._get_raw("fatigue"), 0.0), FATIGUE_MIN, FATIGUE_MAX
@@ -193,15 +199,13 @@ class MoodState:
         """活动结束后由 LivingLoop 调用：心情/精力/兴趣/疲惫按规则演化。"""
         if ok:
             self.valence = _clamp(self.valence + DELTA_VALENCE_OK, VALENCE_MIN, VALENCE_MAX)
-            self.energy = _clamp(self.energy + DELTA_ENERGY_OK, UNIT_MIN, self._energy_cap())
+            self.energy = self._clamp_energy(self.energy + DELTA_ENERGY_OK)
             self.arousal = _clamp(self.arousal + DELTA_AROUSAL_OK, UNIT_MIN, UNIT_MAX)
         else:
             self.valence = _clamp(
                 self.valence + DELTA_VALENCE_FAIL, VALENCE_MIN, VALENCE_MAX
             )
-            self.energy = _clamp(
-                self.energy + DELTA_ENERGY_FAIL, UNIT_MIN, self._energy_cap()
-            )
+            self.energy = self._clamp_energy(self.energy + DELTA_ENERGY_FAIL)
 
         if ok:
             if activity_name in INTEREST_TOPIC_ACTIVITIES and topic:
@@ -224,6 +228,10 @@ class MoodState:
         第二天做什么都提不起十足的劲。"""
         return _clamp(1.0 - self.sleep_debt / 200.0, 0.5, 1.0)
 
+    def _clamp_energy(self, value: float) -> float:
+        """energy 的统一钳制：上限受睡眠债压制，下限是保底值而非 0。"""
+        return _clamp(value, ENERGY_FLOOR, self._energy_cap())
+
     def apply_grouchiness(self, enabled: bool) -> bool:
         """被吵醒的起床气（任务书 B3）：命中概率时 valence/energy 双降。
 
@@ -235,9 +243,7 @@ class MoodState:
         self.valence = _clamp(
             self.valence + DELTA_GROUCHY_VALENCE, VALENCE_MIN, VALENCE_MAX
         )
-        self.energy = _clamp(
-            self.energy + DELTA_GROUCHY_ENERGY, UNIT_MIN, self._energy_cap()
-        )
+        self.energy = self._clamp_energy(self.energy + DELTA_GROUCHY_ENERGY)
         return True
 
     def add_sleep_debt(self, amount: float) -> None:
@@ -256,10 +262,17 @@ class MoodState:
         self.interests[topic] = _clamp(current + delta, UNIT_MIN, UNIT_MAX)
 
     def decay_interests(self, rate: float) -> None:
-        """全体兴趣乘以 rate（0<rate<=1）。"""
-        self.interests = {
-            k: _clamp(v * rate, UNIT_MIN, UNIT_MAX) for k, v in self.interests.items()
-        }
+        """全体兴趣乘以 rate（0<rate<=1）；衰减后低于阈值的条目直接删除。
+
+        为什么删除而不是留着：低于 0.01 的兴趣对决策权重毫无影响，留着只
+        会让字典随时间无限膨胀（任务书 M3 补丁 IV-B4）。
+        """
+        pruned = {}
+        for key, value in self.interests.items():
+            decayed = _clamp(value * rate, UNIT_MIN, UNIT_MAX)
+            if decayed >= INTEREST_PRUNE_THRESHOLD:
+                pruned[key] = decayed
+        self.interests = pruned
 
     def get_interests(self) -> dict[str, float]:
         return dict(self.interests)

@@ -29,6 +29,7 @@ from astrbot.api import logger
 from .activities import Activity, ActivityContext, ActivityOutcome, default_activities
 from .ghost_event import build_ghost_event
 from .llm_failover import looks_like_llm_error_output
+from .secrets_redact import redact_secrets
 
 DEFAULT_CHECK_INTERVAL_MIN = 45.0
 DEFAULT_MAX_RUN_SECONDS = 300.0
@@ -73,6 +74,7 @@ class LivingLoop:
         agent_loop: Any = None,
         dream_llm_call: Callable[..., Any] | None = None,
         persona_id_getter: Callable[..., Any] | None = None,
+        bot_identity_getter: Callable[..., Any] | None = None,
     ) -> None:
         self._gate = gate
         self._get_memory = memory_getter
@@ -92,6 +94,12 @@ class LivingLoop:
         self._dream_llm_call = dream_llm_call
         # M3 补丁：记忆写入时携带 persona id（问题 3，图谱参与者边的原料）
         self._persona_id_getter = persona_id_getter
+        # M3 补丁 IV-B2：bot 身份（图谱 participant_identities 的原料），
+        # 由 main 注入动态提取函数，loop 自己不碰平台配置
+        self._bot_identity_getter = bot_identity_getter
+        # M3 补丁 IV-B1：活动周期互斥锁——心跳与 /living do 可能并发进入
+        # 周期，双周期同时写记忆/同时调 LLM 既浪费 token 又可能数据竞争
+        self._cycle_lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
         self._watcher_task: asyncio.Task | None = None
         self._last_activity_name: str | None = None
@@ -211,14 +219,25 @@ class LivingLoop:
                 ),
                 1440.0,
             )
-            # 双事件等待（任务书 A1）：任一事件或超时都会打断睡眠
+            # 双事件等待（任务书 A1）：任一事件或超时都会打断睡眠。
+            # 独立审计项 3：asyncio.wait 自身被取消（如 stop()）时**不会**
+            # 自动取消内层 task——必须在这里兜底取消，否则两个 event.wait
+            # 协程会以 pending 状态泄漏到事件循环关闭
             config_wait = asyncio.ensure_future(self._config_event.wait())
             wake_wait = asyncio.ensure_future(self._wake_event.wait())
-            done, pending = await asyncio.wait(
-                {config_wait, wake_wait},
-                timeout=interval_min * 60,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
+            try:
+                done, pending = await asyncio.wait(
+                    {config_wait, wake_wait},
+                    timeout=interval_min * 60,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            except asyncio.CancelledError:
+                for task in (config_wait, wake_wait):
+                    task.cancel()
+                await asyncio.gather(
+                    config_wait, wake_wait, return_exceptions=True
+                )
+                raise
             for task in pending:
                 task.cancel()
             if pending:
@@ -510,7 +529,23 @@ class LivingLoop:
         force_activity（/living do）：跳过决策与随机选择，直接执行指定活动；
         force_topic 覆盖主题词。跳过概率与冷却（主人说了就做），但**每日
         上限照拦**（红线：防刷）——拦下时不消耗配额。
+
+        M3 补丁 IV-B1：全程持有互斥锁——心跳与 /living do 并发调用时排队
+        串行，杜绝双周期同时写记忆/同时调 LLM。
         """
+        async with self._cycle_lock:
+            return await self._run_activity_cycle_locked(
+                now=now,
+                force_activity=force_activity,
+                force_topic=force_topic,
+            )
+
+    async def _run_activity_cycle_locked(
+        self,
+        now: datetime | None = None,
+        force_activity: str | None = None,
+        force_topic: str | None = None,
+    ) -> dict:
         now = now or datetime.now()
         activity_id = now.strftime("%Y%m%d_%H%M%S")
         # 幽灵事件（M0-R0 结论）：M1 活动直接调能力用不到它，但它是 M2 接入
@@ -727,14 +762,22 @@ class LivingLoop:
             importance = 0.2
         # 心境调节后的重要度仍要钳在合理区间
         importance = max(0.0, min(1.0, importance + importance_adjust))
+        # 独立审计项 4：失败详情可能带密钥形态的敏感串（openai 异常携带的
+        # 请求信息等），写记忆前统一脱敏——记忆库会进决策 prompt，泄漏进去
+        # 就是长期隐患
+        content = redact_secrets(content)
         # 任务书 M3 补丁 III：topics 随 metadata 进 LivingMemory——图谱提取
         # 器（_extract_legacy）靠它生成 topic 节点与 describes 边；失败路径
-        # outcome 为 None → 空 metadata → 裸 fact（失败记忆低价值，孤立可接受）
-        metadata = (
-            {"topics": outcome.topics}
-            if outcome is not None and outcome.topics
-            else {}
-        )
+        # outcome 为 None → 无 topics → 裸 fact（失败记忆低价值，孤立可接受）
+        metadata: dict = {}
+        if outcome is not None and outcome.topics:
+            metadata["topics"] = outcome.topics
+        # M3 补丁 IV-B2：participant_identities——给记忆挂上 bot 的 person
+        # 节点原料，EntityResolver 会把它与原生对话记忆的同名身份映射到
+        # 同一节点，插件记忆集群由此桥接进主图谱（不再孤立）
+        identity = await self._bot_identity()
+        if identity:
+            metadata["participant_identities"] = [identity]
         try:
             memory = await self._get_memory()
             await asyncio.wait_for(
@@ -765,6 +808,22 @@ class LivingLoop:
             return build_ghost_event().unified_msg_origin
         except Exception:
             return None
+
+    async def _bot_identity(self) -> dict | None:
+        """bot 自己的身份（participant_identities 原料，任务书 M3 补丁 IV-B2）。
+
+        身份由 main 注入的动态提取函数从平台配置取得（换人设/换平台自动
+        适配，不硬编码）；未注入或提取失败返回 None——记忆照写，只是图谱
+        里暂时没有参与者边（与补丁 III 之前的行为一致）。
+        """
+        if self._bot_identity_getter is None:
+            return None
+        try:
+            identity = await self._bot_identity_getter()
+        except Exception as e:
+            logger.debug(f"[LivingLoop] bot 身份提取失败（跳过参与者边）: {e}")
+            return None
+        return identity if isinstance(identity, dict) and identity else None
 
     async def _persona_id(self) -> str:
         """当前生效 persona 的 id；任何失败都回 "default"（任务书问题 3）。"""
