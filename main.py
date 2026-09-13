@@ -184,48 +184,87 @@ class LivingPlugin(Star):
             return text
         return None
 
-    def _bot_identity(self) -> dict | None:
-        """bot 自己的身份（M3 补丁 IV-B2：participant_identities 原料）。
+    async def _bot_identity(self) -> dict | None:
+        """bot 自己的身份（participant_identities 原料，任务书 M3 补丁 V 问题 1）。
 
-        全部从 AstrBot 平台配置/实例动态取，不硬编码 persona 名或平台名——
-        换平台/换账号自动适配。提取链（全防御式，任何一步缺失即降级）：
-          platform_id  = inst.meta().id
-          bot_id       = inst.config 的 self_id/account_id → client_self_id → platform_id
-          display_name = 配置 bot_name → 唤醒昵称第一项 → platform_id
-        取不到任何平台实例时返回 None（记忆照写，只是没有参与者边）。
+        identity_key 必须与 LivingMemory 原生记忆（cron 处理器）的格式
+        **完全一致**——EntityResolver 按 identity_key 的 canonical 值去重
+        person 节点，键不一致就会得到两个孤立集群（凛 VM 上 SQL 查实的根因）。
+
+        提取链（从稳到妥）：
+          1. 更稳妥路径：从 LivingMemory 已有原生记忆的 metadata 里读
+             is_bot=true 的参与者身份并缓存——原生记忆产出的形态就是
+             权威形态，LivingMemory 未来改格式也自动适配；
+          2. 兜底：cron:{dashboard_username}——与原生 cron 处理器同源
+             同格式（dashboard username 从 AstrBot 全局配置动态取，
+             默认 "astrbot"）。
+
+        注意 display_name 用 dashboard username 而非 persona 名：这个身份
+        标识的是"AstrBot 这个程序"，不是"当前扮演的角色"（凛）。
         """
+        # 1. 原生记忆实测身份（带缓存：查一次后续直接复用）
+        if getattr(self, "_bot_identity_cache", None):
+            return self._bot_identity_cache
         try:
-            manager = getattr(self.context, "platform_manager", None)
-            insts = getattr(manager, "platform_insts", None) or []
-            inst = insts[0] if insts else None
-            if inst is None:
-                return None
-            meta = inst.meta()
-            platform_name = str(getattr(meta, "name", "") or meta.id)
-            platform_id = str(meta.id)
+            backend = await self._get_memory()
+            from .core.memory_backend import LivingMemoryBackend
 
-            inst_config = getattr(inst, "config", None) or {}
-            bot_id = (
-                inst_config.get("self_id")
-                or inst_config.get("account_id")
-                or getattr(inst, "client_self_id", None)
-                or platform_id
-            )
-            bot_name = (
-                self.config.get("bot_name")
-                or (self.config.get("nickname") or [""])[0]
-                or platform_id
-            )
-            bot_id = str(bot_id)
-            return {
-                "identity_key": f"{platform_id}:{bot_id}",
-                "sender_id": bot_id,
-                "platform": platform_name,
-                "display_name": str(bot_name),
-                "is_bot": True,
-            }
+            if isinstance(backend, LivingMemoryBackend):
+                # 空查询在 LivingMemory 引擎里直接返回空列表，用常见字
+                # 逐个试探（原生对话记忆几乎必含这些字）
+                for probe in ("我", "今天", "的"):
+                    rows = await backend.search(probe, k=10)
+                    for row in rows:
+                        for participant in (row.get("metadata") or {}).get(
+                            "participant_identities", []
+                        ) or []:
+                            if participant.get("is_bot") and participant.get(
+                                "identity_key"
+                            ):
+                                self._bot_identity_cache = {
+                                    "identity_key": participant["identity_key"],
+                                    "sender_id": str(
+                                        participant.get("sender_id")
+                                        or participant["identity_key"]
+                                    ),
+                                    "platform": str(
+                                        participant.get("platform") or "cron"
+                                    ),
+                                    "display_name": str(
+                                        participant.get("display_name")
+                                        or "astrbot"
+                                    ),
+                                    "is_bot": True,
+                                }
+                                logger.debug(
+                                    f"[Living] bot 身份取自原生记忆: "
+                                    f"{participant['identity_key']}"
+                                )
+                                return self._bot_identity_cache
+        except Exception as e:
+            logger.debug(f"[Living] 从原生记忆读取 bot 身份失败（走兜底）: {e}")
+
+        # 2. 兜底：cron:{dashboard_username}（与原生 cron 处理器同源同格式）
+        dashboard_username = "astrbot"
+        try:
+            get_config = getattr(self.context, "get_config", None)
+            if callable(get_config):
+                cfg = get_config()
+                dashboard_username = str(
+                    (cfg.get("dashboard", {}) or {}).get(
+                        "username", dashboard_username
+                    )
+                )
         except Exception:
-            return None
+            pass
+
+        return {
+            "identity_key": f"cron:{dashboard_username}",
+            "sender_id": dashboard_username,
+            "platform": "cron",
+            "display_name": dashboard_username,
+            "is_bot": True,
+        }
 
     async def _persona_id(self) -> str:
         """当前生效 persona 的 id（问题 3：记忆图谱的参与者边原料）。
@@ -351,9 +390,7 @@ class LivingPlugin(Star):
             agent_loop=agent_loop,
             dream_llm_call=self._decision_llm_call,
             persona_id_getter=self._persona_id,
-            bot_identity_getter=lambda: asyncio.get_running_loop().run_in_executor(
-                None, self._bot_identity
-            ),
+            bot_identity_getter=self._bot_identity,
         )
         await self.loop.start()
 

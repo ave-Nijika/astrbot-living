@@ -772,6 +772,11 @@ class LivingLoop:
         metadata: dict = {}
         if outcome is not None and outcome.topics:
             metadata["topics"] = outcome.topics
+        # M3 补丁 V 问题 4：key_facts 让图谱提取器生成独立的 fact 节点，
+        # topic 节点通过 describes 边连接到它——没有它就只有孤立的
+        # topic→content 关系对，成不了"主题-事实"完整结构
+        if outcome is not None and outcome.memory_content:
+            metadata["key_facts"] = [outcome.memory_content]
         # M3 补丁 IV-B2：participant_identities——给记忆挂上 bot 的 person
         # 节点原料，EntityResolver 会把它与原生对话记忆的同名身份映射到
         # 同一节点，插件记忆集群由此桥接进主图谱（不再孤立）
