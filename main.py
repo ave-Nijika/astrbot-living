@@ -445,25 +445,50 @@ class LivingPlugin(Star):
         # 污染身份会让 LivingMemory 反思/总结持续自我延续——早一天清掉，
         # 图谱就少一天脏数据
         self._selfheal_task = asyncio.create_task(
-            self._run_identity_selfheal_once(), name="living-selfheal"
+            self._run_identity_selfheal_with_retry(), name="living-selfheal"
         )
 
-    async def _run_identity_selfheal_once(self) -> None:
-        """历史污染数据自愈（任务书 M3 补丁 VI 需求 2）。
+    async def _run_identity_selfheal_with_retry(self) -> None:
+        """历史污染数据自愈（任务书 M3 补丁 VI 需求 2；凛热修补时序）。
 
         只处理 living 直写记忆（participant_identities 含 default: 污染
         身份的条目），原生记忆绝不触碰；幂等状态落 selfheal_state.json。
         全流程异常只记 WARNING——自愈失败绝不影响插件正常服务。
+
+        凛热修（2026-09-15）：AstrBot 按目录序加载插件，living 排在
+        livingmemory 之前——本任务触发时引擎往往尚未就绪（lazy_memory
+        探测失败降级 Simple），原"一次性执行"版本会在这个窗口被跳过且
+        不再重试。改为轮询等待：探测到 LivingMemory 后端才开始自愈，
+        最长 10 分钟，超时放弃（WARNING，不影响插件服务）。
         """
-        try:
-            backend = await self._get_memory()
-        except Exception as e:
-            logger.warning(f"[SelfHeal] 记忆后端不可用，本次跳过自愈: {e}")
-            return
         from .core.memory_backend import LivingMemoryBackend
 
+        backend = None
+        max_attempts = 20  # 20 × 30s = 10 分钟
+        for attempt in range(1, max_attempts + 1):
+            try:
+                backend = await self._get_memory()
+            except Exception as e:
+                logger.warning(
+                    f"[SelfHeal] 记忆后端获取失败（第 {attempt}/{max_attempts} 次）: {e}"
+                )
+                backend = None
+            if isinstance(backend, LivingMemoryBackend):
+                break
+            if attempt == 1:
+                logger.info(
+                    "[SelfHeal] LivingMemory 引擎尚未就绪（本插件加载顺序早于它），"
+                    "30 秒后重试…"
+                )
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                raise  # 插件终止时会 cancel 本任务，让取消正常传播
+
         if not isinstance(backend, LivingMemoryBackend):
-            logger.debug("[SelfHeal] 非 LivingMemory 后端，无图谱可自愈，跳过")
+            logger.warning(
+                f"[SelfHeal] 等待 LivingMemory 就绪超时（{max_attempts} 次探测），放弃自愈"
+            )
             return
         identity = await self._bot_identity()
         if not identity or self._identity_is_polluted(identity.get("identity_key")):
