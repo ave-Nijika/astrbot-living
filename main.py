@@ -36,6 +36,7 @@ from .core.llm_failover import (
 )
 from .core.mood import MoodState
 from .core.sandbox import Sandbox
+from .core.selfheal import run_identity_selfheal
 from .core.search import BochaSearcher
 from .core.sender import Sender
 from .core.sleep import SleepManager
@@ -82,6 +83,7 @@ class LivingPlugin(Star):
         self.gate: LivingGate | None = None
         self.loop: LivingLoop | None = None
         self.sleep_manager: SleepManager | None = None
+        self._selfheal_task: asyncio.Task | None = None
 
         logger.info(f"[{PLUGIN_NAME}] M3 加载完成（心境+休眠+agent 循环）")
 
@@ -184,72 +186,117 @@ class LivingPlugin(Star):
             return text
         return None
 
-    async def _bot_identity(self) -> dict | None:
-        """bot 自己的身份（participant_identities 原料，任务书 M3 补丁 V 问题 1）。
+    def _platform_prefixes(self) -> set[str]:
+        """合法身份前缀集合（任务书 M3 补丁 VI 需求 1-2）。
 
-        identity_key 必须与 LivingMemory 原生记忆（cron 处理器）的格式
-        **完全一致**——EntityResolver 按 identity_key 的 canonical 值去重
-        person 节点，键不一致就会得到两个孤立集群（凛 VM 上 SQL 查实的根因）。
-
-        提取链（从稳到妥）：
-          1. 更稳妥路径：从 LivingMemory 已有原生记忆的 metadata 里读
-             is_bot=true 的参与者身份并缓存——原生记忆产出的形态就是
-             权威形态，LivingMemory 未来改格式也自动适配；
-          2. 兜底：cron:{dashboard_username}——与原生 cron 处理器同源
-             同格式（dashboard username 从 AstrBot 全局配置动态取，
-             默认 "astrbot"）。
-
-        注意 display_name 用 dashboard username 而非 persona 名：这个身份
-        标识的是"AstrBot 这个程序"，不是"当前扮演的角色"（凛）。
+        从 AstrBot 全局配置的 platform 列表动态收集真实平台 id（不硬编码
+        aiocqhttp）；"cron" 是 LivingMemory 原生 cron 处理器的身份来源，
+        恒在集合内。
         """
-        # 1. 原生记忆实测身份（带缓存：查一次后续直接复用）
-        if getattr(self, "_bot_identity_cache", None):
-            return self._bot_identity_cache
+        prefixes = {"cron"}
+        try:
+            get_config = getattr(self.context, "get_config", None)
+            if callable(get_config):
+                cfg = get_config() or {}
+                for platform in cfg.get("platform", []) or []:
+                    pid = str((platform or {}).get("id", "") or "").strip()
+                    if pid:
+                        prefixes.add(pid)
+        except Exception:
+            pass
+        return prefixes
+
+    @staticmethod
+    def _identity_is_polluted(identity_key: str) -> bool:
+        """污染身份判定：default: 前缀是 ghost 会话 fallback 的历史产物，
+        绝不采信（任务书 M3 补丁 VI 需求 1-1）。"""
+        return str(identity_key or "").startswith("default:")
+
+    def _identity_whitelisted(self, identity_key: str, prefixes: set[str]) -> bool:
+        """白名单校验：identity_key 必须以真实平台 id + ':' 开头。"""
+        text = str(identity_key or "")
+        return any(text.startswith(f"{prefix}:") for prefix in prefixes)
+
+    def _normalize_bot_identity(self, participant: dict) -> dict:
+        """把采信的原生参与者条目规范成统一的 bot 身份结构（补 aliases）。"""
+        identity_key = str(participant.get("identity_key", ""))
+        display_name = str(participant.get("display_name") or "astrbot")
+        return {
+            "identity_key": identity_key,
+            "sender_id": str(
+                participant.get("sender_id") or identity_key.partition(":")[-1]
+            ),
+            "platform": str(participant.get("platform") or identity_key.partition(":")[0]),
+            "display_name": display_name,
+            "aliases": [display_name],
+            "is_bot": True,
+        }
+
+    async def _bot_identity(self) -> dict | None:
+        """bot 自己的身份（participant_identities 原料）。
+
+        M3 补丁 VI 需求 1：本方法在生产环境提取到过被污染的身份——probe
+        词（"我"开头）召回的活动记忆霸榜 top-k，而这些记忆携带的正是
+        ghost fallback 的 default:hash 污染身份，取到即缓存后污染自我延续。
+        现在的提取链：
+          1. 从 LivingMemory 已有记忆里找参与者身份（probe 词扩充、k=20、
+             逐行全扫）；
+          2. 每个候选过两道校验：default: 前缀一律跳过（污染过滤）；
+             必须以真实平台 id/cron 开头（白名单）；
+          3. 通过校验才采信并缓存；缓存里已有污染身份（历史遗留）→ 丢弃
+             重新提取；
+          4. 全部落空 → 兜底 cron:{dashboard_username}（原生侧真实存在
+             该节点，是合法桥梁身份，逻辑不变）。
+        """
+        prefixes = self._platform_prefixes()
+
+        # 缓存防污染：历史污染缓存（default: 前缀）丢弃重新提取
+        cached = getattr(self, "_bot_identity_cache", None)
+        if cached:
+            if self._identity_is_polluted(cached.get("identity_key")):
+                logger.warning(
+                    "[Living] 检测到缓存的 bot 身份被污染（"
+                    f"{cached.get('identity_key')}），丢弃并重新提取"
+                )
+                self._bot_identity_cache = None
+            else:
+                return cached
+
+        # 路径 1：从 LivingMemory 已有记忆的参与者里找通过校验的身份
         try:
             backend = await self._get_memory()
             from .core.memory_backend import LivingMemoryBackend
 
             if isinstance(backend, LivingMemoryBackend):
-                # 空查询在 LivingMemory 引擎里直接返回空列表，用常见字
-                # 逐个试探（原生对话记忆几乎必含这些字）
-                for probe in ("我", "今天", "的"):
-                    rows = await backend.search(probe, k=10)
+                for probe in ("我", "今天", "记忆", "文章", "冲浪", "的"):
+                    rows = await backend.search(probe, k=20)
                     for row in rows:
-                        for participant in (row.get("metadata") or {}).get(
-                            "participant_identities", []
-                        ) or []:
-                            if participant.get("is_bot") and participant.get(
-                                "identity_key"
-                            ):
-                                self._bot_identity_cache = {
-                                    "identity_key": participant["identity_key"],
-                                    "sender_id": str(
-                                        participant.get("sender_id")
-                                        or participant["identity_key"]
-                                    ),
-                                    "platform": str(
-                                        participant.get("platform") or "cron"
-                                    ),
-                                    "display_name": str(
-                                        participant.get("display_name")
-                                        or "astrbot"
-                                    ),
-                                    "is_bot": True,
-                                }
-                                logger.debug(
-                                    f"[Living] bot 身份取自原生记忆: "
-                                    f"{participant['identity_key']}"
-                                )
-                                return self._bot_identity_cache
+                        metadata = row.get("metadata") or {}
+                        for participant in (
+                            metadata.get("participant_identities") or []
+                        ):
+                            key = str(
+                                (participant or {}).get("identity_key", "") or ""
+                            )
+                            if not key or self._identity_is_polluted(key):
+                                continue  # 污染过滤
+                            if not self._identity_whitelisted(key, prefixes):
+                                continue  # 白名单校验
+                            identity = self._normalize_bot_identity(participant)
+                            self._bot_identity_cache = identity
+                            logger.debug(
+                                f"[Living] bot 身份采信（过白名单）: {key}"
+                            )
+                            return identity
         except Exception as e:
-            logger.debug(f"[Living] 从原生记忆读取 bot 身份失败（走兜底）: {e}")
+            logger.debug(f"[Living] 从记忆提取 bot 身份失败（走兜底）: {e}")
 
-        # 2. 兜底：cron:{dashboard_username}（与原生 cron 处理器同源同格式）
+        # 兜底：cron:{dashboard_username}——原生侧真实存在该节点（合法桥梁）
         dashboard_username = "astrbot"
         try:
             get_config = getattr(self.context, "get_config", None)
             if callable(get_config):
-                cfg = get_config()
+                cfg = get_config() or {}
                 dashboard_username = str(
                     (cfg.get("dashboard", {}) or {}).get(
                         "username", dashboard_username
@@ -393,6 +440,57 @@ class LivingPlugin(Star):
             bot_identity_getter=self._bot_identity,
         )
         await self.loop.start()
+
+        # M3 补丁 VI 需求 2：历史污染数据自愈（后台一次性，不阻塞加载）。
+        # 污染身份会让 LivingMemory 反思/总结持续自我延续——早一天清掉，
+        # 图谱就少一天脏数据
+        self._selfheal_task = asyncio.create_task(
+            self._run_identity_selfheal_once(), name="living-selfheal"
+        )
+
+    async def _run_identity_selfheal_once(self) -> None:
+        """历史污染数据自愈（任务书 M3 补丁 VI 需求 2）。
+
+        只处理 living 直写记忆（participant_identities 含 default: 污染
+        身份的条目），原生记忆绝不触碰；幂等状态落 selfheal_state.json。
+        全流程异常只记 WARNING——自愈失败绝不影响插件正常服务。
+        """
+        try:
+            backend = await self._get_memory()
+        except Exception as e:
+            logger.warning(f"[SelfHeal] 记忆后端不可用，本次跳过自愈: {e}")
+            return
+        from .core.memory_backend import LivingMemoryBackend
+
+        if not isinstance(backend, LivingMemoryBackend):
+            logger.debug("[SelfHeal] 非 LivingMemory 后端，无图谱可自愈，跳过")
+            return
+        identity = await self._bot_identity()
+        if not identity or self._identity_is_polluted(identity.get("identity_key")):
+            # 连修正身份本身都被污染（理论上不会发生）——宁可不清也不清错
+            logger.warning("[SelfHeal] 修正身份不可用或已污染，放弃本次自愈")
+            return
+        corrected = dict(identity)
+        corrected.setdefault("aliases", [corrected.get("display_name", "astrbot")])
+        try:
+            summary = await run_identity_selfheal(
+                backend,
+                corrected,
+                state_path=self._selfheal_state_path(),
+                engine=getattr(backend, "engine", None),
+            )
+            if summary["found"]:
+                logger.info(
+                    f"[SelfHeal] 自愈结果：修正 {summary['fixed']}/"
+                    f"{summary['found']} 条（路径 {summary['paths']}）"
+                )
+        except Exception as e:
+            logger.warning(f"[SelfHeal] 自愈流程异常（不影响插件服务）: {e}")
+
+    def _selfheal_state_path(self) -> str:
+        import os
+
+        return os.path.join(self._plugin_data_dir(), "selfheal_state.json")
 
     # ------------------------------------------------------------------
     # M3：手动唤醒命令 + 消息监听（吵醒计数 / 睡眠期静默拦截）
@@ -851,6 +949,15 @@ class LivingPlugin(Star):
         if self.loop is not None:
             await self.loop.stop()
             self.loop = None
+        if self._selfheal_task is not None and not self._selfheal_task.done():
+            # 自愈是一次性后台任务：卸载时若还没跑完就取消（下次启动重跑，
+            # 幂等状态保证不重复修正）
+            self._selfheal_task.cancel()
+            try:
+                await self._selfheal_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._selfheal_task = None
         if self.gate is not None:
             await self.gate.close()
             self.gate = None

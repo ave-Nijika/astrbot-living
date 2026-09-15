@@ -54,6 +54,12 @@ class LivingMemoryBackend(MemoryBackend):
 
     def __init__(self, engine: Any, source: str = "livingmemory") -> None:
         self._engine = engine
+
+    @property
+    def engine(self) -> Any:
+        """底层 LivingMemory 引擎实例。自愈流程（core/selfheal.py）用它
+        做图谱重建触发——只暴露引用，接口探测由调用方防御式进行。"""
+        return self._engine
         self.source = source
 
     @classmethod

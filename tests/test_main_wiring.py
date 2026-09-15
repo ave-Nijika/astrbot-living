@@ -149,6 +149,7 @@ def make_plugin(db_path):
     plugin.memory_note = "尚未初始化"
     plugin.gate = None
     plugin.loop = None
+    plugin._selfheal_task = None
     plugin.mood = main_module.MoodState(db_path=str(db_path) + ".mood")
     # 屏蔽真实插件数据目录（不写 AstrBot 的 data/）与网络能力
     plugin._gate_db_path = lambda: str(db_path) + ".gate"
