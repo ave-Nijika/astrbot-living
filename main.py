@@ -36,6 +36,7 @@ from .core.llm_failover import (
 )
 from .core.mood import MoodState
 from .core.sandbox import Sandbox
+from .core.share_rewriter import ShareRewriter
 from .core.selfheal import run_identity_selfheal
 from .core.search import BochaSearcher
 from .core.sender import Sender
@@ -438,6 +439,15 @@ class LivingPlugin(Star):
             agent_loop=agent_loop,
             dream_llm_call=self._decision_llm_call,
             persona_id_getter=self._persona_id,
+            share_rewriter=ShareRewriter(
+                llm_call=self._decision_llm_call,
+                config_getter=lambda: self.config,
+                persona_getter=self._persona_prompt,
+                life_extra_getter=lambda: str(
+                    self._cfg("persona", "life_extra", "") or ""
+                ),
+                mood=self.mood,
+            ),
             bot_identity_getter=self._bot_identity,
         )
         await self.loop.start()

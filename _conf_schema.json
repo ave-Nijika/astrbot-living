@@ -131,6 +131,24 @@
         "hint": "格式 'HH:MM-HH:MM'，该时段不发主动消息。与休眠无关。",
         "type": "string",
         "default": ""
+      },
+      "share_rewrite_enabled": {
+        "description": "分享角色化改写",
+        "hint": "开启后主动分享前用 LLM 把工作报告改写成聊天口吻（关闭则直发原文，与旧版一致）。改写失败自动降级原文。",
+        "type": "bool",
+        "default": true
+      },
+      "share_rewrite_prompt": {
+        "description": "分享改写提示词",
+        "hint": "改写提示词模板，支持 {report}（活动汇报）与 {mood}（心境摘要）占位符。",
+        "type": "text",
+        "default": "把下面这份“今天的活动记录”改写成你对主人说的一两句话。\n活动记录：{report}\n你现在的状态：{mood}\n要求：\n- 像朋友间随口聊天，不是汇报；不要标题、不要列表、不要 Markdown 格式\n- 用你自己的口吻，可以带一点当天心情\n- 只输出要说的话本身，不要任何前缀和引号"
+      },
+      "share_max_length": {
+        "description": "分享文本长度上限",
+        "hint": "改写结果超过该长度时按句子边界截断。",
+        "type": "int",
+        "default": 120
       }
     }
   },

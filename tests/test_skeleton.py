@@ -47,6 +47,14 @@ def test_conf_schema_valid_and_groups_complete():
     assert schema["decision"]["items"]["exploration_trigger"]["default"] == 3
     assert schema["decision"]["items"]["interest_cooldown_threshold"]["default"] == 0.85
     assert schema["decision"]["items"]["interest_cooldown_factor"]["default"] == 0.4
+    # M3 补丁 VIII：分享角色化改写
+    og = schema["output_gate"]["items"]
+    assert og["share_rewrite_enabled"]["type"] == "bool"
+    assert og["share_rewrite_enabled"]["default"] is True
+    assert og["share_rewrite_prompt"]["type"] == "text"
+    assert "{report}" in og["share_rewrite_prompt"]["default"]
+    assert "{mood}" in og["share_rewrite_prompt"]["default"]
+    assert og["share_max_length"]["default"] == 120
     assert schema["decision"]["items"]["max_run_seconds"]["default"] == 300
     assert schema["decision"]["items"]["decision_mode"]["options"] == [
         "rules", "hybrid", "llm"

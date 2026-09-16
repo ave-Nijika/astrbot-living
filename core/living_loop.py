@@ -75,6 +75,7 @@ class LivingLoop:
         dream_llm_call: Callable[..., Any] | None = None,
         persona_id_getter: Callable[..., Any] | None = None,
         bot_identity_getter: Callable[..., Any] | None = None,
+        share_rewriter: Any = None,
     ) -> None:
         self._gate = gate
         self._get_memory = memory_getter
@@ -97,6 +98,8 @@ class LivingLoop:
         # M3 补丁 IV-B2：bot 身份（图谱 participant_identities 的原料），
         # 由 main 注入动态提取函数，loop 自己不碰平台配置
         self._bot_identity_getter = bot_identity_getter
+        # M3 补丁 VIII：分享角色化改写器（None = 直发原文，向后兼容）
+        self._share_rewriter = share_rewriter
         # M3 补丁 IV-B1：活动周期互斥锁——心跳与 /living do 可能并发进入
         # 周期，双周期同时写记忆/同时调 LLM 既浪费 token 又可能数据竞争
         self._cycle_lock = asyncio.Lock()
@@ -914,9 +917,27 @@ class LivingLoop:
         if self._sender is None:
             logger.warning("[LivingLoop] 已配置 target_sessions 但 sender 未注入")
             return
+
+        # M3 补丁 VIII：角色化改写——把工作报告转成聊天口吻。闸门通过后
+        # 才改写（拦下就别浪费 token）；改写失败降级原文，不影响发送。
+        text_to_send = text
+        if self._share_rewriter is not None:
+            mood_digest = ""
+            if self._mood is not None:
+                mood_digest = getattr(self._mood, "digest", lambda: "")()
+            try:
+                rewritten = await self._share_rewriter.rewrite(text, mood_digest)
+            except Exception as e:
+                logger.warning(f"[LivingLoop] 分享改写异常，降级原文: {e}")
+                rewritten = None
+            if rewritten:
+                text_to_send = rewritten
+            else:
+                logger.warning("[LivingLoop] 分享改写未产出，降级发送原文")
+
         for session in sessions:
             try:
-                sent = await self._sender.send(session, text)
+                sent = await self._sender.send(session, text_to_send)
             except Exception as e:
                 logger.warning(f"[LivingLoop] 发送到 {session} 异常: {e}")
                 continue
