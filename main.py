@@ -84,6 +84,7 @@ class LivingPlugin(Star):
         self.loop: LivingLoop | None = None
         self.sleep_manager: SleepManager | None = None
         self._selfheal_task: asyncio.Task | None = None
+        self._interest_cooldown_task: asyncio.Task | None = None
 
         logger.info(f"[{PLUGIN_NAME}] M3 加载完成（心境+休眠+agent 循环）")
 
@@ -447,6 +448,38 @@ class LivingPlugin(Star):
         self._selfheal_task = asyncio.create_task(
             self._run_identity_selfheal_with_retry(), name="living-selfheal"
         )
+        # M3 补丁 VII 需求 5：兴趣数据一次性降温（独立小任务，幂等）
+        self._interest_cooldown_task = asyncio.create_task(
+            self._run_interest_cooldown_once(), name="living-interest-cooldown"
+        )
+
+    async def _run_interest_cooldown_once(self) -> None:
+        """历史偏执数据降温（补丁 VII 需求 5）：单主题兴趣 >= 阈值时乘系数
+        一次性稀释——饱和曲线+衰减要连跑数天才能自然稀释，不降温的话新
+        机制上线头几天行为仍然偏执。幂等：state 文件标记后不再执行。"""
+        try:
+            if self.mood is None:
+                return
+            from .core.selfheal import cooldown_interests_once
+
+            cooled = await cooldown_interests_once(
+                self.mood,
+                state_path=self._selfheal_state_path(),
+                threshold=float(
+                    self._cfg("decision", "interest_cooldown_threshold", 0.85)
+                    or 0.85
+                ),
+                factor=float(
+                    self._cfg("decision", "interest_cooldown_factor", 0.4) or 0.4
+                ),
+            )
+            if cooled:
+                await self.mood.save()
+                logger.info(
+                    f"[SelfHeal] 兴趣数据降温完成：{cooled}（历史偏执稀释）"
+                )
+        except Exception as e:
+            logger.warning(f"[SelfHeal] 兴趣降温任务异常（不影响服务）: {e}")
 
     async def _run_identity_selfheal_with_retry(self) -> None:
         """历史污染数据自愈（任务书 M3 补丁 VI 需求 2；凛热修补时序）。
@@ -974,15 +1007,19 @@ class LivingPlugin(Star):
         if self.loop is not None:
             await self.loop.stop()
             self.loop = None
-        if self._selfheal_task is not None and not self._selfheal_task.done():
-            # 自愈是一次性后台任务：卸载时若还没跑完就取消（下次启动重跑，
+        for stale_task_name in ("_selfheal_task", "_interest_cooldown_task"):
+            stale_task = getattr(self, stale_task_name, None)
+            if stale_task is None or stale_task.done():
+                setattr(self, stale_task_name, None)
+                continue
+            # 一次性后台任务：卸载时若还没跑完就取消（下次启动重跑，
             # 幂等状态保证不重复修正）
-            self._selfheal_task.cancel()
+            stale_task.cancel()
             try:
-                await self._selfheal_task
+                await stale_task
             except (asyncio.CancelledError, Exception):
                 pass
-        self._selfheal_task = None
+            setattr(self, stale_task_name, None)
         if self.gate is not None:
             await self.gate.close()
             self.gate = None

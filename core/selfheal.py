@@ -172,7 +172,7 @@ async def run_identity_selfheal(
     if engine is None:
         engine = getattr(backend, "engine", None)
 
-    state = _load_state(state_path)
+    state = load_state(state_path)
     healed: dict[str, str] = state.get("healed", {})
 
     polluted = await scan_polluted_memories(backend, probe_words)
@@ -205,7 +205,7 @@ async def run_identity_selfheal(
 
     state["healed"] = healed
     state["last_run"] = datetime.now().isoformat(timespec="seconds")
-    _save_state(state_path, state)
+    save_state(state_path, state)
 
     summary = {
         "found": len(polluted),
@@ -221,7 +221,7 @@ async def run_identity_selfheal(
     return summary
 
 
-def _load_state(state_path: str | Path) -> dict:
+def load_state(state_path: str | Path) -> dict:
     path = Path(state_path)
     if not path.exists():
         return {"healed": {}}
@@ -232,10 +232,43 @@ def _load_state(state_path: str | Path) -> dict:
         return {"healed": {}}
 
 
-def _save_state(state_path: str | Path, state: dict) -> None:
+def save_state(state_path: str | Path, state: dict) -> None:
     path = Path(state_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
+
+
+async def cooldown_interests_once(
+    mood: Any,
+    state_path: str | Path,
+    threshold: float = 0.85,
+    factor: float = 0.4,
+) -> list[str]:
+    """数据降温一次性自愈（任务书 M3 补丁 VII 需求 5，幂等）。
+
+    历史偏执循环把单主题兴趣顶到 1.0——不降温的话饱和曲线+衰减要连跑
+    数天才能自然稀释。启动时检查：任一 topic 兴趣 >= threshold → 乘
+    factor（1.0 -> 0.4）。幂等：state 文件标记已执行后不再重复。
+    返回被降温的主题列表（空 = 未触发或已执行过）。
+    """
+    state = load_state(state_path)
+    if state.get("interest_cooldown_done"):
+        return []
+    try:
+        cooled = mood.cooldown_hot_interests(threshold, factor)
+    except Exception as e:
+        logger.warning(f"[SelfHeal] 兴趣降温失败（跳过）: {e}")
+        return []
+    state["interest_cooldown_done"] = True
+    state["interest_cooldown_at"] = datetime.now().isoformat(timespec="seconds")
+    state["interest_cooldown_topics"] = cooled
+    save_state(state_path, state)
+    if cooled:
+        logger.info(
+            f"[SelfHeal] 兴趣降温：{cooled} 已乘 {factor}"
+            "（偏执循环历史数据一次性稀释）"
+        )
+    return cooled

@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import random
 import re
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable
@@ -164,6 +165,79 @@ class ActivityDecider:
         return pool[-1]
 
     # ------------------------------------------------------------------
+    # 近期话题与探索配额（任务书 M3 补丁 VII 需求 2/3）
+    # ------------------------------------------------------------------
+    def _recent_topic_summary(self) -> str:
+        """近期话题清单文案："memory palace techniques（3 次）、睡前回顾（2 次）"。
+
+        空返回空串——prompt 拼接端跳过空段。数据来自 mood 的近期主题
+        追踪（最近 N 次活动实际使用的 topic）。
+        """
+        if self._mood is None:
+            return ""
+        try:
+            recent = self._mood.recent_topics_list()
+        except Exception:
+            return ""
+        if not recent:
+            return ""
+        counts = Counter(recent)
+        return "、".join(f"{topic}（{count} 次）" for topic, count in counts.most_common())
+
+    def _decision_group(self) -> dict:
+        try:
+            value = (self._config_getter() or {}).get("decision", {})
+            return value if isinstance(value, dict) else {}
+        except Exception:
+            return {}
+
+    def _int_setting(self, value: Any, default: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _exploration_trigger(self) -> tuple[int, int]:
+        """探索配额配置：(窗口, 触发次数)，默认最近 4 次内同话题 >=3 次。"""
+        decision = self._decision_group()
+        window = self._int_setting(decision.get("exploration_window"), 4)
+        trigger = self._int_setting(decision.get("exploration_trigger"), 3)
+        return max(window, 1), max(trigger, 1)
+
+    def _exploration_needed(self) -> tuple[bool, str]:
+        """偏执循环检测：最近窗口内同一 topic 出现达到触发次数 → 强制探索。
+
+        返回 (是否触发, 热门话题)。锁死机制的特征就是同一主题反复出现，
+        此时无论 rules 还是 LLM 都该被按头换方向。
+        """
+        if self._mood is None:
+            return False, ""
+        try:
+            recent = self._mood.recent_topics_list()
+        except Exception:
+            return False, ""
+        window, trigger = self._exploration_trigger()
+        if len(recent) < trigger:
+            return False, ""
+        counts = Counter(recent[-window:])
+        if not counts:
+            return False, ""
+        topic, count = counts.most_common(1)[0]
+        if count >= trigger:
+            return True, topic
+        return False, ""
+
+    def _exploration_directive(self) -> str:
+        """探索强制指令（触发时拼进 LLM prompt）。"""
+        _triggered, hot = self._exploration_needed()
+        if _triggered:
+            return (
+                f"注意：你最近反复折腾「{hot}」，已经偏执了。"
+                "这次必须选一个你从没接触过的新话题，从零开始了解它。"
+            )
+        return ""
+
+    # ------------------------------------------------------------------
     # hybrid 档
     # ------------------------------------------------------------------
     async def _params_for(self, activity: Activity) -> dict:
@@ -207,13 +281,25 @@ class ActivityDecider:
         )
         memory_block = "\n".join(f"- {m}" for m in memories) if memories else "（还没什么记忆）"
         mood_block = self._mood.digest() if self._mood is not None else "心情平静，精力一般"
+        recent_block = self._recent_topic_summary()
+        recent_section = (
+            f"\n你最近已经折腾过这些话题（太多了会腻）：{recent_block}。\n"
+            if recent_block
+            else "\n"
+        )
+        exploration_line = self._exploration_directive()
+        if exploration_line:
+            exploration_line = f"{exploration_line}\n"
         prompt = (
             "现在是你的独处时间，没有人在找你，可以自己决定干点什么。\n\n"
             f"你现在的状态：{mood_block}\n\n"
-            f"最近记得的事：\n{memory_block}\n\n"
+            f"最近记得的事：\n{memory_block}\n"
+            f"{recent_section}\n"
             f"可以做的活动：\n{activity_lines}\n\n"
+            f"{exploration_line}"
             "请选一个你现在最想做的活动，并给它合适参数（topic 为主题词，"
-            'style 为小游戏风格，peek 和 reminisce 不需要参数）。\n'
+            'style 为小游戏风格，peek 和 reminisce 不需要参数）。'
+            "如果上面列了你最近反复折腾的话题，这次避开它们。\n"
             '只输出 JSON，格式：{"activity": "…", "params": {"topic": "…"}}'
         )
         system_prompt = await self._system_prompt()

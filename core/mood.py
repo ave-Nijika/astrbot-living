@@ -42,6 +42,12 @@ ENERGY_FLOOR = 0.05
 # 兴趣清理阈值（任务书 M3 补丁 IV-B4）：每日衰减后低于它的条目直接删除，
 # 防止 interests 字典随时间无限膨胀
 INTEREST_PRUNE_THRESHOLD = 0.01
+# 近期主题追踪窗口（任务书 M3 补丁 VII 需求 2）：记录最近 N 次活动的实际
+# 主题，供重复惩罚与探索配额使用；默认值可被配置 recent_topic_window 覆盖
+RECENT_TOPIC_WINDOW_DEFAULT = 6
+# 重复惩罚表（补丁 VII 需求 2）：最近窗口内出现 1/2/>=3 次的权重乘数，
+# 可被配置 recent_topic_penalty 覆盖
+RECENT_TOPIC_PENALTY_DEFAULT = (0.5, 0.3, 0.15)
 # 每日恢复量：一夜安睡大致抵掉大半疲惫，但睡眠债高的人醒来仍带倦意
 DAILY_FATIGUE_RECOVERY = 60.0
 DELTA_AROUSAL_OK = 0.05  # 活动成功的兴奋值（M2 挂点兑现）
@@ -83,6 +89,9 @@ class MoodState:
         # 被吵醒产生——两者都让"它"第二天真的带着昨晚的痕迹醒来
         self.fatigue: float = 0.0
         self.sleep_debt: float = 0.0
+        # 近期主题追踪（补丁 VII 需求 2）：按时间顺序记录最近 N 次活动
+        # 实际使用的 topic——重复惩罚与探索配额的数据源
+        self.recent_topics: list[str] = []
 
     # ------------------------------------------------------------------
     # 持久化
@@ -116,9 +125,16 @@ class MoodState:
         )
         await db.commit()
 
-    async def load(self, sleep_debt_decay_per_day: float = DAILY_SLEEP_DEBT_DECAY) -> None:
+    async def load(
+        self,
+        sleep_debt_decay_per_day: float = DAILY_SLEEP_DEBT_DECAY,
+        interest_daily_decay: float = DAILY_INTEREST_DECAY,
+    ) -> None:
         """读状态；跨日时做一次"隔夜结算"：兴趣衰减、疲惫恢复、睡眠债消退、
-        arousal 回落（衰减节奏是"每天一次"，锚在 load）。"""
+        arousal 回落（衰减节奏是"每天一次"，锚在 load）。
+
+        interest_daily_decay 可配置（补丁 VII 需求 1：衰减系数是偏执循环
+        的成因之一，提为可调项留调参口）。"""
         self.valence = _clamp(
             _to_float(await self._get_raw("mood_valence"), 0.2),
             VALENCE_MIN,
@@ -151,6 +167,15 @@ class MoodState:
                 interests[str(key)] = _clamp(parsed, UNIT_MIN, UNIT_MAX)
         self.interests = interests
 
+        raw_recent = await self._get_raw("recent_topics")
+        try:
+            loaded_recent = json.loads(raw_recent) if raw_recent else []
+        except (TypeError, ValueError):
+            loaded_recent = []
+        self.recent_topics = [
+            str(t) for t in loaded_recent if str(t).strip()
+        ][-RECENT_TOPIC_WINDOW_DEFAULT:]
+
         today = self._now().date().isoformat()
         stored_date = await self._get_raw("date")
         if stored_date is not None and stored_date != today:
@@ -159,7 +184,7 @@ class MoodState:
             # 为什么只在日期翻转时结算：兴趣的消退、疲惫的恢复、睡眠债的
             # 消退都是"隔夜"尺度的事，逐次活动结算会让高频活动立刻磨掉
             # 自己刚养起来的状态
-            self.decay_interests(DAILY_INTEREST_DECAY)
+            self.decay_interests(interest_daily_decay)
             self.arousal = _clamp(
                 self.arousal * AROUSAL_SLEEP_SETTLE, UNIT_MIN, UNIT_MAX
             )
@@ -183,6 +208,9 @@ class MoodState:
         await self._set_raw("fatigue", repr(self.fatigue))
         await self._set_raw("sleep_debt", repr(self.sleep_debt))
         await self._set_raw("interests", json.dumps(self.interests, ensure_ascii=False))
+        await self._set_raw(
+            "recent_topics", json.dumps(self.recent_topics, ensure_ascii=False)
+        )
 
     async def close(self) -> None:
         if self._db is not None:
@@ -258,8 +286,18 @@ class MoodState:
         )
 
     def bump_interest(self, topic: str, delta: float) -> None:
+        """兴趣增益带饱和曲线（任务书 M3 补丁 VII 需求 1）。
+
+        effective_delta = delta * (1 - current)：新主题全额增益，0.5 时
+        减半，1.0 时增益归零——兴趣天然收敛到上限而不是撞死在 1.0。
+        这是去"偏执循环"的第一道闸：读得越多涨得越少的边际递减，
+        让别的主题有机会起量。
+        """
         current = self.interests.get(topic, 0.0)
-        self.interests[topic] = _clamp(current + delta, UNIT_MIN, UNIT_MAX)
+        effective_delta = delta * (1.0 - current)
+        self.interests[topic] = _clamp(
+            current + effective_delta, UNIT_MIN, UNIT_MAX
+        )
 
     def decay_interests(self, rate: float) -> None:
         """全体兴趣乘以 rate（0<rate<=1）；衰减后低于阈值的条目直接删除。
@@ -277,9 +315,51 @@ class MoodState:
     def get_interests(self) -> dict[str, float]:
         return dict(self.interests)
 
-    def interest_weight(self, topic: str) -> float:
-        """兴趣度权重：无记录返回 0.3 中性——没接触过的东西也值得一试。"""
-        return self.interests.get(topic, NEUTRAL_INTEREST)
+    def interest_weight(
+        self,
+        topic: str,
+        repeat_count: int = 0,
+        penalty_table: tuple[float, ...] = RECENT_TOPIC_PENALTY_DEFAULT,
+    ) -> float:
+        """兴趣度权重：无记录返回 0.3 中性——没接触过的东西也值得一试。
+
+        repeat_count：该主题在近期窗口内的出现次数（补丁 VII 需求 2）。
+        重复会按 penalty_table 乘衰减系数（1 次 x0.5、2 次 x0.3、>=3 次
+        x0.15）——"新鲜感递减就换"，打破偏执循环的第二道闸。
+        """
+        weight = self.interests.get(topic, NEUTRAL_INTEREST)
+        if repeat_count <= 0:
+            return weight
+        table = penalty_table or RECENT_TOPIC_PENALTY_DEFAULT
+        index = min(max(repeat_count, 1), len(table)) - 1
+        return weight * table[index]
+
+    def record_recent_topics(self, topics: list[str], window: int = RECENT_TOPIC_WINDOW_DEFAULT) -> None:
+        """记录活动实际使用的 topic（最新在尾部），窗口滑动截断。"""
+        for topic in topics or []:
+            text = str(topic).strip()
+            if text:
+                self.recent_topics.append(text)
+        self.recent_topics = self.recent_topics[-max(window, 1):]
+
+    def recent_topics_list(self) -> list[str]:
+        return list(self.recent_topics)
+
+    def recent_topic_count(self, topic: str) -> int:
+        return self.recent_topics.count(topic)
+
+    def cooldown_hot_interests(self, threshold: float, factor: float) -> list[str]:
+        """一次性降温（补丁 VII 需求 5）：兴趣 >= threshold 的条目乘 factor。
+
+        返回被降温的主题列表（调用方记日志/幂等标记）。历史污染数据
+        （memory palace = 1.0）不降温的话新机制要连跑数天才能自然稀释。
+        """
+        cooled = []
+        for key, value in self.interests.items():
+            if value >= threshold:
+                self.interests[key] = _clamp(value * factor, UNIT_MIN, UNIT_MAX)
+                cooled.append(key)
+        return cooled
 
     # ------------------------------------------------------------------
     # 展示

@@ -600,6 +600,17 @@ class LivingLoop:
             now=now,
             params=params,
             agent=self._agent_callable(activity.name),
+            # M3 补丁 VII：近期话题与兴趣加权数据通道（执行层去偏执兜底）
+            recent_topics=(
+                (lambda: self._mood.recent_topics_list())()
+                if self._mood is not None
+                and callable(getattr(self._mood, "recent_topics_list", None))
+                else []
+            ),
+            interest_penalty_table=tuple(
+                self._recent_topic_penalty_table()
+            ),
+            mood=self._mood,
         )
 
         outcome = None
@@ -676,6 +687,32 @@ class LivingLoop:
     def activity_names(self) -> list[str]:
         return [a.name for a in self._activities]
 
+    def _recent_topic_penalty_table(self) -> tuple:
+        """重复惩罚表（配置 recent_topic_penalty，缺省 0.5/0.3/0.15）。"""
+        try:
+            raw = _conf_group(self._config_getter(), "decision").get(
+                "recent_topic_penalty"
+            )
+            values = [float(v) for v in (raw or [])]
+            if values:
+                return tuple(values)
+        except Exception:
+            pass
+        return (0.5, 0.3, 0.15)
+
+    def _recent_topic_window(self) -> int:
+        return max(
+            int(
+                _to_float(
+                    _conf_group(self._config_getter(), "decision").get(
+                        "recent_topic_window"
+                    ),
+                    6,
+                )
+            ),
+            1,
+        )
+
     def _agent_callable(self, activity_name: str) -> Callable[..., Any] | None:
         """按配置 decision.agent_activities 决定该活动是否走 agent 模式
         （任务书 C1）。返回 None = 脚本模式。"""
@@ -737,6 +774,18 @@ class LivingLoop:
             )
         except Exception as e:
             logger.warning(f"[LivingLoop] 心境更新失败（活动仍算完成）: {e}")
+        # 近期话题追踪（补丁 VII 需求 2）：记录活动实际使用的主题——
+        # outcome.topics 是执行层回填的真实主题，比决策 params 更可信
+        try:
+            used_topics = list(getattr(outcome, "topics", None) or [])
+            if not used_topics and isinstance(topic, str) and topic.strip():
+                used_topics = [topic.strip()]
+            if used_topics:
+                recorder = getattr(self._mood, "record_recent_topics", None)
+                if callable(recorder):
+                    recorder(used_topics, window=self._recent_topic_window())
+        except Exception as e:
+            logger.warning(f"[LivingLoop] 近期话题记录失败（不影响）: {e}")
         if ok and valence_before < 0:
             return 0.1
         return 0.0

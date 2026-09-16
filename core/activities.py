@@ -56,19 +56,71 @@ class ActivityContext:
     now: datetime = field(default_factory=datetime.now)
     params: dict = field(default_factory=dict)
     agent: Any = None
+    # M3 补丁 VII：近期话题与兴趣加权的数据通道（loop 从 mood/配置注入）
+    recent_topics: list[str] = field(default_factory=list)
+    interest_penalty_table: tuple = (0.5, 0.3, 0.15)
+    mood: Any = None
 
     def date_prefix(self) -> str:
         # 不用 strftime 的 %-m：Windows 平台不支持该转义
         return f"{self.now.month}月{self.now.day}日"
 
+    def recent_topic_summary(self) -> str:
+        """近期话题清单（agent 提示注入用，带出现次数）。"""
+        if not self.recent_topics:
+            return ""
+        counts: dict[str, int] = {}
+        for topic in self.recent_topics:
+            counts[topic] = counts.get(topic, 0) + 1
+        return "、".join(f"{t}（{c} 次）" for t, c in counts.most_common())
+
     def pick_topic(self) -> str:
-        """主题词来源：决策参数优先，否则固定候选池随机。"""
+        """主题词来源（按优先级）：
+        1. 决策参数 topic（LLM/手动指定）；
+        2. 从候选池**加权随机**：近期出现过的主题按重复次数乘衰减系数、
+           兴趣值加权——执行层的去偏执兜底（任务书 M3 补丁 VII 需求 4：
+           决策层锁死时执行层兜底，两层独立生效）。
+        """
         topic = (self.params or {}).get("topic")
-        return (
-            str(topic).strip()
-            if topic and str(topic).strip()
-            else self.rng.choice(TOPIC_POOL)
-        )
+        if topic and str(topic).strip():
+            return str(topic).strip()
+        return self._weighted_pool_choice()
+
+    def _weighted_pool_choice(self) -> str:
+        import random as _random
+
+        recent = list(self.recent_topics or [])
+        candidates = [t for t in TOPIC_POOL if t not in recent] or list(TOPIC_POOL)
+        weights = []
+        for candidate in candidates:
+            repeat = recent.count(candidate)
+            table = self.interest_penalty_table or (0.5, 0.3, 0.15)
+            penalty = (
+                1.0
+                if repeat <= 0
+                else table[min(max(repeat, 1), len(table)) - 1]
+            )
+            interest = 1.0
+            if self.mood is not None:
+                try:
+                    interest = max(
+                        self.mood.interest_weight(candidate, repeat_count=0),
+                        0.1,
+                    )
+                except Exception:
+                    interest = 1.0
+            weights.append(max(penalty * interest, 0.05))
+        # 等权时走 rng.choice（兼容脚本化 rng）；否则加权轮盘
+        if len(set(weights)) == 1:
+            return self.rng.choice(candidates)
+        total = sum(weights)
+        point = self.rng.random() * total
+        cumulative = 0.0
+        for candidate, weight in zip(candidates, weights):
+            cumulative += weight
+            if point < cumulative:
+                return candidate
+        return candidates[-1]
 
 
 @dataclass
@@ -190,8 +242,15 @@ class SurfActivity(Activity):
     def agent_intent(self, ctx: ActivityContext) -> str:
         hint = self._params_hint(ctx)
         topic_line = f"主题方向：{hint}。" if hint else "主题你自己挑。"
+        avoid_line = ctx.recent_topic_summary()
+        avoid_line = (
+            f"你最近读过/搜过的主题：{avoid_line}。"
+            "这次请选一个和它们明显不同的方向。"
+            if avoid_line
+            else ""
+        )
         return (
-            f"你现在打算上网冲浪。{topic_line}"
+            f"你现在打算上网冲浪。{topic_line}{avoid_line}"
             "用 web_search 搜一搜，挑一两条结果看看，"
             "最后用几句话汇报你看到了什么、有什么想法。"
         )
@@ -224,8 +283,15 @@ class ReadArticleActivity(Activity):
     def agent_intent(self, ctx: ActivityContext) -> str:
         hint = self._params_hint(ctx)
         topic_line = f"主题方向：{hint}。" if hint else "主题你自己挑。"
+        avoid_line = ctx.recent_topic_summary()
+        avoid_line = (
+            f"你最近读过/搜过的主题：{avoid_line}。"
+            "这次请选一个和它们明显不同的方向。"
+            if avoid_line
+            else ""
+        )
         return (
-            f"你现在打算读一篇文章。{topic_line}"
+            f"你现在打算读一篇文章。{topic_line}{avoid_line}"
             "用 web_search 搜索，挑一条你最想读的，用 fetch_page 认真读完，"
             "然后用自己的话总结要点，再说一点你的感想。"
         )

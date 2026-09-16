@@ -34,6 +34,47 @@
         "type": "float",
         "default": 60
       },
+      "interest_daily_decay": {
+        "description": "兴趣每日衰减系数（0-1）",
+        "hint": "每天结算时全部兴趣乘以该系数。越低忘得越快——偏执循环调参口之一。",
+        "type": "float",
+        "default": 0.9
+      },
+      "recent_topic_window": {
+        "description": "近期话题追踪窗口（次）",
+        "hint": "记录最近 N 次活动实际使用的主题，用于重复惩罚与探索配额判定。",
+        "type": "int",
+        "default": 6
+      },
+      "recent_topic_penalty": {
+        "description": "近期话题重复惩罚表",
+        "hint": "窗口内出现 1/2/>=3 次的主题权重分别乘对应系数——去偏执循环的执行层闸。",
+        "type": "list",
+        "default": [0.5, 0.3, 0.15]
+      },
+      "exploration_window": {
+        "description": "探索配额判定窗口（次）",
+        "type": "int",
+        "default": 4
+      },
+      "exploration_trigger": {
+        "description": "探索触发阈值（窗口内同主题出现次数）",
+        "hint": "达到该次数即强制探索新话题（LLM 决策加指令、脚本决策避开近期池）。",
+        "type": "int",
+        "default": 3
+      },
+      "interest_cooldown_threshold": {
+        "description": "兴趣降温阈值（0-1）",
+        "hint": "启动自愈时检查：任一主题兴趣达到该值即触发一次性降温（历史偏执数据稀释）。",
+        "type": "float",
+        "default": 0.85
+      },
+      "interest_cooldown_factor": {
+        "description": "兴趣降温乘数（0-1）",
+        "hint": "降温 = 兴趣值乘以该系数（1.0 → 0.4）。幂等，只执行一次。",
+        "type": "float",
+        "default": 0.4
+      },
       "daily_impulse_limit": {
         "description": "每日冲动上限",
         "hint": "0 = 不限制。",

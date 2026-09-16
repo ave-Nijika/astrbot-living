@@ -39,6 +39,14 @@ def test_conf_schema_valid_and_groups_complete():
     assert schema["decision"]["items"]["impulse_check_interval_minutes"]["default"] == 5
     assert schema["decision"]["items"]["activity_probability_min"]["default"] == 0.1
     assert schema["decision"]["items"]["activity_probability_ramp_minutes"]["default"] == 60
+    # M3 补丁 VII：兴趣多样性配置
+    assert schema["decision"]["items"]["interest_daily_decay"]["default"] == 0.9
+    assert schema["decision"]["items"]["recent_topic_window"]["default"] == 6
+    assert schema["decision"]["items"]["recent_topic_penalty"]["default"] == [0.5, 0.3, 0.15]
+    assert schema["decision"]["items"]["exploration_window"]["default"] == 4
+    assert schema["decision"]["items"]["exploration_trigger"]["default"] == 3
+    assert schema["decision"]["items"]["interest_cooldown_threshold"]["default"] == 0.85
+    assert schema["decision"]["items"]["interest_cooldown_factor"]["default"] == 0.4
     assert schema["decision"]["items"]["max_run_seconds"]["default"] == 300
     assert schema["decision"]["items"]["decision_mode"]["options"] == [
         "rules", "hybrid", "llm"
