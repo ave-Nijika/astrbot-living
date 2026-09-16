@@ -958,6 +958,49 @@ class LivingPlugin(Star):
                 f"被拦下了：{_WAKE_REASON_TEXT.get(reason, reason)}"
             )
 
+    @filter.command("living_wake_now")
+    async def living_wake_now(self, event: AstrMessageEvent):
+        """紧急唤醒：立即终止本次休眠（强制清醒至窗尾），清空吵醒计数与
+        待机，立即触发一次 force 判定。下次休眠窗照常生效。"""
+        logger.info("[Living] 紧急唤醒：主人强制结束休眠")
+        now = datetime.now()
+        if self.gate is None or self.sleep_manager is None:
+            yield event.plain_result("休眠组件未就绪，稍后再试")
+            return
+        until = await self.gate.force_awake_now(now)
+        # 清空吵醒计数与待机状态（从干净状态开始）
+        self.sleep_manager.reset_wake_state()
+        await self.gate.clear_awake_until()
+        window_text = self.gate.next_sleep_window_text()
+        if until is None:
+            yield event.plain_result(
+                f"当前不在休眠窗内。下次休眠窗：{window_text}"
+            )
+        else:
+            yield event.plain_result(
+                f"已紧急唤醒，本次休眠结束。下次休眠窗：{window_text}"
+            )
+        # 立即触发一次 force 判定（复用既有链路，照常回复判定结果）
+        if self.loop is not None:
+            try:
+                awake, reason, activity = (
+                    await self.loop.heartbeat_once_detailed(force=True, now=now)
+                )
+                if awake:
+                    yield event.plain_result(
+                        f"醒了！这就去{activity or '忙点什么'}。"
+                    )
+                elif reason == "sleeping":
+                    # 理论不可达（强醒期内不判 sleeping）——防御提示
+                    yield event.plain_result("状态异常，请查看日志")
+                else:
+                    yield event.plain_result(
+                        f"被拦下了：{_WAKE_REASON_TEXT.get(reason, reason)}"
+                    )
+            except Exception as e:
+                logger.exception("[living_wake_now] force 判定异常")
+                yield event.plain_result(f"判定出了点岔子：{e}")
+
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_any_message(self, event: AstrMessageEvent):
         """所有消息的旁路监听：待机刷新 / 吵醒计数 / 静默拦截（B3/B4 + 补丁 II）。
@@ -987,30 +1030,43 @@ class LivingPlugin(Star):
             if await self.sleep_manager.refresh_standby(now, session=session):
                 return
         except Exception as e:
-            logger.debug(f"[Living] 待机刷新异常（按非待机继续）: {e}")
+            # 补丁 IX：异常不该静默——主人排查"为什么没反应"时日志要能给答案
+            logger.warning(f"[Living] 待机刷新异常（按非待机继续）: {e}")
 
         try:
             # register_message 是同步方法（纯内存滑动窗），不要 await
-            wake_triggered, _count = self.sleep_manager.register_message(
+            wake_triggered, window_count = self.sleep_manager.register_message(
                 now, sender_id, session=session
             )
         except Exception as e:
-            logger.debug(f"[Living] 消息计数异常（跳过）: {e}")
+            # 补丁 IX：计数异常直接影响吵醒功能，WARNING 级留痕
+            logger.warning(f"[Living] 消息计数异常（跳过）: {e}")
             return
         if wake_triggered:
             logger.info("[Living] 睡眠中被连续消息吵醒，请求主循环唤醒")
             if self.loop is not None:
                 self.loop.request_wake()
             return  # 触发吵醒的这条不拦
+        # 补丁 IX 需求 1：窗内逐条消息的计数进度 INFO——主人能实时看到
+        # "还差几条吵醒"（观测原则：影响响应行为的路径必须 INFO 可见）
+        if self.sleep_manager.last_window_count:
+            threshold = self.sleep_manager._i(
+                (self.config.get("sleep", {}) or {}).get("wake_n_messages"), 3
+            )
+            logger.info(
+                f"[Living] 休眠计数 {window_count}/{threshold}"
+            )
         try:
             message_str = event.message_str
         except Exception:
             message_str = ""
         if self.sleep_manager.should_mute_message(now, message_str):
             # 拦截 = 事件不再向后续插件 handler 与 LLM 回复管线传播
-            #（scheduler 逐阶段检查 is_stopped）——主人定稿的"真正休息"
+            #（scheduler 逐阶段检查 is_stopped）——主人定稿的"真正休息"。
+            # 补丁 IX：INFO 级 + 带行动指引，杜绝"为什么没回复"的误判
+            context_text = self.sleep_manager.describe_mute(now, window_count)
             event.stop_event()
-            logger.debug("[Living] 睡眠期消息已拦截（sleep_mute_replies=true）")
+            logger.info(f"[Living] 睡眠期消息已拦截：{context_text}")
 
     async def terminate(self) -> None:
         """插件卸载/停用时由 AstrBot 调用；重复调用安全。"""

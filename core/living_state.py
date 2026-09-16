@@ -129,6 +129,41 @@ class LivingGate:
         # should_mute_message / awake_standby_active 是同步方法，
         # 不能每次都 await 数据库
         self._awake_until: datetime | None = None
+        # 紧急唤醒（任务书 M3 补丁 IX 需求 2）：强制清醒至当前休眠窗尾部。
+        # 为什么放 gate 而不是 manager：in_sleep_window / should_wake /
+        # should_mute_message 的判定都以"是否在休眠窗"为根，强制清醒的
+        # 语义就是"本次窗内视作不在窗内"——放源头一处生效，全链一致；
+        # 窗尾自然过期，无需清理
+        self._force_awake_until: datetime | None = None
+
+    # ------------------------------------------------------------------
+    # 紧急唤醒（任务书 M3 补丁 IX 需求 2）
+    # ------------------------------------------------------------------
+    def force_awake_active(self, now: datetime | None = None) -> bool:
+        """强制清醒期是否生效（本次休眠窗尾部之前）。"""
+        now = now or datetime.now()
+        return self._force_awake_until is not None and now < self._force_awake_until
+
+    async def force_awake_now(self, now: datetime | None = None) -> datetime | None:
+        """立即终止本次休眠：强制清醒至当前休眠窗尾部。
+
+        Returns:
+            强制清醒截止时间；不在休眠窗内时返回 None（无休眠可终止）。
+        """
+        now = now or datetime.now()
+        span = self.sleep_window_span(now)
+        if span is None:
+            return None
+        _total, remaining_minutes = span
+        self._force_awake_until = now + timedelta(minutes=remaining_minutes)
+        return self._force_awake_until
+
+    def next_sleep_window_text(self) -> str:
+        """下一次休眠窗的文案（紧急唤醒回复用），如 "00:30-08:00"。"""
+        return str(
+            _conf_group(self._config_getter() or {}, "sleep").get("sleep_window", "")
+            or "未配置"
+        )
 
     # ------------------------------------------------------------------
     # 清醒待机（任务书 M3 补丁 II 一）
@@ -294,6 +329,10 @@ class LivingGate:
             if force:
                 return True, "ok"
             # 落到下面的上限/冷却/概率链：待机期是否"再干一件事"仍受约束
+        elif self.force_awake_active(now):
+            # 紧急唤醒后的强制清醒期：等同窗外，不触发吵醒结算（主人已
+            # 明确要求结束本次休眠）
+            pass
         else:
             # 1. 休眠窗口（M3：force 触发吵醒流程而非拒绝，M1 仅做时间窗判定）
             window = parse_time_window(
@@ -339,8 +378,14 @@ class LivingGate:
         return False, "rolled_off"
 
     def in_sleep_window(self, now: datetime | None = None) -> bool:
-        """此刻是否在休眠窗内（供吵醒计数/静默拦截等调用方判断）。"""
+        """此刻是否在休眠窗内（供吵醒计数/静默拦截等调用方判断）。
+
+        强制清醒期（紧急唤醒）内视作不在窗内——吵醒计数、静默拦截、
+        入睡检测全链一致地"本次休眠已结束"。
+        """
         now = now or datetime.now()
+        if self.force_awake_active(now):
+            return False
         window = parse_time_window(
             _conf_group(self._config_getter() or {}, "sleep").get("sleep_window")
         )

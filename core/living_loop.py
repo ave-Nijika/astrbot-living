@@ -253,13 +253,13 @@ class LivingLoop:
                     self._wake_event.clear()
                 if config_wait in done:
                     self._config_event.clear()
-                logger.debug("[LivingLoop] 暂停中，跳过本轮判定")
+                logger.info("[LivingLoop] 暂停中，跳过本轮判定")
                 continue
 
             if wake_wait in done:
                 # 手动/吵醒唤醒：触发一次 force 判定（概率豁免、约束保留）
                 self._wake_event.clear()
-                logger.debug("[LivingLoop] 被唤醒（wake_event），执行 force 判定")
+                logger.info("[LivingLoop] 被唤醒（wake_event），执行 force 判定")
                 try:
                     await self.heartbeat_once(force=True)
                 except asyncio.CancelledError:
@@ -439,7 +439,7 @@ class LivingLoop:
         try:
             memory = await self._get_memory()
         except Exception as e:
-            logger.debug(f"[LivingLoop] 睡前回顾：记忆不可用，跳过（{e}）")
+            logger.warning(f"[LivingLoop] 睡前回顾：记忆不可用，跳过（{e}）")
             return
         date_key = f"{now.month}月{now.day}日"
         try:
@@ -878,7 +878,7 @@ class LivingLoop:
         try:
             identity = await self._bot_identity_getter()
         except Exception as e:
-            logger.debug(f"[LivingLoop] bot 身份提取失败（跳过参与者边）: {e}")
+            logger.warning(f"[LivingLoop] bot 身份提取失败（跳过参与者边）: {e}")
             return None
         return identity if isinstance(identity, dict) and identity else None
 
@@ -912,7 +912,9 @@ class LivingLoop:
             return
         allow, reason = await self._gate.should_send_message(now)
         if not allow:
-            logger.debug(f"[LivingLoop] 想说话但被闸门拦下 reason={reason}：{text}")
+            logger.info(
+                f"[LivingLoop] 想说话但被闸门拦下 reason={reason}：{text[:50]}"
+            )
             return
         if self._sender is None:
             logger.warning("[LivingLoop] 已配置 target_sessions 但 sender 未注入")

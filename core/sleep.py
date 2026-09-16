@@ -18,7 +18,8 @@ from typing import Any, Callable
 from astrbot.api import logger
 
 # 本插件的命令前缀：这些消息永远不拦（任务书 B4 例外）
-OWN_COMMAND_KEYWORDS = ("living_wake",)
+# 本插件命令与紧急命令：休眠期拦截永远豁免（任务书 M3 补丁 IX 需求 2-5）
+OWN_COMMAND_KEYWORDS = ("living_wake", "/stop")
 
 
 class SleepManager:
@@ -46,6 +47,8 @@ class SleepManager:
         # 最后一个会话"，告别消息发给"待机期里最后活跃的会话"
         self.last_wake_session: str | None = None
         self.last_active_session: str | None = None
+        # 最近一次吵醒计数（休眠窗内），供 describe_mute 报进度
+        self.last_window_count: int = 0
 
     # ------------------------------------------------------------------
     # 配置
@@ -113,6 +116,7 @@ class SleepManager:
             self._stamps.popleft()
 
         count = len(self._stamps)
+        self.last_window_count = count
         if count < threshold:
             return False, count
 
@@ -127,7 +131,15 @@ class SleepManager:
         self._stamps.clear()  # 这一波已经把人吵醒了，清窗重新计数
         if session:
             self.last_wake_session = session
+        self.last_window_count = threshold
         return True, threshold
+
+    def reset_wake_state(self) -> None:
+        """紧急唤醒后清空吵醒计数与冷却（从干净状态开始，
+        任务书 M3 补丁 IX 需求 2-2）。"""
+        self._stamps.clear()
+        self._last_wake_trigger = None
+        self.last_window_count = 0
 
     # ------------------------------------------------------------------
     # 清醒待机（任务书 M3 补丁 II 一）
@@ -197,7 +209,7 @@ class SleepManager:
             try:
                 await self._mood.save()
             except Exception as e:
-                logger.debug(f"[Sleep] 睡眠结算保存失败（不影响本次唤醒）: {e}")
+                logger.warning(f"[Sleep] 睡眠结算保存失败（不影响本次唤醒）: {e}")
         logger.debug(
             f"[Sleep] 吵醒结算 起床气={result['grouchy']} "
             f"睡眠债+{result['debt_added']}（剩余睡眠 {result['remaining_minutes']} 分钟）"
@@ -207,6 +219,29 @@ class SleepManager:
     # ------------------------------------------------------------------
     # 静默拦截判定（任务书 B4）
     # ------------------------------------------------------------------
+    def describe_mute(self, now: datetime | None = None, count: int | None = None) -> str:
+        """拦截上下文文案（任务书 M3 补丁 IX 需求 1）：让主人在日志里一眼
+        看懂"为什么没回复"以及"怎么唤醒我"。
+
+        形如：正在休眠（00:30-08:00），窗内第 1 条；再发 2 条可唤醒
+        （10 分钟窗口内）；紧急联系可发 living_wake_now
+        """
+        now = now or self._now()
+        window_raw = str(
+            self._group("sleep").get("sleep_window", "") or "未配置"
+        )
+        window_minutes = max(
+            self._f(self._group("sleep").get("wake_window_minutes"), 10), 1.0
+        )
+        threshold = max(self._i(self._group("sleep").get("wake_n_messages"), 3), 1)
+        count = self.last_window_count if count is None else count
+        remaining = max(threshold - count, 0)
+        return (
+            f"正在休眠（{window_raw}），窗内第 {count} 条；"
+            f"再发 {remaining} 条可唤醒（{window_minutes:.0f} 分钟窗口内）；"
+            f"紧急联系可发 living_wake_now"
+        )
+
     def should_mute_message(self, now: datetime | None, message_str: str | None) -> bool:
         """这条消息是否应被拦截（不进入回复管线）。
 
@@ -220,6 +255,8 @@ class SleepManager:
             return False
         if self._gate.awake_standby_active(now):
             return False
+        if self._gate.force_awake_active(now):
+            return False  # 紧急唤醒后的强醒期：不拦（本次休眠已结束）
         if not self._gate.in_sleep_window(now):
             return False
         text = str(message_str or "")
