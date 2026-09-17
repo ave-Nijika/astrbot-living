@@ -186,8 +186,8 @@ def test_peek_activity_exercises_gate_but_stays_silent():
 
 def test_activity_pool_has_five_activities():
     pool = default_activities()
-    assert len(pool) == 5
-    assert len({a.name for a in pool}) == 5
+    assert len(pool) == 6
+    assert len({a.name for a in pool}) == 6
 
 
 def test_activity_descriptions_present():

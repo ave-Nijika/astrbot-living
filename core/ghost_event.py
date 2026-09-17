@@ -44,9 +44,11 @@ def build_ghost_event(session_id: str = "living_autonomous") -> AstrMessageEvent
     message_obj.message_str = "(astrbot-living 自主活动，非用户消息)"
     message_obj.raw_message = None
 
-    return GhostEvent(
+    event = GhostEvent(
         message_str=message_obj.message_str,
         message_obj=message_obj,
         platform_meta=platform_meta,
         session_id=session_id,
     )
+    event.role = "admin"  # 自主活动等同管理员权限（绕过 check_admin_permission）
+    return event

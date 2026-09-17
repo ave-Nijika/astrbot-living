@@ -341,4 +341,4 @@ def test_free_activity_config_gate(tmp_path):
     from core.activities import default_activities
 
     acts = default_activities()
-    assert all(a.name != "free" for a in acts)  # 默认不含 free
+    assert any(a.name == "free" for a in acts)  # 默认含 free（补丁 XI-B5）

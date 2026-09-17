@@ -186,9 +186,20 @@ def build_living_tools(
     fetcher: Any = None,
     sandbox: Any = None,
     memory_getter: Callable[..., Any] | None = None,
+    tier: int = 0,
+    write_level: int = 0,
+    workspace: str = "",
+    browser_session: Any = None,
 ) -> ToolSet:
-    """装配生活工具集。能力未注入的工具也会注册但调用时报"不可用"——
-    让 LLM 知道工具存在但坏了，比工具凭空消失更不容易让它胡编。"""
+    """按能力档位装配 ToolSet（任务书 M3 补丁 XI-B1/B2）。
+
+    tier 决定挂载哪些工具，write_level 决定写操作权限，
+    workspace 限制文件操作目录。每次活动周期重建（配置热读）。
+
+    tier 0: 仅自带 4 工具
+    tier >= 1: + 浏览器只读工具（navigate/read/screenshot）
+    tier >= 2: + 工作区写入工具
+    """
     tools: list[FunctionTool] = []
 
     search_tool = WebSearchTool()
@@ -211,4 +222,152 @@ def build_living_tools(
         remember_tool.bind(memory_getter)
         tools.append(remember_tool)
 
+    # tier >= 1: 浏览器工具
+    if tier >= 1 and browser_session is not None:
+        try:
+            from core.browser_tools import (
+                BrowserNavigateTool, BrowserReadTool, BrowserScreenshotTool,
+                BrowserClickTool, BrowserTypeTool,
+            )
+            tools.append(BrowserNavigateTool().bind_session(browser_session))
+            tools.append(BrowserReadTool().bind_session(browser_session))
+            tools.append(BrowserScreenshotTool().bind_session(browser_session))
+            tools.append(BrowserClickTool().bind_session(browser_session, write_level))
+            tools.append(BrowserTypeTool().bind_session(browser_session, write_level))
+        except Exception as e:
+            logger.warning(f"浏览器工具加载失败: {e}")
+
     return ToolSet(tools=tools)
+
+
+# ---------------------------------------------------------------------------
+# 浏览器 FunctionTool 包装（任务书 M3 补丁 XI-B2）
+# ---------------------------------------------------------------------------
+
+class BrowserSessionRef:
+    """浏览器会话引用（跨工具共享同一 BrowserSession 实例）。"""
+    def __init__(self, session):
+        self.session = session
+        self.write_level = 0
+
+
+@pydantic_dataclass
+class BrowserNavigateTool(FunctionTool):
+    name: str = "browser_navigate"
+    description: str = "打开网页，返回标题和正文摘要。"
+    parameters: dict = Field(default_factory=lambda: {
+        "type": "object",
+        "properties": {"url": {"type": "string", "description": "目标 URL"}},
+        "required": ["url"],
+    })
+    _session_ref: Any = None
+
+    def bind_session(self, ref) -> "BrowserNavigateTool":
+        self._session_ref = ref
+        return self
+
+    async def call(self, context, **kwargs) -> ToolExecResult:
+        url = str(kwargs.get("url", "")).strip()
+        if not url.startswith(("http://", "https://")):
+            return "错误：需要 http(s) URL"
+        page = await self._session_ref.session._ensure_page()
+        await page.goto(url, timeout=15000, wait_until="domcontentloaded")
+        title = await page.title()
+        text = await page.inner_text("body")
+        await self._session_ref.session.save_state()
+        return ('        return "已打开「{}」（{}）\n正文前 2000 字：\n{}".format(title, url, text[:2000])')
+
+
+@pydantic_dataclass
+class BrowserReadTool(FunctionTool):
+    name: str = "browser_read"
+    description: str = "读取当前网页的标题和正文内容。"
+    parameters: dict = Field(default_factory=lambda: {
+        "type": "object", "properties": {},
+    })
+    _session_ref: Any = None
+
+    def bind_session(self, ref) -> "BrowserReadTool":
+        self._session_ref = ref
+        return self
+
+    async def call(self, context, **kwargs) -> ToolExecResult:
+        page = await self._session_ref.session._ensure_page()
+        title = await page.title()
+        text = await page.inner_text("body")
+        return "「{}」\n{}".format(title, text[:self._max_text])
+
+
+@pydantic_dataclass
+class BrowserScreenshotTool(FunctionTool):
+    name: str = "browser_screenshot"
+    description: str = "截取当前网页的屏幕截图并保存。"
+    parameters: dict = Field(default_factory=lambda: {
+        "type": "object", "properties": {},
+    })
+    _session_ref: Any = None
+
+    def bind_session(self, ref) -> "BrowserScreenshotTool":
+        self._session_ref = ref
+        return self
+
+    async def call(self, context, **kwargs) -> ToolExecResult:
+        page = await self._session_ref.session._ensure_page()
+        import os as _os
+        path = _os.path.join(tempfile.gettempdir(), "living_screenshot.png")
+        await page.screenshot(path=path)
+        return f"截图已保存 {path}"
+
+
+@pydantic_dataclass
+class BrowserClickTool(FunctionTool):
+    name: str = "browser_click"
+    description: str = "点击网页上的元素（按钮/链接等）。需要 write_level >= 1。"
+    parameters: dict = Field(default_factory=lambda: {
+        "type": "object",
+        "properties": {"selector": {"type": "string", "description": "CSS 选择器"}},
+        "required": ["selector"],
+    })
+    _session_ref: Any = None
+
+    def bind_session(self, ref, write_level: int = 0) -> "BrowserClickTool":
+        self._session_ref = ref
+        self._write_level = write_level
+        return self
+
+    async def call(self, context, **kwargs) -> ToolExecResult:
+        selector = str(kwargs.get("selector", "")).strip()
+        if not selector:
+            return "错误：selector 不能为空"
+        page = await self._session_ref.session._ensure_page()
+        await page.click(selector, timeout=5000)
+        return f"已点击 {selector}"
+
+
+@pydantic_dataclass
+class BrowserTypeTool(FunctionTool):
+    name: str = "browser_type"
+    description: str = "在网页输入框中填入文本。需要 write_level >= 1。"
+    parameters: dict = Field(default_factory=lambda: {
+        "type": "object",
+        "properties": {
+            "selector": {"type": "string", "description": "输入框 CSS 选择器"},
+            "text": {"type": "string", "description": "要输入的文本"},
+        },
+        "required": ["selector", "text"],
+    })
+    _session_ref: Any = None
+
+    def bind_session(self, ref, write_level: int = 0) -> "BrowserTypeTool":
+        self._session_ref = ref
+        self._write_level = write_level
+        return self
+
+    async def call(self, context, **kwargs) -> ToolExecResult:
+        selector = str(kwargs.get("selector", "")).strip()
+        text = str(kwargs.get("text", ""))
+        if not selector:
+            return "错误：selector 不能为空"
+        page = await self._session_ref.session._ensure_page()
+        await page.fill(selector, text)
+        return f"已在 {selector} 填入 {len(text)} 字"

@@ -448,12 +448,47 @@ class MemoryBrowsingActivity(Activity):
         )
 
 
+
+class FreeActivity(Activity):
+    """自由活动：LLM 拿当前工具清单自主决定做什么（任务书 M3 补丁 XI-B5）。"""
+
+    name = "free"
+    description = (
+        "自由时间：你可以用当前可用的工具做任何想做的事——"
+        "搜索、读文章、写代码、记笔记，或者做别的事。"
+    )
+    supports_agent = True
+
+    def agent_intent(self, ctx: ActivityContext) -> str:
+        tools_line = "web_search / fetch_page / run_python / remember"
+        hint = self._params_hint(ctx)
+        extra = f"（方向偏好：{hint}）" if hint else ""
+        return (
+            f"现在是完全的自由活动时间，{extra}。"
+            f"你可以使用这些工具：{tools_line}。"
+            "请自主决定做什么，然后用工具去做，最后汇报你做了什么。"
+        )
+
+    async def run(self, ctx: ActivityContext) -> ActivityOutcome:
+        return await self._run_script(ctx)
+
+    async def _run_script(self, ctx: ActivityContext) -> ActivityOutcome:
+        # free 活动必须走 agent 路径（脚本模式没有自由度）
+        if ctx.agent is None:
+            # agent 不可用时降级为 surf
+            return await SurfActivity().run(ctx)
+        return await self._try_agent_mode(ctx)
+
+
+
 def default_activities() -> list[Activity]:
-    """M3 活动池（顺序即 Pool；选择随机性由 decider/Loop 处理）。"""
+    """M3 活动池（顺序即 Pool；选择随机性由 decider/Loop 处理）。
+    含 FreeActivity（补丁 XI-B5：需要 agent 通道才生效，否则脚本降级）。"""
     return [
         SurfActivity(),
         ReadArticleActivity(),
         MiniGameActivity(),
         PeekFeedbackActivity(),
         MemoryBrowsingActivity(),
+        FreeActivity(),
     ]
