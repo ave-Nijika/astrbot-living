@@ -72,7 +72,7 @@ class ActivityContext:
         counts: dict[str, int] = {}
         for topic in self.recent_topics:
             counts[topic] = counts.get(topic, 0) + 1
-        return "、".join(f"{t}（{c} 次）" for t, c in counts.most_common())
+        return "、".join(f"{t}（{c} 次）" for t, c in sorted(counts.items(), key=lambda kv: -kv[1]))
 
     def pick_topic(self) -> str:
         """主题词来源（按优先级）：
