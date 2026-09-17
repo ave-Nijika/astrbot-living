@@ -243,7 +243,12 @@ class LivingGate:
         return self._force_awake_until
 
     def next_sleep_window_text(self) -> str:
-        """下一次休眠窗的文案（紧急唤醒回复用），如 "00:30-08:00"。"""
+        """下一次休眠窗的文案（紧急唤醒回复用）。
+
+        autonomous 模式下没有固定窗（任务书 M3 补丁 XI-A.3：回复文案
+        按模式区分，不应出现"下次休眠窗"字样）。"""
+        if self.autonomous_mode():
+            return "自主作息（无固定窗）"
         return str(
             _conf_group(self._config_getter() or {}, "sleep").get("sleep_window", "")
             or "未配置"

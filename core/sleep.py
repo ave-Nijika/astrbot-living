@@ -226,10 +226,11 @@ class SleepManagerAutonomous:
 
     async def apply_woken_from_autonomous(
         self, mood, actual_hours: float, planned_hours: float,
-        now: datetime | None = None,
+        now: datetime | None = None, kind: str = "long",
     ) -> dict:
         """自主长睡被吵醒的结算：起床气照常 + 睡眠债按实睡/预计比例保留
         （替代 fixed 窗口的 apply_woken_in_sleep——自主模式没有固定窗）。
+        kind="nap" 时债按 0 处理（任务书 M3 补丁 XI-A.1：小睡无"睡眠债"概念）。
         \"被叫醒了就不睡了\"：gate.exit_autonomous_sleep 由调用方负责。"""
         result = {"grouchy": False, "debt_added": 0.0}
         percent = max(self._f(self._cfg_group().get("grouchiness_percent"), 20), 0.0)
@@ -237,7 +238,10 @@ class SleepManagerAutonomous:
         if mood is not None:
             mood.apply_grouchiness(grouchy)
         result["grouchy"] = grouchy
-        if planned_hours > 0:
+        if kind == "nap":
+            # 小睡无"睡眠债"概念（任务书 M3 补丁 XI-A.1 定稿）
+            pass
+        elif planned_hours > 0:
             debt = 100.0 * max(0.0, min(1.0 - actual_hours / planned_hours, 1.0))
             if mood is not None:
                 mood.add_sleep_debt(debt)
