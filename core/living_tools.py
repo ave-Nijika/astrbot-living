@@ -7,11 +7,13 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Callable
 
 from pydantic import Field
 from pydantic.dataclasses import dataclass as pydantic_dataclass
 
+import asyncio
 import tempfile
 
 from astrbot.api import logger
@@ -225,7 +227,7 @@ def build_living_tools(
         remember_tool.bind(memory_getter)
         tools.append(remember_tool)
 
-    # tier >= 1: 浏览器工具（类定义在本文件后半部，运行时可直接引用）
+    # tier >= 1: 浏览器工具
     if tier >= 1 and browser_session is not None:
         try:
             tools.append(BrowserNavigateTool().bind_session(browser_session))
@@ -234,9 +236,203 @@ def build_living_tools(
             tools.append(BrowserClickTool().bind_session(browser_session, write_level))
             tools.append(BrowserTypeTool().bind_session(browser_session, write_level))
         except Exception as e:
-            logger.warning(f"浏览器工具加载失败（不影响其他工具）: {e}", exc_info=True)
+            logger.warning(f'浏览器工具加载失败（不影响其他工具）: {e}', exc_info=True)
+
+    # tier >= 2: 工作区受限的文件工具（任务书 M3 补丁 XIV 2.1）
+    if tier >= 2 and workspace:
+        tools.append(WorkspaceReadTool().bind(workspace, write_level))
+        tools.append(WorkspaceWriteTool().bind(workspace, write_level))
+        tools.append(WorkspaceListTool().bind(workspace))
+
+    # tier >= 3: 本机 shell（受限命令黑名单 + 红线路径拒绝）
+    if tier >= 3:
+        tools.append(LocalShellTool().bind(workspace, write_level))
 
     return ToolSet(tools=tools)
+
+
+# ---------------------------------------------------------------------------
+# 工作区工具（任务书 M3 补丁 XIV 2.1，tier 2 居家档）
+# ---------------------------------------------------------------------------
+
+def _resolve_inside(workspace: str, rel_path: str) -> str:
+    """把相对路径解析到工作区内，防路径穿越（..）。"""
+    base = str(Path(workspace).resolve())
+    full = str(Path(workspace, rel_path).resolve())
+    if not full.startswith(base):
+        raise PermissionError(f"路径 {rel_path!r} 超出工作区")
+    return full
+
+
+@pydantic_dataclass
+class WorkspaceReadTool(FunctionTool):
+    """读工作区内文件（文本，限长）。"""
+
+    name: str = "workspace_read"
+    description: str = "读取工作区内的文本文件（限前 3000 字）。"
+    parameters: dict = Field(default_factory=lambda: {
+        "type": "object",
+        "properties": {"path": {"type": "string", "description": "相对工作区的文件路径"}},
+        "required": ["path"],
+    })
+    _workspace: str = ""
+    _write_level: int = 0
+
+    def bind(self, workspace: str, write_level: int = 0) -> "WorkspaceReadTool":
+        self._workspace = workspace
+        self._write_level = write_level
+        return self
+
+    async def call(self, context, **kwargs) -> ToolExecResult:
+        rel = str(kwargs.get("path", "")).strip()
+        try:
+            full = _resolve_inside(self._workspace, rel)
+        except PermissionError:
+            return f"拒绝：{rel!r} 超出工作区"
+        p = Path(full)
+        if not p.is_file():
+            return f"文件不存在：{rel}"
+        text = p.read_text(encoding="utf-8", errors="replace")[:3000]
+        return f"{rel} 内容（前 3000 字）：\n{text}"
+
+
+@pydantic_dataclass
+class WorkspaceWriteTool(FunctionTool):
+    """写工作区内文件。受 is_write_allowed + write_level >= 2 双重校验。"""
+
+    name: str = "workspace_write"
+    description: str = "在工作区内写一个文本文件。路径必须在工作区范围内。"
+    parameters: dict = Field(default_factory=lambda: {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "相对工作区的文件路径"},
+            "content": {"type": "string", "description": "要写入的文本内容"},
+        },
+        "required": ["path", "content"],
+    })
+    _workspace: str = ""
+    _write_level: int = 0
+
+    def bind(self, workspace: str, write_level: int = 0) -> "WorkspaceWriteTool":
+        self._workspace = workspace
+        self._write_level = write_level
+        return self
+
+    async def call(self, context, **kwargs) -> ToolExecResult:
+        rel = str(kwargs.get("path", "")).strip()
+        text = str(kwargs.get("content", ""))
+        full = str(Path(self._workspace, rel).resolve())
+        if not is_write_allowed(full, self._workspace, self._write_level):
+            logger.warning(f"[WorkspaceWrite] 写入被拒（红线路径或越界）: {full}")
+            return f"拒绝：{rel!r} 不允许写入（工作区外或受保护路径）"
+        p = Path(full)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+        return f"已写入 {rel}（{len(text)} 字）"
+
+
+@pydantic_dataclass
+class WorkspaceListTool(FunctionTool):
+    """列工作区目录。"""
+
+    name: str = "workspace_list"
+    description: str = "列出工作区内指定目录的文件和子目录。"
+    parameters: dict = Field(default_factory=lambda: {
+        "type": "object",
+        "properties": {"path": {"type": "string", "description": "相对工作区的目录路径，默认根"}},
+    })
+    _workspace: str = ""
+
+    def bind(self, workspace: str) -> "WorkspaceListTool":
+        self._workspace = workspace
+        return self
+
+    async def call(self, context, **kwargs) -> ToolExecResult:
+        rel = str(kwargs.get("path", "") or ".").strip()
+        try:
+            full = _resolve_inside(self._workspace, rel)
+        except PermissionError:
+            return f"拒绝：{rel!r} 超出工作区"
+        p = Path(full)
+        if not p.is_dir():
+            return f"目录不存在：{rel}"
+        entries = sorted(p.iterdir(), key=lambda f: f.name)[:50]
+        lines = [f"{'📁' if e.is_dir() else '📄'} {e.name}" for e in entries]
+        return "\n".join(lines) if lines else "（空目录）"
+
+
+# ---------------------------------------------------------------------------
+# 本机 Shell 工具（任务书 M3 补丁 XIV 2.2 方案 B，tier 3 自由档）
+# 选型理由（写进代码注释）：
+#   AstrBot 内置计算机工具依赖 ComputerUseMixin + booter（local/cua/shipyard），
+#   需要全局 provider_settings.computer_use_runtime 配置匹配才能激活，
+#   且 @builtin_tool 条件门控依赖 pipeline 上下文。living 的 agent 循环
+#   独立于 pipeline，直接挂载内置工具需要绕过多层门控，脆弱且难维护。
+#   方案 B（自建受限 shell）更自洽：复用 asyncio.subprocess，保留命令
+#   黑名单 + 红线路径拒绝 + 超时杀树，与 sandbox 风格一致。
+# ---------------------------------------------------------------------------
+
+# 系统级破坏命令黑名单（不可配置，硬编码安全底线）
+_SHELL_BLACKLIST = re.compile(
+    r"\b(rm\s+-rf|mkfs|shutdown|reboot|halt|poweroff|fdisk|format"
+    r"|del\s+/[sqs]|rmdir\s+/[sq]|rd\s+/[sq]|taskkill\s+/f"
+    r"|chmod\s+777|kill\s+-9\s+1\b|:\(\)\{.*\};:)\b",
+    re.IGNORECASE,
+)
+
+
+@pydantic_dataclass
+class LocalShellTool(FunctionTool):
+    """本机 shell（tier 3 自由档）：受限执行，命令黑名单 + 超时杀树。"""
+
+    name: str = "local_shell"
+    description: str = (
+        "在本机执行一条 shell 命令（秒级，限 30s 超时）。"
+        "禁止破坏性命令（rm -rf / mkfs / shutdown 等自动拦截）。"
+        "工作目录为你的专属工作区。"
+    )
+    parameters: dict = Field(default_factory=lambda: {
+        "type": "object",
+        "properties": {"command": {"type": "string", "description": "shell 命令"}},
+        "required": ["command"],
+    })
+    _workspace: str = ""
+    _write_level: int = 0
+
+    def bind(self, workspace: str, write_level: int = 0) -> "LocalShellTool":
+        self._workspace = workspace
+        self._write_level = write_level
+        return self
+
+    async def call(self, context, **kwargs) -> ToolExecResult:
+        command = str(kwargs.get("command", "")).strip()
+        if not command:
+            return "错误：command 不能为空"
+        if _SHELL_BLACKLIST.search(command):
+            return f"拒绝：命令包含破坏性操作"
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            cwd=self._workspace or None,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=30
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            return "命令超时（30s），已终止"
+        parts = []
+        if stdout:
+            parts.append(f"stdout:\n{stdout.decode('utf-8', errors='replace')[:2000]}")
+        if stderr:
+            parts.append(f"stderr:\n{stderr.decode('utf-8', errors='replace')[:1000]}")
+        if not parts:
+            parts.append(f"执行完成（exit={proc.returncode}）")
+        result = "\n".join(parts)
+        logger.info(f"[LocalShell] {command[:80]} → exit={proc.returncode}")
+        return result
 
 
 # ---------------------------------------------------------------------------
