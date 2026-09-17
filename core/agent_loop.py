@@ -101,19 +101,33 @@ class LivingAgentLoop:
         self,
         context: Any,
         config_getter: Callable[[], Any],
-        tools: ToolSet,
+        tools: ToolSet | None = None,
         persona_getter: Callable[..., Any] | None = None,
-        life_extra_getter: Callable[[], str] | None = None,
+        life_extra_getter: Callable[..., str] | None = None,
         mood: Any = None,
+        tool_builder: Callable[[], ToolSet] | None = None,
     ) -> None:
         self._context = context
         self._config_getter = config_getter
-        self._tools = tools
+        # M3 补丁 XII-P1：tool_builder 优先于静态 tools——
+        # 每次活动周期重建 ToolSet，档位配置热读即生效
+        self._tool_builder = tool_builder
+        self._tools_fallback = tools
         self._persona_getter = persona_getter
         self._life_extra_getter = life_extra_getter
         self._mood = mood
         # 最近一次循环的结算（/living debug 展示 token 统计用）
         self.last_result: AgentRunResult | None = None
+
+    def _get_tools(self) -> ToolSet:
+        """获取当前 ToolSet（优先 tool_builder 工厂，回退 fallback）。"""
+        if self._tool_builder is not None:
+            return self._tool_builder()
+        if self._tools_fallback is not None:
+            return self._tools_fallback
+        from core.living_tools import build_living_tools
+
+        return build_living_tools()
 
     # ------------------------------------------------------------------
     async def run(self, intent: str) -> AgentRunResult:
@@ -199,7 +213,7 @@ class LivingAgentLoop:
         agent_context = AstrAgentContext(context=self._context, event=build_ghost_event())
         request = ProviderRequest(
             prompt=intent,
-            func_tool=self._tools,
+            func_tool=self._get_tools(),
             system_prompt=system_prompt or "",
         )
         runner = ToolLoopAgentRunner()

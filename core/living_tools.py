@@ -12,6 +12,9 @@ from typing import Any, Callable
 from pydantic import Field
 from pydantic.dataclasses import dataclass as pydantic_dataclass
 
+import tempfile
+
+from astrbot.api import logger
 from astrbot.core.agent.tool import FunctionTool, ToolSet, ToolExecResult
 
 FETCH_TEXT_CHARS = 1500  # 喂给 LLM 的正文上限：够读，不至于撑爆上下文
@@ -222,20 +225,16 @@ def build_living_tools(
         remember_tool.bind(memory_getter)
         tools.append(remember_tool)
 
-    # tier >= 1: 浏览器工具
+    # tier >= 1: 浏览器工具（类定义在本文件后半部，运行时可直接引用）
     if tier >= 1 and browser_session is not None:
         try:
-            from core.browser_tools import (
-                BrowserNavigateTool, BrowserReadTool, BrowserScreenshotTool,
-                BrowserClickTool, BrowserTypeTool,
-            )
             tools.append(BrowserNavigateTool().bind_session(browser_session))
             tools.append(BrowserReadTool().bind_session(browser_session))
             tools.append(BrowserScreenshotTool().bind_session(browser_session))
-            tools.append(BrowserClickTool().bind_session(browser_session, write_level))
-            tools.append(BrowserTypeTool().bind_session(browser_session, write_level))
+            tools.append(BrowserClickTool().bind_session(browser_session))
+            tools.append(BrowserTypeTool().bind_session(browser_session))
         except Exception as e:
-            logger.warning(f"浏览器工具加载失败: {e}")
+            logger.warning(f"浏览器工具加载失败（不影响其他工具）: {e}", exc_info=True)
 
     return ToolSet(tools=tools)
 
@@ -275,7 +274,9 @@ class BrowserNavigateTool(FunctionTool):
         title = await page.title()
         text = await page.inner_text("body")
         await self._session_ref.session.save_state()
-        return ('        return "已打开「{}」（{}）\n正文前 2000 字：\n{}".format(title, url, text[:2000])')
+        result = "已打开「{}」（{}）".format(title, url)
+        body = text[:2000]
+        return result + "\n" + body
 
 
 @pydantic_dataclass
