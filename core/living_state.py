@@ -135,6 +135,90 @@ class LivingGate:
         # 语义就是"本次窗内视作不在窗内"——放源头一处生效，全链一致；
         # 窗尾自然过期，无需清理
         self._force_awake_until: datetime | None = None
+        # 自主作息（任务书 M3 补丁 X）：睡眠动力学状态。内存镜像 + SQLite
+        # 持久化（跨重启"继续睡到预计醒来时刻"），与补丁 IX 的 force_awake
+        # 同理放 gate——"是否在睡"是全部睡眠判定的根
+        self._sleep_until: datetime | None = None
+        self._sleep_kind: str | None = None
+        self._fell_asleep_at: datetime | None = None
+        self._last_wakeup_at: datetime | None = None
+
+    # ------------------------------------------------------------------
+    # 自主作息（任务书 M3 补丁 X）
+    # ------------------------------------------------------------------
+    def sleep_mode(self) -> str:
+        """睡眠模式：fixed（默认固定窗口，现状行为）| autonomous（自主作息）。"""
+        try:
+            mode = str(
+                _conf_group(self._config_getter() or {}, "sleep").get(
+                    "sleep_mode", "fixed"
+                )
+                or "fixed"
+            )
+        except Exception:
+            return "fixed"
+        return mode if mode in ("fixed", "autonomous") else "fixed"
+
+    def autonomous_mode(self) -> bool:
+        return self.sleep_mode() == "autonomous"
+
+    def asleep_in_autonomous(self, now: datetime | None = None) -> bool:
+        """自主模式下当前是否处于睡眠中（长睡或小睡，未到预计醒来时刻）。"""
+        now = now or datetime.now()
+        return (
+            self._sleep_until is not None
+            and self._fell_asleep_at is not None
+            and now < self._sleep_until
+        )
+
+    async def enter_autonomous_sleep(
+        self, until: datetime, kind: str, now: datetime | None = None
+    ) -> None:
+        now = now or datetime.now()
+        self._sleep_until = until
+        self._sleep_kind = kind
+        self._fell_asleep_at = now
+        await self._set_raw("sleep_until", until.isoformat())
+        await self._set_raw("sleep_kind", kind)
+        await self._set_raw("fell_asleep_at", now.isoformat())
+
+    async def exit_autonomous_sleep(self, now: datetime | None = None) -> None:
+        """结束本次自主睡眠（到点自然醒 / 被吵醒 / 紧急唤醒共用），
+        记录醒来时刻供 min_awake_minutes 与醒后时长判定。"""
+        now = now or datetime.now()
+        self._sleep_until = None
+        self._sleep_kind = None
+        self._fell_asleep_at = None
+        self._last_wakeup_at = now
+        await self._set_raw("sleep_until", "")
+        await self._set_raw("sleep_kind", "")
+        await self._set_raw("fell_asleep_at", "")
+        await self._set_raw("last_wakeup_at", now.isoformat())
+
+    def sleep_state(self, now: datetime | None = None) -> dict:
+        """自主睡眠状态快照（loop 结算与 /living debug 用）。"""
+        now = now or datetime.now()
+        return {
+            "asleep": self.asleep_in_autonomous(now),
+            "until": self._sleep_until,
+            "kind": self._sleep_kind,
+            "fell_asleep_at": self._fell_asleep_at,
+            "last_wakeup_at": self._last_wakeup_at,
+        }
+
+    async def record_wakeup(self, now: datetime | None = None) -> None:
+        """显式记录醒来时刻（自主睡眠退出时由 exit_autonomous_sleep 记录；
+        其他醒来路径如 fixed 窗结束也可调用，供 min_awake_minutes 判定）。"""
+        now = now or datetime.now()
+        self._last_wakeup_at = now
+        await self._set_raw("last_wakeup_at", now.isoformat())
+
+    def minutes_since_last_wakeup(self, now: datetime | None = None) -> float | None:
+        raw = getattr(self, "_last_wakeup_at", None)
+        if raw is None:
+            return None
+        now = now or datetime.now()
+        return max((now - raw).total_seconds() / 60.0, 0.0)
 
     # ------------------------------------------------------------------
     # 紧急唤醒（任务书 M3 补丁 IX 需求 2）
@@ -169,9 +253,21 @@ class LivingGate:
     # 清醒待机（任务书 M3 补丁 II 一）
     # ------------------------------------------------------------------
     async def load_state(self) -> None:
-        """启动时恢复待机状态（跨重启：AstrBot 重启时若仍在待机期内则延续）。"""
+        """启动时恢复待机与自主睡眠状态（跨重启：重启时若在睡，继续睡到
+        预计醒来时刻，不重置为"刚入睡"）。"""
         raw = await self._get_raw("awake_until")
         self._awake_until = _parse_iso(raw)
+        self._sleep_until = _parse_iso(await self._get_raw("sleep_until"))
+        self._fell_asleep_at = _parse_iso(await self._get_raw("fell_asleep_at"))
+        self._last_wakeup_at = _parse_iso(await self._get_raw("last_wakeup_at"))
+        kind = await self._get_raw("sleep_kind")
+        # 重启时已过预计醒来时刻 → 视作已自然醒（不在睡）
+        self._sleep_kind = kind if self.asleep_in_autonomous() else (
+            kind if (self._sleep_until and self._fell_asleep_at) else None
+        )
+        if not self.asleep_in_autonomous() and self._sleep_until is not None:
+            self._sleep_until = None
+            self._fell_asleep_at = None
 
     def awake_standby_active(self, now: datetime | None = None) -> bool:
         """当前是否处于清醒待机期（同步；供消息路径的同步判定用）。"""
@@ -386,6 +482,9 @@ class LivingGate:
         now = now or datetime.now()
         if self.force_awake_active(now):
             return False
+        # 自主作息（补丁 X）：睡眠由动力学决定，固定时间窗不参与判定
+        if self.autonomous_mode():
+            return self.asleep_in_autonomous(now)
         window = parse_time_window(
             _conf_group(self._config_getter() or {}, "sleep").get("sleep_window")
         )

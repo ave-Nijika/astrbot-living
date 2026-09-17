@@ -388,3 +388,39 @@ class MoodState:
             liked = "、".join(f"{k}({v:.2f})" for k, v in top)
             parts.append(f"最近对这些有兴趣：{liked}")
         return "；".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# 自主作息（任务书 M3 补丁 X）：醒来恢复与白天小睡
+# ---------------------------------------------------------------------------
+
+async def restore_after_sleep(mood, actual_hours: float, planned_hours: float) -> dict:
+    """长睡醒来结算：energy 恢复到 0.85~1.0，睡眠债按实睡比例保留。
+
+    睡满预计时长 → 债清零；早醒 → 按实睡/预计比例保留残余债
+    （"睡到中午"与"八九点就起来"的差别在这里体现）。
+    返回结算明细供日志。
+    """
+    ratio = 1.0
+    if planned_hours > 0:
+        ratio = max(0.0, min(1.0, actual_hours / planned_hours))
+    mood.sleep_debt = _clamp(mood.sleep_debt * (1.0 - ratio), FATIGUE_MIN, FATIGUE_MAX)
+    restore = 0.85 + 0.15 * ratio  # 睡得越足恢复越高（0.85~1.0）
+    mood.energy = mood._clamp_energy(max(mood.energy, restore))
+    mood.arousal = _clamp(mood.arousal * AROUSAL_SLEEP_SETTLE, UNIT_MIN, UNIT_MAX)
+    await mood.save()
+    return {
+        "debt_remaining": mood.sleep_debt,
+        "energy": mood.energy,
+        "ratio": ratio,
+    }
+
+
+async def apply_nap_effects(mood, nap_minutes: float) -> dict:
+    """白天小睡结束结算：energy +0.3、sleep_debt -20（下限 0）。"""
+    mood.energy = mood._clamp_energy(mood.energy + 0.3)
+    mood.sleep_debt = _clamp(
+        mood.sleep_debt - 20.0 * (nap_minutes / 60.0) * 2, FATIGUE_MIN, FATIGUE_MAX
+    )
+    await mood.save()
+    return {"energy": mood.energy, "debt": mood.sleep_debt}

@@ -162,6 +162,72 @@
         "type": "string",
         "default": "00:30-08:00"
       },
+      "sleep_mode": {
+        "description": "睡眠模式",
+        "hint": "fixed=固定窗口（默认）；autonomous=自主作息——由睡意动力学（精力/睡眠债/昼夜节律+抖动）决定何时睡、睡多久，熬夜/睡懒觉/白天补觉自然涌现。切换热生效。",
+        "type": "string",
+        "options": ["fixed", "autonomous"],
+        "default": "fixed"
+      },
+      "min_sleep_hours": {
+        "description": "自主模式：最短睡眠（小时）",
+        "type": "float",
+        "default": 5.0
+      },
+      "max_sleep_hours": {
+        "description": "自主模式：最长睡眠（小时）",
+        "type": "float",
+        "default": 11.0
+      },
+      "min_awake_minutes": {
+        "description": "自主模式：醒后最短清醒时长（分钟）",
+        "hint": "刚醒来的这段时间内不会再睡（防连睡）。",
+        "type": "int",
+        "default": 240
+      },
+      "sleepiness_threshold": {
+        "description": "入睡阈值（0-1）",
+        "hint": "睡意值达到该值即入睡。",
+        "type": "float",
+        "default": 0.6
+      },
+      "sleepiness_jitter": {
+        "description": "睡意随机抖动幅度（0-0.5）",
+        "hint": "同样状态下不必然同时刻入睡。",
+        "type": "float",
+        "default": 0.15
+      },
+      "weights": {
+        "description": "睡意权重",
+        "hint": "energy/debt/circadian 三项加权。",
+        "type": "object",
+        "items": {
+          "energy": {"description": "精力权重", "type": "float", "default": 0.35},
+          "debt": {"description": "睡眠债权重", "type": "float", "default": 0.35},
+          "circadian": {"description": "昼夜节律权重", "type": "float", "default": 0.30}
+        }
+      },
+      "nap_enabled": {
+        "description": "白天小睡",
+        "type": "bool",
+        "default": true
+      },
+      "nap_min_minutes": {
+        "description": "小睡最短时长（分钟）",
+        "type": "int",
+        "default": 20
+      },
+      "nap_max_minutes": {
+        "description": "小睡最长时长（分钟）",
+        "type": "int",
+        "default": 90
+      },
+      "circadian_hint": {
+        "description": "昼夜节律提示窗口",
+        "hint": "该时段睡意倾向最高（仅加权，不强制）。格式 HH:MM-HH:MM。",
+        "type": "string",
+        "default": "23:00-07:00"
+      },
       "fatigue_threshold": {
         "description": "疲惫阈值（0-100）",
         "type": "int",

@@ -334,6 +334,10 @@ class LivingLoop:
             # 唤醒日志由 woken 分支负责）
             self._asleep = False
 
+        # M3 补丁 X：自主作息——到点自然醒（结算恢复）与白天小睡。
+        # 只在 autonomous 模式激活；fixed 模式下以下方法全部短路返回。
+        await self._autonomous_sleep_tick(now)
+
         allow, reason = await self._gate.should_wake(now, force=force)
         if not allow:
             return False, reason, None
@@ -429,6 +433,87 @@ class LivingLoop:
                 logger.warning("[LivingLoop] 入睡告别消息未送达（无匹配平台）")
         except Exception as e:
             logger.warning(f"[LivingLoop] 入睡告别消息发送失败: {e}")
+
+    def _sleep_mode(self) -> str:
+        try:
+            return str(
+                _conf_group(self._config_getter(), "sleep").get(
+                    "sleep_mode", "fixed"
+                )
+                or "fixed"
+            )
+        except Exception:
+            return "fixed"
+
+    async def _autonomous_sleep_tick(self, now: datetime) -> None:
+        """自主作息心跳（补丁 X）：到点自然醒结算 / 不在睡时评估入睡与小睡。
+
+        fixed 模式或 manager 未注入时全部短路——行为与现状零差别。
+        """
+        if self._sleep_mode() != "autonomous" or self._sleep_manager is None:
+            return
+        state = self._gate.sleep_state(now)
+
+        # 1) 到点自然醒：结算恢复（debt 按实睡比例、energy 恢复）+ 日志
+        if state["asleep"] and now >= state["until"]:
+            kind = state["kind"] or "long"
+            fell = state.get("fell_asleep_at") or now
+            actual_h = max((now - fell).total_seconds() / 3600.0, 0.0)
+            if self._mood is not None:
+                from core.mood import apply_nap_effects, restore_after_sleep
+
+                if kind == "long":
+                    planned = await self._planned_sleep_hours()
+                    detail = await restore_after_sleep(
+                        self._mood, actual_h, planned
+                    )
+                    logger.info(
+                        f"[Sleep] 自然醒（实睡 {actual_h:.1f} 小时），"
+                        f"能量恢复 {detail['energy']:.2f}，"
+                        f"债务剩余 {detail['debt_remaining']:.0f}"
+                    )
+                else:
+                    detail = await apply_nap_effects(self._mood, actual_h * 60.0)
+                    logger.info(
+                        f"[Sleep] 白天小睡 {actual_h * 60:.0f} 分钟"
+                        f"（精力 {detail['energy']:.2f}）"
+                    )
+            await self._gate.exit_autonomous_sleep(now)
+            self._pending_dream = True  # 自然醒掷梦（沿用补丁 II 链路）
+            return
+
+        if state["asleep"]:
+            return  # 还在睡（静默/计数/紧急唤醒由既有链路处理）
+
+        # 2) 不在睡：先评估白天小睡，再评估长睡（互斥，先到先得）
+        nap = await self._sleep_manager.should_nap(self._mood, now)             if self._mood is not None else (False, 0.0)
+        if nap[0]:
+            minutes = nap[1]
+            until = now + timedelta(minutes=minutes)
+            await self._gate.enter_autonomous_sleep(until, "nap", now)
+            logger.info(f"[Sleep] 白天小睡 {minutes:.0f} 分钟（精力不足，补觉）")
+            return
+
+        result = await self._sleep_manager.begin_autonomous_sleep(
+            self._mood, now
+        )
+        if result.get("asleep"):
+            logger.info(
+                f"[Living] 进入自主睡眠，预计 "
+                f"{result['until'].strftime('%H:%M')} 自然醒"
+            )
+
+    async def _planned_sleep_hours(self) -> float:
+        """本次入睡时记录的预计时长（供醒来比例结算）。"""
+        try:
+            state = self._gate.sleep_state()
+            fell = state.get("fell_asleep_at")
+            until = state.get("until")
+            if fell and until:
+                return max((until - fell).total_seconds() / 3600.0, 0.1)
+        except Exception:
+            pass
+        return 8.0
 
     async def _write_bedtime_review(self, now: datetime) -> None:
         """睡前回顾（任务书 B2）：把今天的活动记忆聚成一句话存起来。
