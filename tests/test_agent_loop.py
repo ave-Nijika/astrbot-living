@@ -192,6 +192,70 @@ def test_build_living_tools_skips_missing_abilities():
 
 
 # ---------------------------------------------------------------------------
+# 补丁 XIII：tool_builder 接线（配置热读的运行时链路）
+# ---------------------------------------------------------------------------
+def test_agent_loop_tool_builder_invoked_per_call():
+    """LivingAgentLoop 每次取工具都重新调用 tool_builder（补丁 XIII-P1）。
+
+    这是"档位配置热读"的运行时链路：若 _get_tools 退回静态工具，
+    改 autonomy.tier 将不再生效（补丁 XI/XII 的病根）。
+    """
+    from core.agent_loop import LivingAgentLoop
+    from core.living_tools import ToolSet
+
+    calls = []
+
+    def builder():
+        calls.append(1)
+        return ToolSet(tools=[])
+
+    loop = LivingAgentLoop(
+        context=None,
+        config_getter=lambda: {},
+        tool_builder=builder,
+    )
+    loop._get_tools()
+    loop._get_tools()
+    assert len(calls) == 2, "tool_builder 未被每次调用（配置热读链路断裂）"
+
+
+def test_agent_loop_tool_builder_reflects_config_change():
+    """同一 loop 内配置变化 → 下一次取到的工具集随之变化。"""
+    from core.agent_loop import LivingAgentLoop
+
+    state = {"tier": 0}
+
+    def builder():
+        return build_living_tools(
+            searcher=FakeSearcher(),
+            tier=state["tier"],
+            browser_session=object() if state["tier"] >= 1 else None,
+        )
+
+    loop = LivingAgentLoop(
+        context=None, config_getter=lambda: {}, tool_builder=builder,
+    )
+    names_t0 = [t.name for t in loop._get_tools().tools]
+    state["tier"] = 1
+    names_t1 = [t.name for t in loop._get_tools().tools]
+    assert "browser_navigate" not in names_t0
+    assert "browser_navigate" in names_t1
+    assert names_t0 != names_t1
+
+
+def test_agent_loop_falls_back_to_static_tools():
+    """未提供 tool_builder 时回退静态 tools（旧行为不回归）。"""
+    from core.agent_loop import LivingAgentLoop
+    from core.living_tools import ToolSet
+
+    static = ToolSet(tools=[])
+    loop = LivingAgentLoop(
+        context=None, config_getter=lambda: {}, tools=static,
+    )
+    assert loop._get_tools() is static
+
+
+# ---------------------------------------------------------------------------
 # 活动 agent 模式与回退（C1）
 # ---------------------------------------------------------------------------
 def _ctx_with_agent(agent, searcher=None, **kw):

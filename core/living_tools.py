@@ -231,8 +231,8 @@ def build_living_tools(
             tools.append(BrowserNavigateTool().bind_session(browser_session))
             tools.append(BrowserReadTool().bind_session(browser_session))
             tools.append(BrowserScreenshotTool().bind_session(browser_session))
-            tools.append(BrowserClickTool().bind_session(browser_session))
-            tools.append(BrowserTypeTool().bind_session(browser_session))
+            tools.append(BrowserClickTool().bind_session(browser_session, write_level))
+            tools.append(BrowserTypeTool().bind_session(browser_session, write_level))
         except Exception as e:
             logger.warning(f"浏览器工具加载失败（不影响其他工具）: {e}", exc_info=True)
 

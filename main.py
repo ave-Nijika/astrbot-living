@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from astrbot.api import logger
@@ -21,6 +22,7 @@ from astrbot.api.star import Context, Star
 
 from .core.activities import default_activities
 from .core.agent_loop import LivingAgentLoop
+from .core.autonomy import read_tier, read_write_level
 from .core.decider import ActivityDecider
 from .core.fetcher import WebFetcher
 from .core.ghost_event import build_ghost_event
@@ -86,6 +88,8 @@ class LivingPlugin(Star):
         self.sleep_manager: SleepManager | None = None
         self._selfheal_task: asyncio.Task | None = None
         self._interest_cooldown_task: asyncio.Task | None = None
+        # 补丁 XIII：浏览器会话（惰性创建，跨活动复用 → 登录态保持）
+        self._browser_session: Any = None
 
         logger.info(f"[{PLUGIN_NAME}] M3 加载完成（心境+休眠+agent 循环）")
 
@@ -369,6 +373,66 @@ class LivingPlugin(Star):
         return text or None
 
     # ------------------------------------------------------------------
+    # 自主能力接线（补丁 XIII：档位配置热读 + 浏览器会话复用）
+    # ------------------------------------------------------------------
+    def _living_workspace(self) -> str:
+        """"它的家"：自主活动工作区目录（配置优先，缺省用插件数据目录）。"""
+        configured = str(self._cfg("autonomy", "workspace_dir", "") or "").strip()
+        if configured:
+            return configured
+        return str(Path("data") / "plugin_data" / f"{PLUGIN_NAME}_home")
+
+    def _get_browser_session(self, write_level: int):
+        """浏览器会话复用（同一会话跨活动共享 → 登录态保持）。
+
+        会话对象惰性创建；Playwright 未安装时返回 None（工具不注册，
+        不影响其他能力）。write_level 每次同步，确保分层实时生效。
+        """
+        if self._browser_session is None:
+            try:
+                from .core.browser_tools import BrowserSession
+
+                self._browser_session = BrowserSession(
+                    self._living_workspace(), write_level
+                )
+                logger.info(f"[{PLUGIN_NAME}] 浏览器会话已创建（写层级={write_level}）")
+            except Exception as e:
+                logger.warning(
+                    f"[{PLUGIN_NAME}] 浏览器会话创建失败（本次降级为无浏览能力）: {e}",
+                    exc_info=True,
+                )
+                return None
+        else:
+            self._browser_session.write_level = write_level
+        return self._browser_session
+
+    def _build_agent_tools(self):
+        """按当前 autonomy 配置组装生活工具集。
+
+        由 LivingAgentLoop 在每次活动前调用（补丁 XIII-P1）——
+        档位/写层级配置热读，改配置下个活动周期即生效，无需重启插件。
+        """
+        config = self.config if isinstance(self.config, dict) else {}
+        tier = read_tier(config)
+        write_level = read_write_level(config)
+        browser_session = self._get_browser_session(write_level) if tier >= 1 else None
+        tools = build_living_tools(
+            searcher=self.searcher,
+            fetcher=self.fetcher,
+            sandbox=self.sandbox,
+            memory_getter=self._get_memory,
+            tier=tier,
+            write_level=write_level,
+            workspace=self._living_workspace(),
+            browser_session=browser_session,
+        )
+        logger.info(
+            f"[{PLUGIN_NAME}] 档位={tier} 写层级={write_level} "
+            f"工具={[t.name for t in tools.tools]}"
+        )
+        return tools
+
+    # ------------------------------------------------------------------
     # 生命周期（需求 F：接线 + 热重载安全）
     # ------------------------------------------------------------------
     async def initialize(self) -> None:
@@ -404,15 +468,10 @@ class LivingPlugin(Star):
         agent_loop = LivingAgentLoop(
             context=self.context,
             config_getter=lambda: self.config,
-            tools=build_living_tools(
-                searcher=self.searcher,
-                fetcher=self.fetcher,
-                sandbox=self.sandbox,
-                memory_getter=self._get_memory,
-            ),
             persona_getter=self._persona_prompt,
             life_extra_getter=lambda: str(self._cfg("persona", "life_extra", "") or ""),
             mood=self.mood,
+            tool_builder=self._build_agent_tools,
         )
         decider = ActivityDecider(
             activities=default_activities(),
