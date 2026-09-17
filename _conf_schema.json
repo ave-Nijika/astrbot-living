@@ -1,4 +1,28 @@
 {
+    "autonomy": {
+    "description": "自主活动档位",
+    "hint": "档位越高能力越强。每次活动组装工具时热读，切换下个心拍生效。0=仅自带工具；1=+浏览器只读；2=+工作区写；3=全权。",
+    "type": "object",
+    "items": {
+      "tier": {
+        "description": "能力档位（0-3）",
+        "type": "int",
+        "default": 1
+      },
+      "write_level": {
+        "description": "对外写操作层级（0-3）",
+        "hint": "0=只读（禁止任何提交）；1=浏览交互（点击/翻页/填表）；2=轻写入（评论/点赞/关注）；3=全权（发帖/私信等）。一次授权法：设了就能用。",
+        "type": "int",
+        "default": 0
+      },
+      "workspace_dir": {
+        "description": "工作区目录",
+        "hint": "tier 2+ 的文件/Shell/Python 操作限制在此目录内（目录外只读）。留空则自动使用插件数据目录下的 workspace/。",
+        "type": "string",
+        "default": ""
+      }
+    }
+  },
   "decision": {
     "description": "决策层（M1 生效，M0 先占位）",
     "type": "object",

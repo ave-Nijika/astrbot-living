@@ -346,10 +346,34 @@ class LivingLoop:
             # 吵醒结算（任务书 B3）：起床气 + 睡眠债，然后带着情绪醒来；
             # 随后进入清醒待机（补丁 II 一）并立刻回主人一句确认（补丁 II 二）
             if self._sleep_manager is not None:
-                try:
-                    await self._sleep_manager.apply_woken_in_sleep(now)
-                except Exception as e:
-                    logger.warning(f"[LivingLoop] 吵醒结算失败（不影响唤醒）: {e}")
+                # M3 补丁 XI-A.1：按模式分流——自主模式走专用结算
+                if self._gate.autonomous_mode():
+                    state = self._gate.sleep_state(now)
+                    fell = state.get("fell_asleep_at") or now
+                    actual_h = max((now - fell).total_seconds() / 3600.0, 0.0)
+                    planned_h = await self._planned_sleep_hours()
+                    kind = state.get("kind") or "long"
+                    try:
+                        settle = await self._sleep_manager.apply_woken_from_autonomous(
+                            self._mood, actual_h, planned_h, kind=kind,
+                        )
+                        logger.info(
+                            f"[LivingLoop] 自主睡眠被吵醒（实睡 {actual_h:.1f}h/"
+                            f"预计 {planned_h:.1f}h），起床气={settle['grouchy']} "
+                            f"债务+{settle['debt_added']}"
+                        )
+                    except Exception as e:
+                        logger.warning(f"[LivingLoop] 自主吵醒结算失败: {e}")
+                    # 立即退出自主睡眠状态——不退出的话 in_sleep_window 继续
+                    # 返回 True → 静默拦截持续生效（补丁 XI-A.1 根因）
+                    await self._gate.exit_autonomous_sleep(now)
+                else:
+                    try:
+                        await self._sleep_manager.apply_woken_in_sleep(now)
+                    except Exception as e:
+                        logger.warning(
+                            f"[LivingLoop] 吵醒结算失败（不影响唤醒）: {e}"
+                        )
                 try:
                     minutes = await self._sleep_manager.begin_standby(now)
                     logger.info(

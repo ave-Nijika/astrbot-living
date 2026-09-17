@@ -229,6 +229,8 @@ def test_refresh_standby_records_active_session():
 # ---------------------------------------------------------------------------
 class StandbyGate:
     """真实语义的待机闸门替身（固定在休眠窗内）。"""
+    def autonomous_mode(self):
+        return False
 
     def __init__(self):
         self.awake_until: datetime | None = None

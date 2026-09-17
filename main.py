@@ -967,12 +967,20 @@ class LivingPlugin(Star):
         if self.gate is None or self.sleep_manager is None:
             yield event.plain_result("休眠组件未就绪，稍后再试")
             return
+        # M3 补丁 XI-A.3：autonomous 模式下先退出自主睡眠（本次中断不回睡）
+        if self.gate.autonomous_mode() and self.gate.asleep_in_autonomous(now):
+            await self.gate.exit_autonomous_sleep(now)
+            logger.info("[Living] 紧急唤醒：自主睡眠已终止")
         until = await self.gate.force_awake_now(now)
         # 清空吵醒计数与待机状态（从干净状态开始）
         self.sleep_manager.reset_wake_state()
         await self.gate.clear_awake_until()
         window_text = self.gate.next_sleep_window_text()
-        if until is None:
+        if self.gate.autonomous_mode():
+            yield event.plain_result(
+                "已紧急唤醒，本次自主睡眠结束。下次入睡由睡意动力学决定。"
+            )
+        elif until is None:
             yield event.plain_result(
                 f"当前不在休眠窗内。下次休眠窗：{window_text}"
             )

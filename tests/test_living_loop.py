@@ -37,6 +37,8 @@ BASE_CONFIG = {
 # 替身
 # ---------------------------------------------------------------------------
 class FakeGate:
+    def autonomous_mode(self):
+        return False
     def __init__(self, allow=True, reason="ok", standby=False):
         self.allow = allow
         self.reason = reason
