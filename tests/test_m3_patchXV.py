@@ -332,10 +332,13 @@ def test_loop_free_switch_hot():
 
 
 def test_schema_declares_free_activity_enabled():
-    """schema decision 组声明了该键（bool，默认 true）——GUI 可见。"""
+    """schema decision 组声明了该键（bool，默认 true）——GUI 可见。
+
+    补丁 XVIII 起各功能组收拢在 advanced 下，路径为 advanced.decision。
+    """
     import json
 
     schema = json.loads(Path("_conf_schema.json").read_text(encoding="utf-8"))
-    key = schema["decision"]["items"]["free_activity_enabled"]
+    key = schema["advanced"]["items"]["decision"]["items"]["free_activity_enabled"]
     assert key["type"] == "bool"
     assert key["default"] is True

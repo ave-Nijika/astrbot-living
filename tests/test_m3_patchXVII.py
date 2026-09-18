@@ -31,16 +31,20 @@ DEAD_KEYS = [
 # 验收 1/清单 1-3：schema 减重
 # ---------------------------------------------------------------------------
 def test_schema_dead_keys_removed():
-    """9 个死键从 schema 消失；misc 组整组删除；其余组不留空壳。"""
+    """9 个死键从 schema 消失；misc 组整组删除；其余组不留空壳。
+
+    补丁 XVIII 起各功能组收拢在 advanced 下（路径多一层 items）。
+    """
     schema = json.loads((WORKDIR / "_conf_schema.json").read_text(encoding="utf-8"))
+    advanced = schema["advanced"]["items"]
     for group, key in DEAD_KEYS:
         if group == "misc":
-            assert group not in schema  # 只剩死键的组整组删
+            assert group not in advanced  # 只剩死键的组整组删
             continue
-        assert key not in schema[group]["items"], f"{group}.{key} 应已删除"
-        assert schema[group]["items"], f"{group} 组不应是空壳"
+        assert key not in advanced[group]["items"], f"{group}.{key} 应已删除"
+        assert advanced[group]["items"], f"{group} 组不应是空壳"
     # fatigue_rate_per_hour 保留但移出 UI
-    rate = schema["sleep"]["items"]["fatigue_rate_per_hour"]
+    rate = advanced["sleep"]["items"]["fatigue_rate_per_hour"]
     assert rate.get("invisible") is True
     assert rate["default"] == 4.0  # 代码兜底值与 schema 默认一致
 
@@ -48,7 +52,12 @@ def test_schema_dead_keys_removed():
 def test_schema_decay_default_lowered():
     """清单 8：interest_daily_decay 默认 0.9 → 0.7。"""
     schema = json.loads((WORKDIR / "_conf_schema.json").read_text(encoding="utf-8"))
-    assert schema["decision"]["items"]["interest_daily_decay"]["default"] == 0.7
+    assert (
+        schema["advanced"]["items"]["decision"]["items"]["interest_daily_decay"][
+            "default"
+        ]
+        == 0.7
+    )
 
 
 def test_production_code_no_dead_key_reads():

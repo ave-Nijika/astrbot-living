@@ -29,6 +29,8 @@ from .core.autonomy import (
     read_tier,
     read_write_level,
 )
+from .core.config_knobs import ConfigKnobs
+from .core.conf_path import conf_group
 from .core.decider import ActivityDecider
 from .core.fetcher import WebFetcher
 from .core.ghost_event import GHOST_PLATFORM_ID, build_ghost_event
@@ -94,6 +96,9 @@ class LivingPlugin(Star):
         self.sleep_manager: SleepManager | None = None
         self._selfheal_task: asyncio.Task | None = None
         self._interest_cooldown_task: asyncio.Task | None = None
+        # 补丁 XVIII：新手旋钮监视
+        self._knobs: Any = None
+        self._knobs_task: asyncio.Task | None = None
         # 补丁 XIII：浏览器会话（惰性创建，跨活动复用 → 登录态保持）
         self._browser_session: Any = None
         # 补丁 XVI：bot 自身身份缓存（来自真实消息事件，与原生侧同源）
@@ -105,11 +110,26 @@ class LivingPlugin(Star):
     # 配置与路径
     # ------------------------------------------------------------------
     def _cfg(self, group: str, key: str, default: Any = None) -> Any:
-        """读配置（AstrBotConfig 是 dict 子类；缺失/空值回默认）。"""
+        """读配置（AstrBotConfig 是 dict 子类；缺失/空值回默认）。
+
+        补丁 XVIII 起底层键收拢在 advanced 组下，经 conf_group 统一读取
+        （嵌套优先、平铺兜底）；组名与键名不变。
+        """
         try:
-            group_cfg = self.config.get(group, {})
+            from .core.conf_path import conf_group
+
+            group_cfg = conf_group(self.config, group)
             val = group_cfg.get(key, default)
             return default if val in ("", None) and default is not None else val
+        except Exception:
+            return default
+
+    def _preset(self, key: str, default: Any = None) -> Any:
+        """读新手设置组的键（旋钮与 life_extra，补丁 XVIII）。"""
+        try:
+            from .core.conf_path import preset_value
+
+            return preset_value(self.config, key, default)
         except Exception:
             return default
 
@@ -532,7 +552,7 @@ class LivingPlugin(Star):
             context=self.context,
             config_getter=lambda: self.config,
             persona_getter=self._persona_prompt,
-            life_extra_getter=lambda: str(self._cfg("persona", "life_extra", "") or ""),
+            life_extra_getter=lambda: str(self._preset("life_extra", "") or ""),
             mood=self.mood,
             tool_builder=self._build_agent_tools,
         )
@@ -546,7 +566,7 @@ class LivingPlugin(Star):
             llm_call=self._decision_llm_call,
             mood=self.mood,
             persona_getter=self._persona_prompt,
-            life_extra_getter=lambda: str(self._cfg("persona", "life_extra", "") or ""),
+            life_extra_getter=lambda: str(self._preset("life_extra", "") or ""),
             memory_getter=self._get_memory,
         )
         self.loop = LivingLoop(
@@ -575,7 +595,7 @@ class LivingPlugin(Star):
                 config_getter=lambda: self.config,
                 persona_getter=self._persona_prompt,
                 life_extra_getter=lambda: str(
-                    self._cfg("persona", "life_extra", "") or ""
+                    self._preset("life_extra", "") or ""
                 ),
                 mood=self.mood,
             ),
@@ -593,6 +613,35 @@ class LivingPlugin(Star):
         self._interest_cooldown_task = asyncio.create_task(
             self._run_interest_cooldown_once(), name="living-interest-cooldown"
         )
+        # 补丁 XVIII：新手旋钮监视（批量预设器，独立周期任务）
+        self._knobs = ConfigKnobs(
+            lambda: self.config, save_config=self._save_config_async
+        )
+        self._knobs_task = asyncio.create_task(
+            self._run_knob_loop(), name="living-config-knobs"
+        )
+
+    async def _save_config_async(self) -> None:
+        """把内存中的配置变更持久化（AstrBotConfig 提供 async save）。"""
+        save = getattr(self.config, "save_config_async", None)
+        if callable(save):
+            await save()
+
+    async def _run_knob_loop(self) -> None:
+        """旋钮监视循环：先记基线（不写入），之后每 5s 处理增量。
+
+        与 LivingLoop 的配置 watcher 同节奏——纯内存比对，零 LLM 零网络。
+        apply_changes 内部吞一切异常，这里只兜底任务级意外。
+        """
+        try:
+            self._knobs.arm()
+            while True:
+                await asyncio.sleep(5)
+                await self._knobs.apply_changes()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"[{PLUGIN_NAME}] 旋钮监视任务退出（不影响服务）: {e}")
 
     async def _run_interest_cooldown_once(self) -> None:
         """历史偏执数据降温（补丁 VII 需求 5）：单主题兴趣 >= 阈值时乘系数
@@ -846,8 +895,7 @@ class LivingPlugin(Star):
                 f"上次活动：{last_act.strftime('%H:%M') if last_act else '无记录'}"
             )
             lines.append(f"今日主动消息：{state.get('message_count', 0)} 条")
-            window = str((self.config.get("sleep", {}) or {}).get(
-                "sleep_window", "") or "未配置")
+            window = str(self._cfg("sleep", "sleep_window", "") or "未配置")
             lines.append(
                 f"休眠窗：{window}"
                 f"（当前{'在内' if self.gate.in_sleep_window() else '在外'}）"
@@ -1033,9 +1081,7 @@ class LivingPlugin(Star):
                 lines.append(f"  {step}: {verdict}")
         except Exception as e:
             lines.append(f"  （判定链评估失败：{e}）")
-        decision_mode = str(
-            (self.config.get("decision", {}) or {}).get("decision_mode", "hybrid")
-        )
+        decision_mode = str(self._cfg("decision", "decision_mode", "hybrid"))
         lines.append(f"决策模式：{decision_mode}")
         try:
             chain = await build_provider_chain(self.context, lambda: self.config)
@@ -1195,8 +1241,10 @@ class LivingPlugin(Star):
         # 补丁 IX 需求 1：窗内逐条消息的计数进度 INFO——主人能实时看到
         # "还差几条吵醒"（观测原则：影响响应行为的路径必须 INFO 可见）
         if self.sleep_manager.last_window_count:
+            # 模块级 conf_group（非 self._cfg）：消息监听热路径上的局部
+            # mock 对象只带 config 属性，不带完整插件方法
             threshold = self.sleep_manager._i(
-                (self.config.get("sleep", {}) or {}).get("wake_n_messages"), 3
+                conf_group(self.config, "sleep").get("wake_n_messages"), 3
             )
             logger.info(
                 f"[Living] 休眠计数 {window_count}/{threshold}"
@@ -1218,7 +1266,9 @@ class LivingPlugin(Star):
         if self.loop is not None:
             await self.loop.stop()
             self.loop = None
-        for stale_task_name in ("_selfheal_task", "_interest_cooldown_task"):
+        for stale_task_name in (
+            "_selfheal_task", "_interest_cooldown_task", "_knobs_task"
+        ):
             stale_task = getattr(self, stale_task_name, None)
             if stale_task is None or stale_task.done():
                 setattr(self, stale_task_name, None)

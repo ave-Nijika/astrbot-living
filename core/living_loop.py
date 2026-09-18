@@ -48,9 +48,12 @@ def _to_float(value: Any, default: float) -> float:
 
 
 def _conf_group(config: Any, group: str) -> dict:
+    """配置组读取（补丁 XVIII 起代理到 conf_path：advanced 嵌套优先、
+    平铺兜底）。保留本别名以最小化调用点改动。"""
+    from .conf_path import conf_group
+
     try:
-        value = config.get(group, {})
-        return value if isinstance(value, dict) else {}
+        return conf_group(config, group)
     except Exception:
         return {}
 

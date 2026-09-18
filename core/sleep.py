@@ -94,8 +94,9 @@ class SleepManagerAutonomous:
     # ------------------------------------------------------------------
     def _cfg_group(self) -> dict:
         try:
-            value = (self._config_getter() or {}).get("sleep", {})
-            return value if isinstance(value, dict) else {}
+            from .conf_path import conf_group
+
+            return conf_group(self._config_getter() or {}, "sleep")
         except Exception:
             return {}
 

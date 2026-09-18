@@ -147,8 +147,10 @@ class ActivityDecider:
 
     def _mode(self) -> str:
         try:
-            cfg = self._config_getter() or {}
-            mode = str((cfg.get("decision") or {}).get("decision_mode", "hybrid"))
+            from .conf_path import conf_group
+
+            cfg = conf_group(self._config_getter() or {}, "decision")
+            mode = str(cfg.get("decision_mode", "hybrid"))
             return mode if mode in VALID_MODES else "hybrid"
         except Exception:
             return "hybrid"
@@ -157,7 +159,9 @@ class ActivityDecider:
         """决策池（补丁 XV 清单3）：decision.free_activity_enabled=false 时
         摘除 free。每次决策现读配置——开关热生效，改配置下个决策即回固定池。"""
         try:
-            raw = (self._config_getter() or {}).get("decision", {}).get(
+            from .conf_path import conf_group
+
+            raw = conf_group(self._config_getter() or {}, "decision").get(
                 "free_activity_enabled"
             )
             if raw is not None and not bool(raw):
@@ -260,8 +264,9 @@ class ActivityDecider:
 
     def _decision_group(self) -> dict:
         try:
-            value = (self._config_getter() or {}).get("decision", {})
-            return value if isinstance(value, dict) else {}
+            from .conf_path import conf_group
+
+            return conf_group(self._config_getter() or {}, "decision")
         except Exception:
             return {}
 

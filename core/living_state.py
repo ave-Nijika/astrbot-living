@@ -78,10 +78,12 @@ def in_time_window(now: datetime, window: tuple[dt_time, dt_time]) -> bool:
 
 
 def _conf_group(config: Any, group: str) -> dict:
-    """安全取配置分组。配置热读失败时返回空 dict（后续用默认值兜底）。"""
+    """安全取配置分组。配置热读失败时返回空 dict（后续用默认值兜底）。
+    补丁 XVIII 起代理到 conf_path：advanced 嵌套优先、平铺兜底。"""
+    from .conf_path import conf_group
+
     try:
-        value = config.get(group, {})
-        return value if isinstance(value, dict) else {}
+        return conf_group(config, group)
     except Exception:
         return {}
 

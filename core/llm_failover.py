@@ -104,7 +104,9 @@ async def build_provider_chain(
         chain.append((pid, provider))
 
     try:
-        model_cfg = (config_getter() or {}).get("model", {})
+        from .conf_path import conf_group
+
+        model_cfg = conf_group(config_getter() or {}, "model")
         manager = getattr(context, "provider_manager", None)
 
         async def _resolve(pid: str) -> None:

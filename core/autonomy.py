@@ -35,14 +35,20 @@ def clamp_write_level(value, default: int = 0) -> int:
 
 def read_tier(config: dict) -> int:
     try:
-        return clamp_tier(config.get("autonomy", {}).get("tier", 1), 1)
+        from .conf_path import conf_group
+
+        return clamp_tier(conf_group(config, "autonomy").get("tier", 1), 1)
     except Exception:
         return 1
 
 
 def read_write_level(config: dict) -> int:
     try:
-        return clamp_write_level(config.get("autonomy", {}).get("write_level", 0), 0)
+        from .conf_path import conf_group
+
+        return clamp_write_level(
+            conf_group(config, "autonomy").get("write_level", 0), 0
+        )
     except Exception:
         return 0
 
