@@ -1,15 +1,17 @@
 """补丁 XVI 数据修复：合并"两个独立图谱"的孤儿身份节点。
 
+（文中 QQ 号为中性示例；实际部署时以当时的 bot self_id 为准。）
+
 背景（2026-09-18 现场诊断）：
-  - 原生侧 bot 身份 = aiocqhttp:3410132338（platform type + bot QQ）
+  - 原生侧 bot 身份 = aiocqhttp:10001（platform type + bot QQ）
   - living 侧因白名单只收 platform id，提取落空 → 兜底 cron:astrbot
   - 两者是同一实体却各自成团 → 图谱两个连通分量
 
 本脚本（停 AstrBot 后运行）：
   1. 改写 documents.metadata 里 participant_identities 的 cron:astrbot
-     → aiocqhttp:3410132338（阻止未来重建时再生孤儿）
+     → aiocqhttp:10001（阻止未来重建时再生孤儿）
   2. 合并图谱：旧节点(account:cron:astrbot) 的边/条目关联全部改指
-     新节点(account:aiocqhttp:3410132338)，然后删除旧节点
+     新节点(account:aiocqhttp:10001)，然后删除旧节点
   3. 打印修复前后连通分量数（验收依据）
 
 安全：只动这两个身份相关的行；运行前由调用方先行备份 db。
@@ -27,9 +29,9 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="repla
 D = r"C:\Users\windows10\Downloads\AstrBotLauncher-0.3.0\AstrBotLauncher-0.3.0\AstrBot\data\plugin_data\astrbot_plugin_livingmemory"
 DB = os.path.join(D, "livingmemory.db")
 OLD_KEY = "cron:astrbot"
-NEW_KEY = "aiocqhttp:3410132338"
+NEW_KEY = "aiocqhttp:10001"
 OLD_CANON = "account:cron:astrbot"
-NEW_CANON = "account:aiocqhttp:3410132338"
+NEW_CANON = "account:aiocqhttp:10001"
 
 
 def components(cur):
@@ -81,7 +83,7 @@ for did, meta_s in cur.fetchall():
     for part in meta.get("participant_identities") or []:
         if str((part or {}).get("identity_key", "")) == OLD_KEY:
             part["identity_key"] = NEW_KEY
-            part["sender_id"] = "3410132338"
+            part["sender_id"] = "10001"
             part["platform"] = "aiocqhttp"
             part["display_name"] = "aiocqhttp"
             part["aliases"] = ["aiocqhttp"]
@@ -101,7 +103,7 @@ cur.execute(
 persons = cur.fetchall()
 old_id = next((r[0] for r in persons if r[2] == OLD_CANON), None)
 new_id = next((r[0] for r in persons if r[2] == NEW_CANON), None)
-print(f"旧节点(account:cron:astrbot)={old_id}  新节点(account:aiocqhttp:3410132338)={new_id}")
+print(f"旧节点(account:cron:astrbot)={old_id}  新节点(account:aiocqhttp:10001)={new_id}")
 
 merged_edges = 0
 moved_entries = 0
