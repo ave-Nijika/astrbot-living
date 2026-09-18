@@ -116,24 +116,39 @@ def make_identity_plugin(engine=None, context=None, tmp_path=None):
     return plugin
 
 
-def test_bot_identity_fallback_cron_format():
-    """无 dashboard 配置 → 兜底 identity_key = cron:astrbot，display_name=astrbot。"""
+def test_bot_identity_fallback_returns_none():
+    """补丁 XVI：无可用身份时返回 None，不再造 cron: 兜底身份。
+
+    旧行为（补丁 VI）兜底 cron:{dashboard_username}，前提是"原生侧存在该
+    节点"——环境重置后该前提失效，写入即产生孤儿 person 节点，正是"两个
+    独立图谱"的直接成因。改为返回 None：本次记忆暂不挂身份，等真实消息
+    事件到达后自然与原生同源。
+    """
     plugin = make_identity_plugin()
-    identity = asyncio.run(plugin._bot_identity())
-    assert identity["identity_key"] == "cron:astrbot"
-    assert identity["platform"] == "cron"
-    assert identity["display_name"] == "astrbot"  # 不是 persona 名（凛）
-    assert identity["is_bot"] is True
-    assert identity["sender_id"] == "astrbot"
+    assert asyncio.run(plugin._bot_identity()) is None
 
 
-def test_bot_identity_dashboard_username_dynamic():
-    """dashboard.username 动态取：换管理账号身份跟着变。"""
-    ctx = FakeContext({"dashboard": {"username": "neo"}})
-    plugin = make_identity_plugin(context=ctx)
+def test_bot_identity_self_identity_takes_priority():
+    """补丁 XVI：真实消息事件缓存的自身身份优先于任何旧缓存。"""
+    stale = {
+        "identity_key": "cron:astrbot",
+        "sender_id": "astrbot",
+        "platform": "cron",
+        "is_bot": True,
+    }
+    plugin = make_identity_plugin()
+    plugin._bot_identity_cache = dict(stale)
+    plugin._self_identity = {
+        "identity_key": "aiocqhttp:10001",
+        "sender_id": "10001",
+        "platform": "aiocqhttp",
+        "display_name": "aiocqhttp",
+        "aliases": ["aiocqhttp"],
+        "is_bot": True,
+    }
     identity = asyncio.run(plugin._bot_identity())
-    assert identity["identity_key"] == "cron:neo"
-    assert identity["display_name"] == "neo"
+    assert identity["identity_key"] == "aiocqhttp:10001"
+    assert plugin._bot_identity_cache["identity_key"] == "aiocqhttp:10001"
 
 
 def test_bot_identity_prefers_native_memory_identity(tmp_path):
@@ -174,7 +189,8 @@ def test_bot_identity_native_rows_without_bot_skipped():
     plugin = make_identity_plugin(engine=engine)
 
     identity = asyncio.run(plugin._bot_identity())
-    assert identity["identity_key"] == "cron:astrbot"  # 走兜底，不用人类身份
+    # 补丁 XVI：不误用人类身份，也不再退回 cron 兜底——返回 None 等真实身份
+    assert identity is None
 
 
 # ---------------------------------------------------------------------------
@@ -246,8 +262,14 @@ def test_metadata_has_all_three_fields(tmp_path):
     from core.activities import ActivityOutcome
 
     memory = RecordingMemory()
-    plugin = make_identity_plugin(tmp_path=tmp_path)
-    identity = asyncio.run(plugin._bot_identity())
+    identity = {
+        "identity_key": "aiocqhttp:10001",
+        "sender_id": "10001",
+        "platform": "aiocqhttp",
+        "display_name": "aiocqhttp",
+        "aliases": ["aiocqhttp"],
+        "is_bot": True,
+    }
     loop = LivingLoop(
         gate=OkGate(),
         memory_getter=lambda: asyncio.sleep(0, result=memory),
@@ -262,14 +284,23 @@ def test_metadata_has_all_three_fields(tmp_path):
     metadata = memory.calls[0]["metadata"]
     assert metadata["topics"]  # 脚本模式随机主题
     assert metadata["key_facts"] == ["m"]  # content 成为独立 fact 节点
-    assert metadata["participant_identities"][0]["identity_key"] == "cron:astrbot"
+    assert (
+        metadata["participant_identities"][0]["identity_key"]
+        == "aiocqhttp:10001"
+    )
 
 
 def test_failure_metadata_keeps_identity_but_no_topics(tmp_path):
     """失败路径：无 topics/key_facts（低价值孤立可接受），参与者身份仍在。"""
     memory = RecordingMemory()
-    plugin = make_identity_plugin(tmp_path=tmp_path)
-    identity = asyncio.run(plugin._bot_identity())
+    identity = {
+        "identity_key": "aiocqhttp:10001",
+        "sender_id": "10001",
+        "platform": "aiocqhttp",
+        "display_name": "aiocqhttp",
+        "aliases": ["aiocqhttp"],
+        "is_bot": True,
+    }
 
     class Failing:
         name = "surf"

@@ -31,7 +31,7 @@ from .core.autonomy import (
 )
 from .core.decider import ActivityDecider
 from .core.fetcher import WebFetcher
-from .core.ghost_event import build_ghost_event
+from .core.ghost_event import GHOST_PLATFORM_ID, build_ghost_event
 from .core.lazy_memory import LazyMemory
 from .core.living_loop import LivingLoop
 from .core.living_state import LivingGate
@@ -96,6 +96,8 @@ class LivingPlugin(Star):
         self._interest_cooldown_task: asyncio.Task | None = None
         # 补丁 XIII：浏览器会话（惰性创建，跨活动复用 → 登录态保持）
         self._browser_session: Any = None
+        # 补丁 XVI：bot 自身身份缓存（来自真实消息事件，与原生侧同源）
+        self._self_identity: dict | None = None
 
         logger.info(f"[{PLUGIN_NAME}] M3 加载完成（心境+休眠+agent 循环）")
 
@@ -199,11 +201,15 @@ class LivingPlugin(Star):
         return None
 
     def _platform_prefixes(self) -> set[str]:
-        """合法身份前缀集合（任务书 M3 补丁 VI 需求 1-2）。
+        """合法身份前缀集合（补丁 VI 需求 1-2；补丁 XVI 修正：补 type 维度）。
 
-        从 AstrBot 全局配置的 platform 列表动态收集真实平台 id（不硬编码
-        aiocqhttp）；"cron" 是 LivingMemory 原生 cron 处理器的身份来源，
-        恒在集合内。
+        AstrBot 的 platform 条目有 **id**（用户可自定义，实测为 "default"）
+        与 **type**（平台类型，实测 "aiocqhttp"）两个维度。原生侧
+        LivingMemory 给 bot 建节点用的是 **type**（实测 aiocqhttp:10001），
+        而补丁 VI 只收了 id —— 白名单永远匹配不上原生身份，提取链必然
+        落空、退到兜底 cron:{username}，形成孤儿节点（两团根因）。
+
+        现在两个维度都收；"cron" 恒在集合内。
         """
         prefixes = {"cron"}
         try:
@@ -211,9 +217,11 @@ class LivingPlugin(Star):
             if callable(get_config):
                 cfg = get_config() or {}
                 for platform in cfg.get("platform", []) or []:
-                    pid = str((platform or {}).get("id", "") or "").strip()
-                    if pid:
-                        prefixes.add(pid)
+                    entry = platform or {}
+                    for field in ("id", "type"):
+                        value = str(entry.get(field, "") or "").strip()
+                        if value:
+                            prefixes.add(value)
         except Exception:
             pass
         return prefixes
@@ -228,6 +236,41 @@ class LivingPlugin(Star):
         """白名单校验：identity_key 必须以真实平台 id + ':' 开头。"""
         text = str(identity_key or "")
         return any(text.startswith(f"{prefix}:") for prefix in prefixes)
+
+    def _remember_self_identity(self, event: Any) -> None:
+        """从真实消息事件缓存 bot 自身身份（补丁 XVI）。
+
+        身份格式与原生侧 LivingMemory 一致：``{platform_name}:{self_id}``
+        （实测 ``aiocqhttp:10001``）——原生图谱给 bot 建节点用的就是
+        这个值，living 采信同源身份才能与原生记忆连通。
+
+        幽灵事件（伪造 self_id）与不在平台白名单内的组合一律不采信。
+        任何异常都静默吞掉：身份采集绝不能影响消息处理主链路。
+        """
+        try:
+            self_id = str(event.get_self_id() or "").strip()
+            platform = str(event.get_platform_name() or "").strip()
+            if not self_id or not platform:
+                return
+            if platform.startswith(GHOST_PLATFORM_ID):
+                return
+            key = f"{platform}:{self_id}"
+            if not self._identity_whitelisted(key, self._platform_prefixes()):
+                return
+            cached = getattr(self, "_self_identity", None)
+            if cached and cached.get("identity_key") == key:
+                return
+            self._self_identity = {
+                "identity_key": key,
+                "sender_id": self_id,
+                "platform": platform,
+                "display_name": platform,
+                "aliases": [platform],
+                "is_bot": True,
+            }
+            logger.info(f"[Living] bot 自身身份已记录（与原生同源）: {key}")
+        except Exception as e:
+            logger.debug(f"[Living] 自身身份采集失败（忽略）: {e}")
 
     def _normalize_bot_identity(self, participant: dict) -> dict:
         """把采信的原生参与者条目规范成统一的 bot 身份结构（补 aliases）。"""
@@ -261,6 +304,15 @@ class LivingPlugin(Star):
              该节点，是合法桥梁身份，逻辑不变）。
         """
         prefixes = self._platform_prefixes()
+
+        # 路径 0（补丁 XVI）：真实消息事件缓存的自身身份——最权威来源，
+        # 与原生侧 LivingMemory 建节点用的身份同源（{platform_name}:{self_id}）。
+        # 它优先于任何缓存：哪怕缓存里是旧的兜底身份（cron:xxx）也被覆盖，
+        # 这是"两团"问题不再复发的前提。
+        own = getattr(self, "_self_identity", None)
+        if own:
+            self._bot_identity_cache = own
+            return own
 
         # 缓存防污染：历史污染缓存（default: 前缀）丢弃重新提取
         cached = getattr(self, "_bot_identity_cache", None)
@@ -303,27 +355,17 @@ class LivingPlugin(Star):
         except Exception as e:
             logger.debug(f"[Living] 从记忆提取 bot 身份失败（走兜底）: {e}")
 
-        # 兜底：cron:{dashboard_username}——原生侧真实存在该节点（合法桥梁）
-        dashboard_username = "astrbot"
-        try:
-            get_config = getattr(self.context, "get_config", None)
-            if callable(get_config):
-                cfg = get_config() or {}
-                dashboard_username = str(
-                    (cfg.get("dashboard", {}) or {}).get(
-                        "username", dashboard_username
-                    )
-                )
-        except Exception:
-            pass
-
-        return {
-            "identity_key": f"cron:{dashboard_username}",
-            "sender_id": dashboard_username,
-            "platform": "cron",
-            "display_name": dashboard_username,
-            "is_bot": True,
-        }
+        # 兜底（补丁 XVI 修正）：不再用 cron:{dashboard_username} 造身份。
+        # 补丁 VI 假设"原生侧真实存在 cron:{username} 节点、是合法桥梁"，
+        # 但环境重置后该节点并不存在——写入它只会得到孤儿 person 节点，
+        # 正是"两个独立图谱"的直接成因。
+        # 改为返回 None：本次记忆暂不挂 bot 身份（图谱少一个节点，无害），
+        # 等第一条真实消息事件到达（路径 0 生效）后，后续记忆即与原生同源。
+        logger.warning(
+            "[Living] 暂无可用的 bot 自身身份（等待真实消息事件）——"
+            "本次记忆不注入参与者身份"
+        )
+        return None
 
     async def _persona_id(self) -> str:
         """当前生效 persona 的 id（问题 3：记忆图谱的参与者边原料）。
@@ -1109,6 +1151,12 @@ class LivingPlugin(Star):
              并请求主循环唤醒；
           3. 其余休眠窗内消息按 sleep_mute_replies 拦截。本插件命令不拦。
         """
+        # 补丁 XVI：任何真实消息都顺手记录 bot 自身身份（与原生侧同源）——
+        # 这是"身份两团"不再复发的基石，必须先于一切早退分支执行。
+        # （getattr 保护：便于局部 mock 的测试对象复用本方法）
+        remember_identity = getattr(self, "_remember_self_identity", None)
+        if callable(remember_identity):
+            remember_identity(event)
         if self.sleep_manager is None:
             return
         now = datetime.now()

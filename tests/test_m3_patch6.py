@@ -124,8 +124,11 @@ def bind_bot_identity(plugin_like):
 # ---------------------------------------------------------------------------
 # 需求 1：提取防污染
 # ---------------------------------------------------------------------------
-def test_polluted_probe_results_fall_back_to_cron(tmp_path):
-    """污染提取场景：probe 结果全为 default: 污染身份 → 走兜底 cron:astrbot。"""
+def test_polluted_probe_results_return_none(tmp_path):
+    """污染提取场景：probe 结果全为 default: 污染身份 → 返回 None（补丁 XVI）。
+
+    旧行为是退回 cron:astrbot 兜底身份——该身份在原生侧并不天然存在，
+    写入会产生孤儿节点（两团根因），故改为不注入身份。"""
     polluted_row = FakeRow(1, "我今天读了篇文章", [POLLUTED_PARTICIPANT])
     engine = FakeSelfHealEngine(rows=[polluted_row])
     backend = LivingMemoryBackend(engine)
@@ -135,10 +138,8 @@ def test_polluted_probe_results_fall_back_to_cron(tmp_path):
 
     identity = asyncio.run(bind_bot_identity(plugin)())
 
-    assert identity["identity_key"] == "cron:astrbot"
-    assert identity["display_name"] == "astrbot"
-    assert identity["is_bot"] is True
-    # 污染身份绝不进缓存（兜底路径不写缓存；有缓存也必须干净）
+    assert identity is None  # 补丁 XVI：不再造 cron 兜底身份
+    # 污染身份绝不进缓存
     cached = getattr(plugin, "_bot_identity_cache", None)
     assert cached is None or "default:" not in cached["identity_key"]
 
@@ -213,8 +214,8 @@ def test_polluted_cache_is_discarded_and_reextracted(tmp_path):
 
     # 污染缓存被丢弃；引擎被重新查询（走了提取路径）
     assert engine.searched, "污染缓存应触发重新提取"
-    # 兜底/重提取产物都不是污染身份
-    assert not identity["identity_key"].startswith("default:")
+    # 重提取产物：要么无身份（None），要么是干净身份
+    assert identity is None or not identity["identity_key"].startswith("default:")
 
 
 def test_clean_cache_is_reused_without_search():
