@@ -513,7 +513,7 @@ class LivingLoop:
             return  # 还在睡（静默/计数/紧急唤醒由既有链路处理）
 
         # 2) 不在睡：先评估白天小睡，再评估长睡（互斥，先到先得）
-        nap = await self._sleep_manager.should_nap(self._mood, now)             if self._mood is not None else (False, 0.0)
+        nap = self._sleep_manager.should_nap(self._mood, now) if self._mood is not None else (False, 0.0)
         if nap[0]:
             minutes = nap[1]
             until = now + timedelta(minutes=minutes)

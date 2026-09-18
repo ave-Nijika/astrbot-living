@@ -143,7 +143,9 @@ class RecordingSettle:
     def __init__(self):
         self.calls = []
 
-    async def should_nap(self, mood, now=None):
+    def should_nap(self, mood, now=None):
+        # 同步方法（与真实 SleepManagerAutonomous.should_nap 签名一致——补丁 X
+        # 曾因生产侧误加 await、而此处替身写成 async 而假绿，勿改回 async）
         return False, 0.0
 
     async def apply_woken_in_sleep(self, now=None):
