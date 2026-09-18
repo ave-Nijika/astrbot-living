@@ -21,12 +21,31 @@ const DANGER_KEYS = new Set([
   "decision.max_tool_rounds", "decision.max_run_seconds",
 ]);
 
+/* Pages 沙箱（opaque origin）禁用 localStorage —— 直接访问会抛 SecurityError。
+ * 必须全程 try/catch：否则模块顶层就抛错，整个面板脚本不执行（M5 补丁1 实测缺陷）。
+ * 降级为内存态：抽屉展开状态仅存活于本次会话。 */
+function loadExpanded() {
+  try {
+    return JSON.parse(localStorage.getItem("living-panel-expanded") || "{}");
+  } catch (e) {
+    return {};
+  }
+}
+
+function saveExpanded(obj) {
+  try {
+    localStorage.setItem("living-panel-expanded", JSON.stringify(obj));
+  } catch (e) {
+    /* 沙箱禁用：忽略，仅本次会话有效 */
+  }
+}
+
 const state = {
   values: { knobs: {}, advanced: {} }, // 当前编辑值（切换视图不丢）
   loaded: { knobs: {}, advanced: {} }, // 加载时的原始快照（保存时做差量）
   schema: null,
   dirty: false,
-  expanded: JSON.parse(localStorage.getItem("living-panel-expanded") || "{}"),
+  expanded: loadExpanded(),
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -283,7 +302,7 @@ function renderExpert() {
     head.addEventListener("click", () => {
       const next = !state.expanded[group];
       state.expanded[group] = next;
-      localStorage.setItem("living-panel-expanded", JSON.stringify(state.expanded));
+      saveExpanded(state.expanded);
       head.classList.toggle("open", next);
       head.querySelector(".arrow").textContent = next ? "▾" : "▸";
       body_el.classList.toggle("hidden", !next);
