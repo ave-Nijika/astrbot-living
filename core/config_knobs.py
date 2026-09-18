@@ -100,15 +100,26 @@ KNOB_PRESETS: dict[str, dict[str, dict[str, dict[str, Any]]]] = {
 
 
 class ConfigKnobs:
-    """旋钮监视与写入。arm() 记基线，apply_changes() 处理增量。"""
+    """旋钮监视与写入。arm() 取基线，apply_changes() 处理增量。
+
+    基线持久化（补丁 XIX）：旋钮改动正是通过"保存配置 + 热重载"生效的，
+    若基线只存内存，重载后 arm() 会用已含新值的当前配置重建基线，变化
+    窗口在检测前就关闭（补丁 XVIII 的缺陷）。因此基线落盘
+    knobs_state.json：跨重载/重启存活，arm() 优先读盘上旧基线，才能比出
+    "新值 vs 旧值"的差异并写入。
+
+    state_path=None 时退化为纯内存基线（兼容旧测试与不落盘场景）。
+    """
 
     def __init__(
         self,
         config_getter: Callable[[], Any],
         save_config: Callable[[], Any] | None = None,
+        state_path: Any = None,
     ) -> None:
         self._config_getter = config_getter
         self._save = save_config  # async () -> None；None=仅改内存
+        self._state_path = state_path
         # 上次已知旋钮值；None=尚未 arm（首次 apply 只记基线不写入）
         self._last_knobs: dict[str, Any] | None = None
 
@@ -119,9 +130,67 @@ class ConfigKnobs:
         names = set(KNOB_PRESETS) | {DIRECT_KNOB}
         return {name: preset.get(name) for name in sorted(names)}
 
+    # ------------------------------------------------------------------
+    # 基线持久化（补丁 XIX）：任何读写异常都降级为 WARNING + 内存基线，
+    # 绝不抛到主流程
+    # ------------------------------------------------------------------
+    def _load_state(self) -> "dict[str, Any] | None":
+        """读盘上基线；无文件/损坏/格式不对 → None（走首次建立分支）。"""
+        if not self._state_path:
+            return None
+        try:
+            from pathlib import Path
+            import json
+
+            path = Path(self._state_path)
+            if not path.exists():
+                return None
+            state = json.loads(path.read_text(encoding="utf-8"))
+            knobs = state.get("last_knobs") if isinstance(state, dict) else None
+            if isinstance(knobs, dict):
+                return knobs
+            logger.warning(f"[Knobs] 基线文件格式不对（忽略）: {self._state_path}")
+            return None
+        except (ValueError, OSError) as e:
+            logger.warning(f"[Knobs] 基线文件读取失败，退回内存基线: {e}")
+            return None
+
+    def _save_state(self, knobs: dict[str, Any]) -> None:
+        """基线落盘；失败只 WARNING（下次重载可能重复写入一次，可接受）。"""
+        if not self._state_path:
+            return
+        try:
+            from pathlib import Path
+            import json
+
+            path = Path(self._state_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps({"last_knobs": knobs}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError as e:
+            logger.warning(f"[Knobs] 基线落盘失败（内存基线继续）: {e}")
+
     def arm(self) -> None:
-        """启动时把当前旋钮值记为已知基线——不触发写入（用户没改东西）。"""
-        self._last_knobs = self.snapshot_knobs(self._config_getter())
+        """取基线（补丁 XIX 语义）：
+
+        - 盘上有基线 → 用它（关键：重载后仍能比出"当前新值 vs 盘上旧值"）。
+          盘上没有的新旋钮键用当前值补齐——新键不算"用户刚改"；
+        - 盘上无基线（首次引入/全新环境）→ 用当前值建立并落盘，不触发写入。
+        """
+        current = self.snapshot_knobs(self._config_getter())
+        stored = self._load_state()
+        if stored is None:
+            self._last_knobs = current
+            self._save_state(current)
+            return
+        merged = dict(current)
+        for name, value in stored.items():
+            if name in merged:
+                merged[name] = value
+        self._last_knobs = merged
+        self._save_state(merged)  # 幂等：把补齐的新键同步回盘
 
     async def apply_changes(self) -> list[str]:
         """检测旋钮变化 → 按映射写底层键 → 持久化。
@@ -180,5 +249,9 @@ class ConfigKnobs:
             except Exception as e:
                 logger.warning(f"[Knobs] 旋钮写入持久化失败（内存已生效）: {e}")
         if applied:
+            # 补丁 XIX 清单 3：写入后同步落盘基线——否则重载后 arm 会再次
+            # 比出同一差异，导致重复写入
+            if self._last_knobs is not None:
+                self._save_state(self._last_knobs)
             logger.info(f"[Knobs] 旋钮变更已写入: {' | '.join(applied)}")
         return applied

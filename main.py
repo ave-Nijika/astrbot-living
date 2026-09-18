@@ -614,8 +614,12 @@ class LivingPlugin(Star):
             self._run_interest_cooldown_once(), name="living-interest-cooldown"
         )
         # 补丁 XVIII：新手旋钮监视（批量预设器，独立周期任务）
+        # 补丁 XIX：基线持久化——旋钮改动经热重载生效，内存基线会在重载时
+        # 被"当前值"重置导致永不写入；落盘后 arm() 优先读旧基线才能比出差异
         self._knobs = ConfigKnobs(
-            lambda: self.config, save_config=self._save_config_async
+            lambda: self.config,
+            save_config=self._save_config_async,
+            state_path=self._knobs_state_path(),
         )
         self._knobs_task = asyncio.create_task(
             self._run_knob_loop(), name="living-config-knobs"
@@ -739,6 +743,12 @@ class LivingPlugin(Star):
         import os
 
         return os.path.join(self._plugin_data_dir(), "selfheal_state.json")
+
+    def _knobs_state_path(self) -> str:
+        """旋钮基线文件（补丁 XIX）：与 selfheal_state.json 同目录，便于运维。"""
+        import os
+
+        return os.path.join(self._plugin_data_dir(), "knobs_state.json")
 
     # ------------------------------------------------------------------
     # M3：手动唤醒命令 + 消息监听（吵醒计数 / 睡眠期静默拦截）
