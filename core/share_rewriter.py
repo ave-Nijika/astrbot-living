@@ -107,7 +107,12 @@ class ShareRewriter:
             try:
                 life_extra = self._life_extra_getter() or ""
                 if str(life_extra).strip():
-                    parts.append(f"你的生活补充设定：\n{life_extra}")
+                    # 补丁 XVII L1-a：措辞与 decider._system_prompt 保持一致——
+                    # "身份设定"降为"背景参考"，活动执行阶段同样不应被人设绑死方向
+                    parts.append(
+                        "你的生活背景参考（口味倾向，不是任务清单，"
+                        f"不必围绕它选题）：\n{life_extra}"
+                    )
             except Exception:
                 pass
         if mood_digest:
