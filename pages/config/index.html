@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>living 配置面板</title>
+  <link rel="stylesheet" href="./style.css">
+  <!-- AstrBot Pages bridge SDK（自动携带 dashboard 鉴权） -->
+  <script src="/api/plugin/page/bridge-sdk.js"></script>
+</head>
+<body>
+  <header class="toolbar">
+    <div class="toolbar-left">
+      <h1>living 配置面板</h1>
+      <span id="save-state" class="save-state"></span>
+    </div>
+    <div class="tabs" role="tablist">
+      <button id="tab-novice" class="tab active" type="button" role="tab">新手</button>
+      <button id="tab-expert" class="tab" type="button" role="tab">专家</button>
+    </div>
+    <div class="toolbar-actions">
+      <button id="btn-save" class="btn primary" type="button">💾 保存改动</button>
+      <button id="btn-reset" class="btn danger" type="button">↩ 恢复默认值</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- 新手视图：9 张旋钮卡片 + 生活背景参考 -->
+    <section id="view-novice" class="view" role="tabpanel">
+      <div id="novice-cards" class="card-grid"></div>
+      <div id="novice-life" class="life-box"></div>
+    </section>
+
+    <!-- 专家视图：7 个折叠抽屉，危险项带警告 -->
+    <section id="view-expert" class="view hidden" role="tabpanel">
+      <p class="expert-note">
+        专家区：默认值即保守安全值。带 <span class="danger-chip">⚠ 危险</span>
+        标记的项改错会导致它作息失序或烧钱，不确定就别动。
+      </p>
+      <div id="expert-groups" class="drawer-list"></div>
+    </section>
+
+    <p id="load-error" class="load-error hidden"></p>
+  </main>
+
+  <!-- 页内确认弹层（Pages 沙箱禁用 confirm/alert/prompt） -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-box">
+      <p id="modal-text"></p>
+      <div class="modal-actions">
+        <button id="modal-cancel" class="btn" type="button">取消</button>
+        <button id="modal-ok" class="btn danger" type="button">确认</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

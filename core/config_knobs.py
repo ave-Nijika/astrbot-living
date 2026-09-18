@@ -99,6 +99,31 @@ KNOB_PRESETS: dict[str, dict[str, dict[str, dict[str, Any]]]] = {
 }
 
 
+def apply_knob_value(config: dict, name: str, value: Any) -> str | None:
+    """把单个旋钮值按映射写入底层键（M5 补丁 1 起为面板 API 共用）。
+
+    返回写入描述；旋钮值不在预设表返回 None（调用方决定如何提示）。
+    preset_model 直通 advanced.model.provider_id。只改内存，不落盘。
+    """
+    if name == DIRECT_KNOB:
+        conf_group(config, "model")["provider_id"] = str(value or "")
+        return f"{name}={value!r} → model.provider_id"
+    mapping = (KNOB_PRESETS.get(name) or {}).get(value)
+    if not mapping:
+        return None
+    for group, keys in mapping.items():
+        # conf_group 返回的是 config 内层组 dict 的引用，原地改即写入
+        conf_group(config, group).update(keys)
+    return (
+        f"{name}={value!r} → "
+        + "; ".join(
+            f"{group}.{key}={val!r}"
+            for group, keys in mapping.items()
+            for key, val in keys.items()
+        )
+    )
+
+
 class ConfigKnobs:
     """旋钮监视与写入。arm() 取基线，apply_changes() 处理增量。
 
@@ -221,27 +246,13 @@ class ConfigKnobs:
         applied: list[str] = []
         for name, value in sorted(changed.items()):
             self._last_knobs[name] = value  # 无论成败都不重复处理本轮变更
-            if name == DIRECT_KNOB:
-                conf_group(config, "model")["provider_id"] = str(value or "")
-                applied.append(f"{name}={value!r} → model.provider_id")
-                continue
-            mapping = (KNOB_PRESETS.get(name) or {}).get(value)
-            if not mapping:
+            description = apply_knob_value(config, name, value)
+            if description is None:
                 logger.warning(
                     f"[Knobs] 旋钮 {name}={value!r} 不在预设表，跳过写入"
                 )
                 continue
-            for group, keys in mapping.items():
-                # conf_group 返回的是 config 内层组 dict 的引用，原地改即写入
-                conf_group(config, group).update(keys)
-            applied.append(
-                f"{name}={value!r} → "
-                + "; ".join(
-                    f"{group}.{key}={val!r}"
-                    for group, keys in mapping.items()
-                    for key, val in keys.items()
-                )
-            )
+            applied.append(description)
 
         if applied and self._save is not None:
             try:

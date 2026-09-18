@@ -11,7 +11,8 @@
                     "fixed",
                     "autonomous"
                 ],
-                "default": "fixed"
+                "default": "fixed",
+                "invisible": true
             },
             "preset_activity_level": {
                 "description": "它独处时折腾的频率",
@@ -22,7 +23,8 @@
                     "normal",
                     "active"
                 ],
-                "default": "normal"
+                "default": "normal",
+                "invisible": true
             },
             "preset_talk_frequency": {
                 "description": "它主动找你说话的频率",
@@ -33,7 +35,8 @@
                     "normal",
                     "often"
                 ],
-                "default": "normal"
+                "default": "normal",
+                "invisible": true
             },
             "preset_capability_tier": {
                 "description": "它有多少手脚",
@@ -44,7 +47,8 @@
                     "home",
                     "full"
                 ],
-                "default": "watch"
+                "default": "watch",
+                "invisible": true
             },
             "preset_write_level": {
                 "description": "它在网上能做到什么程度",
@@ -56,7 +60,8 @@
                     "comment",
                     "full"
                 ],
-                "default": "read"
+                "default": "read",
+                "invisible": true
             },
             "preset_topic_taste": {
                 "description": "它聊天的口味",
@@ -67,7 +72,8 @@
                     "balanced",
                     "diverse"
                 ],
-                "default": "balanced"
+                "default": "balanced",
+                "invisible": true
             },
             "preset_free_activity": {
                 "description": "允许它自由发挥",
@@ -77,7 +83,8 @@
                     "on",
                     "off"
                 ],
-                "default": "on"
+                "default": "on",
+                "invisible": true
             },
             "preset_decision_mode": {
                 "description": "让它想事情花多少心思",
@@ -88,19 +95,22 @@
                     "normal",
                     "rich"
                 ],
-                "default": "normal"
+                "default": "normal",
+                "invisible": true
             },
             "preset_model": {
                 "description": "它独处时用哪个 AI 大脑",
                 "hint": "填一个你在 AstrBot 里配置好的模型 provider id（留空=用当前聊天模型）。强烈建议给它单独配一个便宜些的模型，避免自主活动烧聊天模型的额度。",
                 "type": "string",
-                "default": ""
+                "default": "",
+                "invisible": true
             },
             "life_extra": {
                 "description": "它的性格与兴趣底色",
                 "hint": "它独处时的性格底色与兴趣倾向，写得越具体越有味道（作息习惯、喜欢什么、讨厌什么…）。这是背景参考不是任务清单——影响它的风格和口味，但不会把话题锁死。可自由修改。",
                 "type": "text",
-                "default": "# 生活背景参考（可自由修改，影响它独处时的行为口味，不必围绕它选题）\n- 作息习惯：喜欢安静，通常在深夜有精神\n- 兴趣倾向：对技术、宇宙、咖啡、独立游戏感兴趣\n- 性格底色：温和、有点慢热，好奇心强\n- 不喜欢：被打断、重复劳动"
+                "default": "# 生活背景参考（可自由修改，影响它独处时的行为口味，不必围绕它选题）\n- 作息习惯：喜欢安静，通常在深夜有精神\n- 兴趣倾向：对技术、宇宙、咖啡、独立游戏感兴趣\n- 性格底色：温和、有点慢热，好奇心强\n- 不喜欢：被打断、重复劳动",
+                "invisible": true
             }
         }
     },
@@ -116,21 +126,25 @@
                     "tier": {
                         "description": "能力档位（0-3）",
                         "type": "int",
-                        "default": 1
+                        "default": 1,
+                        "invisible": true
                     },
                     "write_level": {
                         "description": "对外写操作层级（0-3）",
                         "hint": "0=只读（禁止任何提交）；1=浏览交互（点击/翻页/填表）；2=轻写入（评论/点赞/关注）；3=全权（发帖/私信等）。一次授权法：设了就能用。",
                         "type": "int",
-                        "default": 0
+                        "default": 0,
+                        "invisible": true
                     },
                     "workspace_dir": {
                         "description": "工作区目录",
                         "hint": "tier 2+ 的文件/Shell/Python 操作限制在此目录内（目录外只读）。留空则自动使用插件数据目录下的 workspace/。",
                         "type": "string",
-                        "default": ""
+                        "default": "",
+                        "invisible": true
                     }
-                }
+                },
+                "invisible": true
             },
             "decision": {
                 "description": "决策层（M1 生效，M0 先占位）",
@@ -145,43 +159,50 @@
                             "hybrid",
                             "llm"
                         ],
-                        "default": "hybrid"
+                        "default": "hybrid",
+                        "invisible": true
                     },
                     "impulse_check_interval_minutes": {
                         "description": "冲动检查间隔（分钟）",
                         "hint": "主循环每隔多少分钟做一次'要不要干点什么'的检查。判定是纯内存/SQLite 读，零 API 消耗；活动频率实际由无聊曲线控制，心跳可以调得很勤。",
                         "type": "int",
-                        "default": 5
+                        "default": 5,
+                        "invisible": true
                     },
                     "activity_probability": {
                         "description": "冲动最高概率（0-1）",
                         "hint": "无聊曲线的封顶值：闲得越久越接近这个概率，过了封顶时间后恒定。",
                         "type": "float",
-                        "default": 0.8
+                        "default": 0.8,
+                        "invisible": true
                     },
                     "activity_probability_min": {
                         "description": "冲动最低概率（0-1）",
                         "hint": "无聊曲线的起点：冷却刚结束时用这个低概率，避免刚忙完又立刻想动。",
                         "type": "float",
-                        "default": 0.1
+                        "default": 0.1,
+                        "invisible": true
                     },
                     "activity_probability_ramp_minutes": {
                         "description": "无聊曲线爬升时间（分钟）",
                         "hint": "从最低概率爬升到最高概率所需的时间（自冷却结束起算）。0 = 不爬升，直接用最高概率。",
                         "type": "float",
-                        "default": 60
+                        "default": 60,
+                        "invisible": true
                     },
                     "interest_daily_decay": {
                         "description": "兴趣每日衰减系数（0-1）",
                         "hint": "每天结算时全部兴趣乘以该系数。越低忘得越快——偏执循环调参口之一。",
                         "type": "float",
-                        "default": 0.7
+                        "default": 0.7,
+                        "invisible": true
                     },
                     "recent_topic_window": {
                         "description": "近期话题追踪窗口（次）",
                         "hint": "记录最近 N 次活动实际使用的主题，用于重复惩罚与探索配额判定。",
                         "type": "int",
-                        "default": 6
+                        "default": 6,
+                        "invisible": true
                     },
                     "recent_topic_penalty": {
                         "description": "近期话题重复惩罚表",
@@ -197,31 +218,36 @@
                     "exploration_window": {
                         "description": "探索配额判定窗口（次）",
                         "type": "int",
-                        "default": 4
+                        "default": 4,
+                        "invisible": true
                     },
                     "exploration_trigger": {
                         "description": "探索触发阈值（窗口内同主题出现次数）",
                         "hint": "达到该次数即强制探索新话题（LLM 决策加指令、脚本决策避开近期池）。",
                         "type": "int",
-                        "default": 3
+                        "default": 3,
+                        "invisible": true
                     },
                     "interest_cooldown_threshold": {
                         "description": "兴趣降温阈值（0-1）",
                         "hint": "启动自愈时检查：任一主题兴趣达到该值即触发一次性降温（历史偏执数据稀释）。",
                         "type": "float",
-                        "default": 0.85
+                        "default": 0.85,
+                        "invisible": true
                     },
                     "interest_cooldown_factor": {
                         "description": "兴趣降温乘数（0-1）",
                         "hint": "降温 = 兴趣值乘以该系数（1.0 → 0.4）。幂等，只执行一次。",
                         "type": "float",
-                        "default": 0.4
+                        "default": 0.4,
+                        "invisible": true
                     },
                     "daily_impulse_limit": {
                         "description": "每日冲动上限",
                         "hint": "0 = 不限制。",
                         "type": "int",
-                        "default": 3
+                        "default": 3,
+                        "invisible": true
                     },
                     "single_run_token_budget": {
                         "description": "单次活动 token 预算",
@@ -250,15 +276,18 @@
                             "surf",
                             "read",
                             "game"
-                        ]
+                        ],
+                        "invisible": true
                     },
                     "free_activity_enabled": {
                         "description": "自由活动开关",
                         "hint": "关闭后 free（自由活动）从活动池移除，回到固定活动池（surf/read/game/peek/reminisce），改配置下个决策生效。",
                         "type": "bool",
-                        "default": true
+                        "default": true,
+                        "invisible": true
                     }
-                }
+                },
+                "invisible": true
             },
             "output_gate": {
                 "description": "输出闸门",
@@ -268,44 +297,52 @@
                         "description": "每日主动消息上限",
                         "hint": "0 = 不限制。",
                         "type": "int",
-                        "default": 10
+                        "default": 10,
+                        "invisible": true
                     },
                     "message_min_interval_minutes": {
                         "description": "两条主动消息最小间隔（分钟）",
                         "type": "int",
-                        "default": 30
+                        "default": 30,
+                        "invisible": true
                     },
                     "target_sessions": {
                         "description": "输出目标会话列表",
                         "hint": "每行一个 unified_msg_origin（格式：平台:消息类型:会话ID），留空则不主动发消息。",
                         "type": "text",
-                        "default": ""
+                        "default": "",
+                        "invisible": true
                     },
                     "quiet_hours": {
                         "description": "静默时段（可选）",
                         "hint": "格式 'HH:MM-HH:MM'，该时段不发主动消息。与休眠无关。",
                         "type": "string",
-                        "default": ""
+                        "default": "",
+                        "invisible": true
                     },
                     "share_rewrite_enabled": {
                         "description": "分享角色化改写",
                         "hint": "开启后主动分享前用 LLM 把工作报告改写成聊天口吻（关闭则直发原文，与旧版一致）。改写失败自动降级原文。",
                         "type": "bool",
-                        "default": true
+                        "default": true,
+                        "invisible": true
                     },
                     "share_rewrite_prompt": {
                         "description": "分享改写提示词",
                         "hint": "改写提示词模板，支持 {report}（活动汇报）与 {mood}（心境摘要）占位符。",
                         "type": "text",
-                        "default": "把下面这份“今天的活动记录”改写成你对主人说的一两句话。\n活动记录：{report}\n你现在的状态：{mood}\n要求：\n- 像朋友间随口聊天，不是汇报；不要标题、不要列表、不要 Markdown 格式\n- 用你自己的口吻，可以带一点当天心情\n- 只输出要说的话本身，不要任何前缀和引号"
+                        "default": "把下面这份“今天的活动记录”改写成你对主人说的一两句话。\n活动记录：{report}\n你现在的状态：{mood}\n要求：\n- 像朋友间随口聊天，不是汇报；不要标题、不要列表、不要 Markdown 格式\n- 用你自己的口吻，可以带一点当天心情\n- 只输出要说的话本身，不要任何前缀和引号",
+                        "invisible": true
                     },
                     "share_max_length": {
                         "description": "分享文本长度上限",
                         "hint": "改写结果超过该长度时按句子边界截断。",
                         "type": "int",
-                        "default": 120
+                        "default": 120,
+                        "invisible": true
                     }
-                }
+                },
+                "invisible": true
             },
             "sleep": {
                 "description": "休眠（M3 生效，M0 先占位）",
@@ -315,7 +352,8 @@
                         "description": "作息窗口",
                         "hint": "格式 'HH:MM-HH:MM'。",
                         "type": "string",
-                        "default": "00:30-08:00"
+                        "default": "00:30-08:00",
+                        "invisible": true
                     },
                     "sleep_mode": {
                         "description": "睡眠模式",
@@ -325,35 +363,41 @@
                             "fixed",
                             "autonomous"
                         ],
-                        "default": "fixed"
+                        "default": "fixed",
+                        "invisible": true
                     },
                     "min_sleep_hours": {
                         "description": "自主模式：最短睡眠（小时）",
                         "type": "float",
-                        "default": 5.0
+                        "default": 5.0,
+                        "invisible": true
                     },
                     "max_sleep_hours": {
                         "description": "自主模式：最长睡眠（小时）",
                         "type": "float",
-                        "default": 11.0
+                        "default": 11.0,
+                        "invisible": true
                     },
                     "min_awake_minutes": {
                         "description": "自主模式：醒后最短清醒时长（分钟）",
                         "hint": "刚醒来的这段时间内不会再睡（防连睡）。",
                         "type": "int",
-                        "default": 240
+                        "default": 240,
+                        "invisible": true
                     },
                     "sleepiness_threshold": {
                         "description": "入睡阈值（0-1）",
                         "hint": "睡意值达到该值即入睡。",
                         "type": "float",
-                        "default": 0.6
+                        "default": 0.6,
+                        "invisible": true
                     },
                     "sleepiness_jitter": {
                         "description": "睡意随机抖动幅度（0-0.5）",
                         "hint": "同样状态下不必然同时刻入睡。",
                         "type": "float",
-                        "default": 0.15
+                        "default": 0.15,
+                        "invisible": true
                     },
                     "weights": {
                         "description": "睡意权重",
@@ -363,17 +407,20 @@
                             "energy": {
                                 "description": "精力权重",
                                 "type": "float",
-                                "default": 0.35
+                                "default": 0.35,
+                                "invisible": true
                             },
                             "debt": {
                                 "description": "睡眠债权重",
                                 "type": "float",
-                                "default": 0.35
+                                "default": 0.35,
+                                "invisible": true
                             },
                             "circadian": {
                                 "description": "昼夜节律权重",
                                 "type": "float",
-                                "default": 0.3
+                                "default": 0.3,
+                                "invisible": true
                             }
                         },
                         "invisible": true
@@ -381,23 +428,27 @@
                     "nap_enabled": {
                         "description": "白天小睡",
                         "type": "bool",
-                        "default": true
+                        "default": true,
+                        "invisible": true
                     },
                     "nap_min_minutes": {
                         "description": "小睡最短时长（分钟）",
                         "type": "int",
-                        "default": 20
+                        "default": 20,
+                        "invisible": true
                     },
                     "nap_max_minutes": {
                         "description": "小睡最长时长（分钟）",
                         "type": "int",
-                        "default": 90
+                        "default": 90,
+                        "invisible": true
                     },
                     "circadian_hint": {
                         "description": "昼夜节律提示窗口",
                         "hint": "该时段睡意倾向最高（仅加权，不强制）。格式 HH:MM-HH:MM。",
                         "type": "string",
-                        "default": "23:00-07:00"
+                        "default": "23:00-07:00",
+                        "invisible": true
                     },
                     "fatigue_rate_per_hour": {
                         "description": "疲惫积累速率（每小时）",
@@ -409,40 +460,47 @@
                     "sleep_debt_decay_per_day": {
                         "description": "睡眠债每日消退量",
                         "type": "float",
-                        "default": 30.0
+                        "default": 30.0,
+                        "invisible": true
                     },
                     "wake_n_messages": {
                         "description": "吵醒所需消息条数",
                         "type": "int",
-                        "default": 3
+                        "default": 3,
+                        "invisible": true
                     },
                     "wake_window_minutes": {
                         "description": "吵醒判定时间窗（分钟）",
                         "type": "int",
-                        "default": 10
+                        "default": 10,
+                        "invisible": true
                     },
                     "grouchiness_percent": {
                         "description": "起床气概率（0-100%）",
                         "type": "int",
-                        "default": 20
+                        "default": 20,
+                        "invisible": true
                     },
                     "awake_standby_minutes": {
                         "description": "清醒待机时长（分钟）",
                         "hint": "被吵醒后保持清醒的时长；期间主人每发一条消息都会重新计时（滑动窗口）。待机期内正常聊天不静默，结束后若仍在睡眠窗则继续睡。",
                         "type": "int",
-                        "default": 30
+                        "default": 30,
+                        "invisible": true
                     },
                     "wake_ack_message": {
                         "description": "唤醒确认消息",
                         "hint": "被吵醒后立刻回给主人的一句话（零延迟、不经过 LLM）。留空 = 不发送。",
                         "type": "string",
-                        "default": "醒了，怎么了？"
+                        "default": "醒了，怎么了？",
+                        "invisible": true
                     },
                     "sleep_farewell_message": {
                         "description": "入睡告别消息",
                         "hint": "清醒待机结束、继续入睡时告知主人的一句话（零 token）。留空 = 安静入睡不告知。",
                         "type": "string",
-                        "default": ""
+                        "default": "",
+                        "invisible": true
                     },
                     "wake_source": {
                         "description": "吵醒计数来源",
@@ -452,27 +510,32 @@
                             "all",
                             "owner_only"
                         ],
-                        "default": "all"
+                        "default": "all",
+                        "invisible": true
                     },
                     "owner_id": {
                         "description": "主人 ID（wake_source=owner_only 时用）",
                         "hint": "填主人的用户 ID；wake_source 为 all 时忽略。",
                         "type": "string",
-                        "default": ""
+                        "default": "",
+                        "invisible": true
                     },
                     "sleep_mute_replies": {
                         "description": "睡眠期静默回复",
                         "hint": "开启后休眠窗内收到的消息会被拦截，AstrBot 与所有插件都不回复（真正休息）。达到吵醒阈值的那条消息与本插件命令不受影响。关掉则休眠期照常回复、只是插件自己不活动。",
                         "type": "bool",
-                        "default": true
+                        "default": true,
+                        "invisible": true
                     },
                     "dream_probability": {
                         "description": "做梦概率（0-1）",
                         "hint": "醒来后按此概率生成一条梦话，写入记忆（默认不外发）。",
                         "type": "float",
-                        "default": 0.3
+                        "default": 0.3,
+                        "invisible": true
                     }
-                }
+                },
+                "invisible": true
             },
             "capabilities": {
                 "description": "能力开关",
@@ -481,15 +544,18 @@
                     "sandbox_timeout_seconds": {
                         "description": "沙箱超时（秒）",
                         "type": "int",
-                        "default": 10
+                        "default": 10,
+                        "invisible": true
                     },
                     "cooldown_between_activities_hours": {
                         "description": "两次活动最小间隔（小时）",
                         "hint": "刚忙完一件事需要歇一会儿，隔多久才允许下一次冲动。",
                         "type": "float",
-                        "default": 2.0
+                        "default": 2.0,
+                        "invisible": true
                     }
-                }
+                },
+                "invisible": true
             },
             "memory": {
                 "description": "记忆",
@@ -504,9 +570,11 @@
                             "livingmemory",
                             "simple"
                         ],
-                        "default": "auto"
+                        "default": "auto",
+                        "invisible": true
                     }
-                }
+                },
+                "invisible": true
             },
             "model": {
                 "description": "模型",
@@ -516,15 +584,18 @@
                         "description": "自主活动专用 Provider ID",
                         "hint": "强烈建议配置一个与聊天模型不同的 provider，避免自主活动烧聊天模型的额度。留空则回退到默认聊天模型。",
                         "type": "string",
-                        "default": ""
+                        "default": "",
+                        "invisible": true
                     },
                     "fallback_chain": {
                         "description": "模型故障转移链",
                         "hint": "按顺序尝试的 provider id 列表；链尾会自动兜底全部已启用的聊天模型。默认聊天模型 404/限流/超时时自动切换，全部失败才算活动失败。",
                         "type": "list",
-                        "default": []
+                        "default": [],
+                        "invisible": true
                     }
-                }
+                },
+                "invisible": true
             }
         }
     }

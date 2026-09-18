@@ -12,6 +12,7 @@ R0 风险验证结论（2026-09-07 实测，详见 docs/archive/m0_report.md）�
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -624,12 +625,128 @@ class LivingPlugin(Star):
         self._knobs_task = asyncio.create_task(
             self._run_knob_loop(), name="living-config-knobs"
         )
+        # M5 补丁 1：自带配置面板的 REST API（pages/config/ 前端调用）
+        self._register_dashboard_routes()
 
     async def _save_config_async(self) -> None:
         """把内存中的配置变更持久化（AstrBotConfig 提供 async save）。"""
         save = getattr(self.config, "save_config_async", None)
         if callable(save):
             await save()
+
+    # ------------------------------------------------------------------
+    # 自带配置面板 API（M5 补丁 1）：pages/config/ 前端的唯一后端
+    # ------------------------------------------------------------------
+    def _register_dashboard_routes(self) -> None:
+        """注册面板 REST API（构造后调用一次；重复注册会被同名替换，幂等）。
+
+        route 带插件名前缀（dashboard 按 /api/plug/<route> 挂载）；
+        Pages bridge 只提供 GET/POST。业务逻辑全部在 core/panel_api.py，
+        handler 只做"读 body → 调逻辑 → 包装响应"，便于与 mock 实测共用。
+        """
+        register = getattr(self.context, "register_web_api", None)
+        if not callable(register):
+            logger.warning(
+                f"[{PLUGIN_NAME}] context.register_web_api 不可用，配置面板 API 未注册"
+            )
+            return
+        prefix = f"/{PLUGIN_NAME}"
+        routes = [
+            (f"{prefix}/config", self._api_config_get, ["GET"], "面板配置读取"),
+            (f"{prefix}/config", self._api_config_post, ["POST"], "面板配置保存"),
+            (f"{prefix}/config/reset", self._api_config_reset, ["POST"], "恢复默认值"),
+        ]
+        for route, handler, methods, desc in routes:
+            register(route, handler, methods, desc)
+        logger.info(
+            f"[{PLUGIN_NAME}] 配置面板 API 已注册（{len(routes)} 条路由）"
+        )
+
+    def _panel_schema(self) -> dict:
+        from .core.panel_api import load_schema
+
+        return load_schema(Path(__file__).resolve().parent)
+
+    def _panel_save_config(self) -> None:
+        """面板保存后的落盘：走 AstrBot 原生保存路径（dict 环境静默跳过）。"""
+        save = getattr(self.config, "save_config", None)
+        if callable(save):
+            save()
+
+    async def _api_config_get(self):
+        from .core.panel_api import PanelApiError, build_config_payload
+
+        try:
+            payload = build_config_payload(self.config, self._panel_schema())
+            return {"status": "ok", "data": payload}
+        except PanelApiError as e:
+            return {"status": "error", "message": str(e)}
+        except Exception:
+            logger.exception(f"[{PLUGIN_NAME}] 面板读取失败")
+            return {"status": "error", "message": "内部错误"}
+
+    async def _api_config_post(self):
+        from astrbot.api.web import request as web_request
+
+        from .core.panel_api import (
+            PanelApiError,
+            apply_panel_save,
+            build_config_payload,
+        )
+
+        try:
+            payload = await web_request.json(default={})
+            summary = apply_panel_save(self.config, self._panel_schema(), payload)
+            self._panel_save_config()
+            logger.info(
+                f"[{PLUGIN_NAME}] 面板保存 {summary['count']} 项: "
+                f"{'; '.join(summary['changed'])}"
+            )
+            return {
+                "status": "ok",
+                "message": f"已保存 {summary['count']} 项",
+                "data": {"changed": summary["changed"]},
+            }
+        except PanelApiError as e:
+            return {"status": "error", "message": str(e)}
+        except Exception:
+            logger.exception(f"[{PLUGIN_NAME}] 面板保存失败")
+            return {"status": "error", "message": "内部错误"}
+
+    async def _api_config_reset(self):
+        from .core.panel_api import PanelApiError, apply_panel_reset
+
+        try:
+            schema = self._panel_schema()
+            # 先把旧值备份到日志（任务书 2.3：reset 前留痕）
+            try:
+                old = json.dumps(
+                    {
+                        "preset": dict(self.config.get("preset", {}) or {}),
+                        "advanced": dict(self.config.get("advanced", {}) or {}),
+                    },
+                    ensure_ascii=False,
+                    default=str,
+                )
+                logger.info(f"[{PLUGIN_NAME}] 面板恢复默认值，旧值备份: {old[:2000]}")
+            except Exception:
+                pass
+            summary = apply_panel_reset(self.config, schema)
+            self._panel_save_config()
+            logger.info(
+                f"[{PLUGIN_NAME}] 已恢复默认值（preset {summary['preset_keys']} 项 / "
+                f"advanced {summary['advanced_keys']} 项）"
+            )
+            return {
+                "status": "ok",
+                "message": "已恢复默认值",
+                "data": summary,
+            }
+        except PanelApiError as e:
+            return {"status": "error", "message": str(e)}
+        except Exception:
+            logger.exception(f"[{PLUGIN_NAME}] 恢复默认值失败")
+            return {"status": "error", "message": "内部错误"}
 
     async def _run_knob_loop(self) -> None:
         """旋钮监视循环：先记基线（不写入），之后每 5s 处理增量。
