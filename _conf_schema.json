@@ -62,7 +62,7 @@
         "description": "兴趣每日衰减系数（0-1）",
         "hint": "每天结算时全部兴趣乘以该系数。越低忘得越快——偏执循环调参口之一。",
         "type": "float",
-        "default": 0.9
+        "default": 0.7
       },
       "recent_topic_window": {
         "description": "近期话题追踪窗口（次）",
@@ -258,15 +258,12 @@
         "type": "string",
         "default": "23:00-07:00"
       },
-      "fatigue_threshold": {
-        "description": "疲惫阈值（0-100）",
-        "type": "int",
-        "default": 80
-      },
       "fatigue_rate_per_hour": {
         "description": "疲惫积累速率（每小时）",
+        "hint": "高级参数：活动耗时折算成疲惫值的速率。默认 4.0 即可，一般无需调整。",
         "type": "float",
-        "default": 4.0
+        "default": 4.0,
+        "invisible": true
       },
       "sleep_debt_decay_per_day": {
         "description": "睡眠债每日消退量",
@@ -337,35 +334,10 @@
     "description": "能力开关",
     "type": "object",
     "items": {
-      "enable_search": {
-        "description": "启用搜索能力",
-        "type": "bool",
-        "default": true
-      },
-      "enable_fetch": {
-        "description": "启用网页抓取能力",
-        "type": "bool",
-        "default": true
-      },
-      "enable_sandbox": {
-        "description": "启用沙箱代码执行能力",
-        "type": "bool",
-        "default": true
-      },
-      "enable_send": {
-        "description": "启用主动发消息能力",
-        "type": "bool",
-        "default": true
-      },
       "sandbox_timeout_seconds": {
         "description": "沙箱超时（秒）",
         "type": "int",
         "default": 10
-      },
-      "sandbox_max_memory_mb": {
-        "description": "沙箱内存上限（MB，M0 预留，Windows 强化在 M4）",
-        "type": "int",
-        "default": 256
       },
       "cooldown_between_activities_hours": {
         "description": "两次活动最小间隔（小时）",
@@ -380,10 +352,10 @@
     "type": "object",
     "items": {
       "life_extra": {
-        "description": "生活补充设定",
-        "hint": "主人格复用 AstrBot 已选 persona（总纲 D4），这里只补充'生活细节'：作息习惯、兴趣爱好、性格底色、讨厌的事等。会作为决策 LLM 的输入，影响它独处时的行为倾向。可自由修改。",
+        "description": "生活背景参考",
+        "hint": "主人格复用 AstrBot 已选 persona（总纲 D4），这里只补充'生活口味'：作息习惯、兴趣倾向、性格底色、讨厌的事等。会作为决策 LLM 的背景参考（口味倾向，不是任务清单），影响它独处时的行为风格，但不会把话题锁死在这些方向上。可自由修改。",
         "type": "text",
-        "default": "# 生活补充设定（可自由修改，影响它独处时的行为倾向）\n- 作息习惯：喜欢安静，通常在深夜有精神\n- 兴趣爱好：对技术、宇宙、咖啡、独立游戏感兴趣\n- 性格底色：温和、有点慢热，好奇心强\n- 不喜欢：被打断、重复劳动"
+        "default": "# 生活背景参考（可自由修改，影响它独处时的行为口味，不必围绕它选题）\n- 作息习惯：喜欢安静，通常在深夜有精神\n- 兴趣倾向：对技术、宇宙、咖啡、独立游戏感兴趣\n- 性格底色：温和、有点慢热，好奇心强\n- 不喜欢：被打断、重复劳动"
       }
     }
   },
@@ -397,16 +369,6 @@
         "type": "string",
         "options": ["auto", "livingmemory", "simple"],
         "default": "auto"
-      },
-      "default_importance": {
-        "description": "活动记忆默认重要度（0-1）",
-        "type": "float",
-        "default": 0.5
-      },
-      "recall_count": {
-        "description": "分享时召回记忆条数",
-        "type": "int",
-        "default": 5
       }
     }
   },
@@ -425,18 +387,6 @@
         "hint": "按顺序尝试的 provider id 列表；链尾会自动兜底全部已启用的聊天模型。默认聊天模型 404/限流/超时时自动切换，全部失败才算活动失败。",
         "type": "list",
         "default": []
-      }
-    }
-  },
-  "misc": {
-    "description": "杂项",
-    "type": "object",
-    "items": {
-      "log_level": {
-        "description": "日志级别",
-        "type": "string",
-        "options": ["DEBUG", "INFO", "WARNING", "ERROR"],
-        "default": "INFO"
       }
     }
   }

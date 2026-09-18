@@ -28,7 +28,8 @@ def test_conf_schema_valid_and_groups_complete():
         (WORKDIR / "_conf_schema.json").read_text(encoding="utf-8")
     )
     for group in ("decision", "output_gate", "sleep", "capabilities",
-                  "memory", "model", "misc", "persona"):
+                  "memory", "model", "persona"):
+        # 补丁 XVII：misc 组只含死键 log_level，已整组删除
         assert group in schema, f"缺少配置分组 {group}"
         assert schema[group]["type"] == "object"
         assert isinstance(schema[group]["items"], dict)
@@ -39,8 +40,8 @@ def test_conf_schema_valid_and_groups_complete():
     assert schema["decision"]["items"]["impulse_check_interval_minutes"]["default"] == 5
     assert schema["decision"]["items"]["activity_probability_min"]["default"] == 0.1
     assert schema["decision"]["items"]["activity_probability_ramp_minutes"]["default"] == 60
-    # M3 补丁 VII：兴趣多样性配置
-    assert schema["decision"]["items"]["interest_daily_decay"]["default"] == 0.9
+    # M3 补丁 VII：兴趣多样性配置（补丁 XVII：decay 默认 0.9 → 0.7）
+    assert schema["decision"]["items"]["interest_daily_decay"]["default"] == 0.7
     assert schema["decision"]["items"]["recent_topic_window"]["default"] == 6
     assert schema["decision"]["items"]["recent_topic_penalty"]["default"] == [0.5, 0.3, 0.15]
     assert schema["decision"]["items"]["exploration_window"]["default"] == 4
@@ -64,10 +65,11 @@ def test_conf_schema_valid_and_groups_complete():
     assert schema["output_gate"]["items"]["daily_message_limit"]["default"] == 10
     assert schema["sleep"]["items"]["wake_n_messages"]["default"] == 3
     assert schema["model"]["items"]["provider_id"]["default"] == ""
-    # M2-C3：life_extra 默认模板要存在且像样
+    # M2-C3：life_extra 默认模板要存在且像样（补丁 XVII：标题改"背景参考"）
     life_extra = schema["persona"]["items"]["life_extra"]
     assert life_extra["type"] == "text"
-    assert "生活补充设定" in life_extra["default"]
+    assert "生活背景参考" in life_extra["default"]
+    assert "生活补充设定" not in life_extra["default"]
     assert "作息习惯" in life_extra["default"]
     # M3：休眠与 agent 循环配置项
     sleep_items = schema["sleep"]["items"]

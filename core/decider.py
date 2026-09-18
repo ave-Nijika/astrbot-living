@@ -62,6 +62,27 @@ def _clean_param(value: Any) -> str | None:
     return text[:_PARAM_MAX_LEN] if text else None
 
 
+# 方向归并（补丁 XVII L2.5）：LLM 产出的方向词清洗上限
+_DIRECTION_MAX_LEN = 24  # 单个方向词长度上限（"咖啡/发酵化学×2"这个量级）
+_DIRECTION_MAX_ITEMS = 4  # 方向词数量上限（任务书：2-4 个）
+
+
+def _clean_directions(raw: Any) -> list[str]:
+    """清洗 LLM 顺带产出的方向归并结果。
+
+    容错一切形态：非 list / 元素非字符串 / 空串 / 超长 / 重复都处理掉；
+    清洗后为空即视为"没产出"（调用方保留旧缓存或回退）。
+    """
+    if not isinstance(raw, list):
+        return []
+    cleaned: list[str] = []
+    for item in raw:
+        text = str(item or "").strip()[:_DIRECTION_MAX_LEN].strip()
+        if text and text not in cleaned:
+            cleaned.append(text)
+    return cleaned[:_DIRECTION_MAX_ITEMS]
+
+
 @dataclass
 class Decision:
     """一次决策结果。note 记录回退原因（诊断用，不进日志 INFO）。"""
@@ -95,6 +116,10 @@ class ActivityDecider:
         self._life_extra_getter = life_extra_getter  # () -> str
         self._memory_getter = memory_getter  # async () -> MemoryBackend
         self._last_name: str | None = None
+        # 补丁 XVII L2.5：方向归并缓存 (topics_fingerprint, directions)。
+        # 归并在决策 LLM 调用里顺带产出，同一批 recent_topics 不重复归并；
+        # topics 变了指纹失配 → 自动回退原始清单注入（绝不阻塞决策）。
+        self._direction_cache: "tuple[tuple[str, ...], list[str]] | None" = None
 
     # ------------------------------------------------------------------
     # 入口
@@ -197,6 +222,42 @@ class ActivityDecider:
         counts = Counter(recent)
         return "、".join(f"{topic}（{count} 次）" for topic, count in counts.most_common())
 
+    # ------------------------------------------------------------------
+    # 方向归并（补丁 XVII L2.5）：对付"字符串不重复但谱系重复"。
+    # 归并本身并入决策 LLM 调用（零新增调用），这里只负责：取指纹、
+    # 用缓存拼方向级注入、存新归并。LLM 没产出方向 → 缓存不更新，
+    # 下轮自动回退原始清单注入——行为不劣于现状，绝不阻塞决策。
+    # ------------------------------------------------------------------
+    def _recent_topics_fingerprint(self) -> "tuple[str, ...]":
+        try:
+            return tuple(self._mood.recent_topics_list())
+        except Exception:
+            return ()
+
+    def _direction_section(self, fingerprint: "tuple[str, ...]") -> str:
+        """方向级注入文案（缓存命中时）；未命中返回空串。"""
+        if not fingerprint or self._direction_cache is None:
+            return ""
+        cached_topics, directions = self._direction_cache
+        if cached_topics != fingerprint or not directions:
+            return ""
+        return "你最近折腾过的方向：" + "、".join(directions) + "——这次挑一个完全不同的方向。"
+
+    def _raw_topics_section(self, fingerprint: "tuple[str, ...]") -> str:
+        """原始话题清单注入（方向缓存未命中时的回退形态）。"""
+        if not fingerprint:
+            return ""
+        return "你最近已经折腾过这些话题（太多了会腻）：" + "、".join(fingerprint) + "。"
+
+    def _store_directions(self, fingerprint: "tuple[str, ...]", raw: Any) -> bool:
+        """清洗并缓存本次 LLM 顺带产出的方向归并；返回是否成功入库。"""
+        directions = _clean_directions(raw)
+        if not directions or not fingerprint:
+            return False
+        self._direction_cache = (fingerprint, directions)
+        logger.info(f"[Decider] 方向归并（缓存更新）：{'、'.join(directions)}")
+        return True
+
     def _decision_group(self) -> dict:
         try:
             value = (self._config_getter() or {}).get("decision", {})
@@ -257,17 +318,40 @@ class ActivityDecider:
         if activity.name not in PARAMETERIZABLE or self._llm_call is None:
             return {}
         mood_block = self._mood.digest() if self._mood is not None else "心情平静，精力一般"
+        fingerprint: tuple[str, ...] = ()
         if activity.name == "game":
             prompt = (
                 f"你现在打算写个小游戏自己玩。你现在的状态：{mood_block}。\n"
                 '顺着状态选一个具体的小游戏风格。只输出 JSON，格式：{"style": "…"}'
             )
         else:
+            # 补丁 XVII L2.5：近期方向注入 + 归并并入同一次调用（零新增调用）。
+            # 方向缓存命中 → 方向级表述；未命中 → 原始清单（回退形态）。
             action = "上网冲浪（搜索）" if activity.name == "surf" else "读一篇文章"
+            fingerprint = self._recent_topics_fingerprint()
+            recent_block = self._direction_section(fingerprint) or (
+                self._raw_topics_section(fingerprint)
+            )
+            recent_line = f"{recent_block}\n" if recent_block else ""
+            # 无近期话题时归并指令是空指令，不拼（省 token 也防 LLM 编造）
+            merge_line = (
+                "顺带把你最近折腾过的话题归并成不超过 4 个方向。\n"
+                if fingerprint
+                else ""
+            )
+            json_spec = (
+                '只输出 JSON，格式：{"topic": "…", '
+                '"directions": ["方向×出现次数", "…"]}'
+                if fingerprint
+                else '只输出 JSON，格式：{"topic": "…"}'
+            )
             prompt = (
                 f"你现在打算{action}。你现在的状态：{mood_block}。\n"
-                "顺着状态选一个具体、有生活气息的主题词。"
-                '只输出 JSON，格式：{"topic": "…"}'
+                f"{recent_line}"
+                "顺着状态选一个具体、有生活气息的主题词，"
+                "选一个你最近没碰过的方向，越新鲜越好。\n"
+                f"{merge_line}"
+                f"{json_spec}"
             )
         system_prompt = await self._system_prompt()
         raw = await self._safe_llm(prompt, system_prompt)
@@ -280,6 +364,8 @@ class ActivityDecider:
             value = _clean_param(data.get(key))
             if value:
                 params[key] = value
+        if fingerprint:
+            self._store_directions(fingerprint, data.get("directions"))
         return params
 
     # ------------------------------------------------------------------
@@ -295,12 +381,18 @@ class ActivityDecider:
         )
         memory_block = "\n".join(f"- {m}" for m in memories) if memories else "（还没什么记忆）"
         mood_block = self._mood.digest() if self._mood is not None else "心情平静，精力一般"
-        recent_block = self._recent_topic_summary()
-        recent_section = (
-            f"\n你最近已经折腾过这些话题（太多了会腻）：{recent_block}。\n"
-            if recent_block
-            else "\n"
-        )
+        # 补丁 XVII L2.5：方向缓存命中 → 方向级表述；未命中 → 原有字符串清单
+        fingerprint = self._recent_topics_fingerprint()
+        direction_section = self._direction_section(fingerprint)
+        if direction_section:
+            recent_section = f"\n{direction_section}\n"
+        else:
+            recent_block = self._recent_topic_summary()
+            recent_section = (
+                f"\n你最近已经折腾过这些话题（太多了会腻）：{recent_block}。\n"
+                if recent_block
+                else "\n"
+            )
         exploration_line = self._exploration_directive()
         if exploration_line:
             exploration_line = f"{exploration_line}\n"
@@ -314,13 +406,25 @@ class ActivityDecider:
             "请选一个你现在最想做的活动，并给它合适参数（topic 为主题词，"
             'style 为小游戏风格，peek 和 reminisce 不需要参数）。'
             "如果上面列了你最近反复折腾的话题，这次避开它们。\n"
-            '只输出 JSON，格式：{"activity": "…", "params": {"topic": "…"}}'
+            + (
+                "顺带把你最近折腾过的话题归并成不超过 4 个方向。\n"
+                if fingerprint
+                else ""
+            )
+            + (
+                '只输出 JSON，格式：{"activity": "…", "params": {"topic": "…"}, '
+                '"directions": ["方向×出现次数", "…"]}'
+                if fingerprint
+                else '只输出 JSON，格式：{"activity": "…", "params": {"topic": "…"}}'
+            )
         )
         system_prompt = await self._system_prompt()
         raw = await self._safe_llm(prompt, system_prompt)
         data = extract_json_object(raw)
         if not data:
             return None
+        if fingerprint:
+            self._store_directions(fingerprint, data.get("directions"))
         name = str(data.get("activity", "")).strip()
         activity = next((a for a in effective if a.name == name), None)
         if activity is None:
@@ -352,7 +456,13 @@ class ActivityDecider:
             try:
                 life_extra = self._life_extra_getter() or ""
                 if str(life_extra).strip():
-                    parts.append(f"你的生活补充设定：\n{life_extra}")
+                    # 补丁 XVII L1-a：措辞从"身份设定"降为"背景参考"——
+                    # 原写法会被 LLM 当身份定义严格执行，话题被人设点名
+                    # 的方向（如咖啡）绑死（补丁 XVII 根因 a）
+                    parts.append(
+                        "你的生活背景参考（口味倾向，不是任务清单，"
+                        f"不必围绕它选题）：\n{life_extra}"
+                    )
             except Exception:
                 pass
         return "\n\n".join(parts) if parts else None

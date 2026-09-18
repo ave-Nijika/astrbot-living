@@ -276,9 +276,10 @@ def test_seven_day_autonomous_schedule_simulation(tmp_path):
                     break  # 已醒来，开始新一天
                 t += timedelta(minutes=30)
                 continue
-            # 醒着：消耗精力 + 疲劳积累（真实感）
+            # 醒着：消耗精力 + 疲劳积累（真实感；补丁 XVII 起 add_fatigue 已删，
+            # 模拟脚本直接改字段，钳制语义与 _clamp 一致）
             mood.energy = max(mood.energy - 0.07, 0.05)
-            mood.add_fatigue(3.0)
+            mood.fatigue = min(mood.fatigue + 3.0, 100.0)
             nap, minutes = manager.should_nap(mood, t)
             if nap:
                 t += timedelta(minutes=minutes)

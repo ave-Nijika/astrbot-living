@@ -280,11 +280,6 @@ class MoodState:
             self.sleep_debt + max(amount, 0.0), FATIGUE_MIN, FATIGUE_MAX
         )
 
-    def add_fatigue(self, amount: float) -> None:
-        self.fatigue = _clamp(
-            self.fatigue + max(amount, 0.0), FATIGUE_MIN, FATIGUE_MAX
-        )
-
     def bump_interest(self, topic: str, delta: float) -> None:
         """兴趣增益带饱和曲线（任务书 M3 补丁 VII 需求 1）。
 
@@ -365,7 +360,12 @@ class MoodState:
     # 展示
     # ------------------------------------------------------------------
     def digest(self) -> str:
-        """心境摘要：给决策 LLM 的一段短描述（人话，不是数字转储）。"""
+        """心境摘要：给决策 LLM 的一段短描述（人话，不是数字转储）。
+
+        补丁 XVII L1-b：兴趣行弱化——只报 top2、去掉数值，措辞从"对这些
+        有兴趣"降为"偶尔在琢磨"——原来的写法会被 LLM 当作"继续做这个"的
+        指令，与近期话题惩罚机制对着干（兴趣回环放大器，补丁 XVII 根因 b）。
+        """
         if self.valence >= 0.3:
             mood_word = "心情不错"
         elif self.valence >= -0.1:
@@ -378,15 +378,15 @@ class MoodState:
             energy_word = "精力一般"
         else:
             energy_word = "有点累了"
-        parts = [f"{mood_word}（valence={self.valence:.2f}）", energy_word]
+        parts = [mood_word, energy_word]
         if self.fatigue >= 60:
             parts.append("身体有些疲惫")
         if self.sleep_debt >= 40:
             parts.append("最近没睡好，欠了点觉")
-        top = sorted(self.interests.items(), key=lambda kv: kv[1], reverse=True)[:3]
+        top = sorted(self.interests.items(), key=lambda kv: kv[1], reverse=True)[:2]
         if top:
-            liked = "、".join(f"{k}({v:.2f})" for k, v in top)
-            parts.append(f"最近对这些有兴趣：{liked}")
+            liked = "、".join(k for k, _ in top)
+            parts.append(f"最近偶尔在琢磨的方向：{liked}（浅尝过，未必延续）")
         return "；".join(parts)
 
 
