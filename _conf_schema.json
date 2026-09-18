@@ -126,6 +126,12 @@
         "hint": "列表内的活动由 LLM 拿着工具集（搜索/抓取/沙箱/记忆）自己决定怎么玩，其余走脚本模式。受 single_run_token_budget 硬闸保护。",
         "type": "list",
         "default": ["surf", "read", "game"]
+      },
+      "free_activity_enabled": {
+        "description": "自由活动开关",
+        "hint": "关闭后 free（自由活动）从活动池移除，回到固定活动池（surf/read/game/peek/reminisce），改配置下个决策生效。",
+        "type": "bool",
+        "default": true
       }
     }
   },

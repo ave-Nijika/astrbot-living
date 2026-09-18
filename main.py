@@ -22,7 +22,13 @@ from astrbot.api.star import Context, Star
 
 from .core.activities import default_activities
 from .core.agent_loop import LivingAgentLoop
-from .core.autonomy import read_tier, read_write_level
+from .core.autonomy import (
+    TIER_NAMES,
+    WRITE_LEVEL_NAMES,
+    build_tool_manifest,
+    read_tier,
+    read_write_level,
+)
 from .core.decider import ActivityDecider
 from .core.fetcher import WebFetcher
 from .core.ghost_event import build_ghost_event
@@ -426,11 +432,26 @@ class LivingPlugin(Star):
             workspace=self._living_workspace(),
             browser_session=browser_session,
         )
+        # 补丁 XV 清单2：档位日志改用 build_tool_manifest（"预期清单"），
+        # 与"实际挂载"并排——两者不一致即装配有缺，一眼可查
+        manifest = build_tool_manifest(
+            tier,
+            write_level,
+            has_browser=browser_session is not None,
+            has_workspace=bool(self._living_workspace()),
+        )
         logger.info(
-            f"[{PLUGIN_NAME}] 档位={tier} 写层级={write_level} "
-            f"工具={[t.name for t in tools.tools]}"
+            f"[{PLUGIN_NAME}] 档位={tier}({TIER_NAMES.get(tier, '?')}) "
+            f"写层级={write_level}({WRITE_LEVEL_NAMES.get(write_level, '?')}) "
+            f"清单={manifest} 实际挂载={[t.name for t in tools.tools]}"
         )
         return tools
+
+    def _free_activity_enabled(self) -> bool:
+        """decision.free_activity_enabled（补丁 XV 清单3）：False 时 free
+        活动退出活动池，回到固定池。"""
+        raw = self._cfg("decision", "free_activity_enabled", True)
+        return True if raw is None else bool(raw)
 
     # ------------------------------------------------------------------
     # 生命周期（需求 F：接线 + 热重载安全）
@@ -474,7 +495,11 @@ class LivingPlugin(Star):
             tool_builder=self._build_agent_tools,
         )
         decider = ActivityDecider(
-            activities=default_activities(),
+            # 补丁 XV 清单3：free 开关在构造期先滤一次（decider/loop 内部
+            # 还会按配置现读，双保险保热生效）
+            activities=default_activities(
+                enabled_free=self._free_activity_enabled()
+            ),
             config_getter=lambda: self.config,
             llm_call=self._decision_llm_call,
             mood=self.mood,
@@ -493,6 +518,11 @@ class LivingPlugin(Star):
             },
             sender=self.sender,
             mood=self.mood,
+            # 补丁 XV 清单3：活动池显式传入（原先 loop 自建全量池，与
+            # decider 池来源不一致；现同源，free 开关在两处一致）
+            activities=default_activities(
+                enabled_free=self._free_activity_enabled()
+            ),
             decider=decider,
             sleep_manager=self.sleep_manager,
             agent_loop=agent_loop,

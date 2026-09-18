@@ -666,11 +666,12 @@ class LivingLoop:
 
         forced = None
         if force_activity:
+            effective = self._effective_activities()
             forced = next(
-                (a for a in self._activities if a.name == force_activity), None
+                (a for a in effective if a.name == force_activity), None
             )
             if forced is None:
-                known = "/".join(a.name for a in self._activities)
+                known = "/".join(a.name for a in effective)
                 return {
                     "activity": force_activity, "ok": False,
                     "error": f"未知活动 {force_activity!r}（可选: {known}）",
@@ -797,7 +798,20 @@ class LivingLoop:
 
     @property
     def activity_names(self) -> list[str]:
-        return [a.name for a in self._activities]
+        return [a.name for a in self._effective_activities()]
+
+    def _effective_activities(self) -> list[Activity]:
+        """活动池（补丁 XV 清单3）：decision.free_activity_enabled=false 时
+        摘除 free。现读配置——开关热生效，覆盖随机选择与 /living do 指名。"""
+        try:
+            raw = _conf_group(self._config_getter(), "decision").get(
+                "free_activity_enabled"
+            )
+            if raw is not None and not bool(raw):
+                return [a for a in self._activities if a.name != "free"]
+        except Exception:
+            pass
+        return self._activities
 
     def _recent_topic_penalty_table(self) -> tuple:
         """重复惩罚表（配置 recent_topic_penalty，缺省 0.5/0.3/0.15）。"""
@@ -1058,9 +1072,10 @@ class LivingLoop:
 
     def _pick_activity(self) -> Activity:
         """随机选活动，避免和上次相同（连着两回干一样的事就不像生活了）。"""
+        effective = self._effective_activities()
         pool = [
-            a for a in self._activities if a.name != self._last_activity_name
-        ] or self._activities
+            a for a in effective if a.name != self._last_activity_name
+        ] or effective
         chosen = self._rng.choice(pool)
         self._last_activity_name = chosen.name
         return chosen

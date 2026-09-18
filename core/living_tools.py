@@ -14,10 +14,13 @@ from pydantic import Field
 from pydantic.dataclasses import dataclass as pydantic_dataclass
 
 import asyncio
-import tempfile
+from datetime import datetime
+from pathlib import Path
 
 from astrbot.api import logger
 from astrbot.core.agent.tool import FunctionTool, ToolSet, ToolExecResult
+
+from .autonomy import check_action_kind
 
 FETCH_TEXT_CHARS = 1500  # 喂给 LLM 的正文上限：够读，不至于撑爆上下文
 
@@ -510,19 +513,46 @@ class BrowserScreenshotTool(FunctionTool):
 
     async def call(self, context, **kwargs) -> ToolExecResult:
         page = await self._session_ref.session._ensure_page()
-        import os as _os
-        path = _os.path.join(tempfile.gettempdir(), "living_screenshot.png")
-        await page.screenshot(path=path)
+        # 补丁 XV 清单1：截图落工作区 screenshots/，不再写系统 temp
+        try:
+            workspace = str(
+                getattr(self._session_ref.session, "_workspace", "") or ""
+            ).strip() or str(Path.cwd())
+            screenshot_dir = Path(workspace) / "screenshots"
+            screenshot_dir.mkdir(parents=True, exist_ok=True)
+            filename = "living_screenshot_" + datetime.now().strftime(
+                "%Y%m%d_%H%M%S"
+            ) + ".png"
+            path = str(screenshot_dir / filename)
+            await page.screenshot(path=path)
+        except Exception as e:
+            # 失败保护：目录创建/写盘失败返回明确文本，不抛异常
+            logger.warning(f"[browser_screenshot] 截图保存失败: {e}")
+            return f"截图失败：无法写入截图目录（{e}）"
         return f"截图已保存 {path}"
 
 
 @pydantic_dataclass
 class BrowserClickTool(FunctionTool):
     name: str = "browser_click"
-    description: str = "点击网页上的元素（按钮/链接等）。需要 write_level >= 1。"
+    description: str = (
+        "点击网页上的元素（按钮/链接等）。需要 write_level >= 1；"
+        "提交/评论/发帖等写入性质的动作必须用 action_kind 标明，"
+        "标错或漏标会被权限层拒绝。"
+    )
     parameters: dict = Field(default_factory=lambda: {
         "type": "object",
-        "properties": {"selector": {"type": "string", "description": "CSS 选择器"}},
+        "properties": {
+            "selector": {"type": "string", "description": "CSS 选择器"},
+            "action_kind": {
+                "type": "string",
+                "description": (
+                    "这次点击的操作性质：navigate(跳转)/fill(填表)/"
+                    "submit_form(提交表单)/comment(评论、点赞)/post(发帖)/"
+                    "message(私信)/purchase(下单)。漏标按 unknown 保守拒绝。"
+                ),
+            },
+        },
         "required": ["selector"],
     })
     _session_ref: Any = None
@@ -536,6 +566,16 @@ class BrowserClickTool(FunctionTool):
         selector = str(kwargs.get("selector", "")).strip()
         if not selector:
             return "错误：selector 不能为空"
+        # 补丁 XV 清单4：写操作分级判定（拒绝时连页面都不碰）
+        allowed, reason = check_action_kind(
+            self._write_level, kwargs.get("action_kind")
+        )
+        if not allowed:
+            logger.info(
+                f"[browser_click] 写操作被拒 write_level={self._write_level} "
+                f"action_kind={kwargs.get('action_kind')!r} selector={selector[:60]}"
+            )
+            return reason
         page = await self._session_ref.session._ensure_page()
         await page.click(selector, timeout=5000)
         return f"已点击 {selector}"
@@ -544,12 +584,23 @@ class BrowserClickTool(FunctionTool):
 @pydantic_dataclass
 class BrowserTypeTool(FunctionTool):
     name: str = "browser_type"
-    description: str = "在网页输入框中填入文本。需要 write_level >= 1。"
+    description: str = (
+        "在网页输入框中填入文本。需要 write_level >= 1；"
+        "若这次输入是为发帖/私信等写入做准备，必须用 action_kind 标明。"
+    )
     parameters: dict = Field(default_factory=lambda: {
         "type": "object",
         "properties": {
             "selector": {"type": "string", "description": "输入框 CSS 选择器"},
             "text": {"type": "string", "description": "要输入的文本"},
+            "action_kind": {
+                "type": "string",
+                "description": (
+                    "这次输入的操作性质：fill(普通填表)/comment(评论、点赞)/"
+                    "post(发帖)/message(私信)/submit_form(提交表单)。"
+                    "漏标按 unknown 保守拒绝。"
+                ),
+            },
         },
         "required": ["selector", "text"],
     })
@@ -565,6 +616,16 @@ class BrowserTypeTool(FunctionTool):
         text = str(kwargs.get("text", ""))
         if not selector:
             return "错误：selector 不能为空"
+        # 补丁 XV 清单4：写操作分级判定（拒绝时连页面都不碰）
+        allowed, reason = check_action_kind(
+            self._write_level, kwargs.get("action_kind")
+        )
+        if not allowed:
+            logger.info(
+                f"[browser_type] 写操作被拒 write_level={self._write_level} "
+                f"action_kind={kwargs.get('action_kind')!r} selector={selector[:60]}"
+            )
+            return reason
         page = await self._session_ref.session._ensure_page()
         await page.fill(selector, text)
         return f"已在 {selector} 填入 {len(text)} 字"

@@ -128,6 +128,19 @@ class ActivityDecider:
         except Exception:
             return "hybrid"
 
+    def _effective_activities(self) -> "list[Activity]":
+        """决策池（补丁 XV 清单3）：decision.free_activity_enabled=false 时
+        摘除 free。每次决策现读配置——开关热生效，改配置下个决策即回固定池。"""
+        try:
+            raw = (self._config_getter() or {}).get("decision", {}).get(
+                "free_activity_enabled"
+            )
+            if raw is not None and not bool(raw):
+                return [a for a in self._activities if a.name != "free"]
+        except Exception:
+            pass
+        return self._activities
+
     # ------------------------------------------------------------------
     # rules 档
     # ------------------------------------------------------------------
@@ -135,8 +148,8 @@ class ActivityDecider:
         """加权随机 + 避免连续重复。心境只是"倾向"，不是"规则"——权重×2
         足够让选择有性格，又不至于变成可预测的循环。"""
         pool = [
-            a for a in self._activities if a.name != self._last_name
-        ] or self._activities
+            a for a in self._effective_activities() if a.name != self._last_name
+        ] or self._effective_activities()
         weights = [self._weight_for(a) for a in pool]
         chosen = self._weighted_choice(pool, weights)
         self._last_name = chosen.name
@@ -276,8 +289,9 @@ class ActivityDecider:
         if self._llm_call is None:
             return None
         memories = await self._recent_memories()
+        effective = self._effective_activities()
         activity_lines = "\n".join(
-            f"- {a.name}: {a.description}" for a in self._activities
+            f"- {a.name}: {a.description}" for a in effective
         )
         memory_block = "\n".join(f"- {m}" for m in memories) if memories else "（还没什么记忆）"
         mood_block = self._mood.digest() if self._mood is not None else "心情平静，精力一般"
@@ -308,7 +322,7 @@ class ActivityDecider:
         if not data:
             return None
         name = str(data.get("activity", "")).strip()
-        activity = next((a for a in self._activities if a.name == name), None)
+        activity = next((a for a in effective if a.name == name), None)
         if activity is None:
             return None  # 选了不存在的活动：当它没说，回退 rules
         raw_params = data.get("params")

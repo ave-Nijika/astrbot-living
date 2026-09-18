@@ -481,10 +481,12 @@ class FreeActivity(Activity):
 
 
 
-def default_activities() -> list[Activity]:
+def default_activities(enabled_free: bool = True) -> list[Activity]:
     """M3 活动池（顺序即 Pool；选择随机性由 decider/Loop 处理）。
-    含 FreeActivity（补丁 XI-B5：需要 agent 通道才生效，否则脚本降级）。"""
-    return [
+    含 FreeActivity（补丁 XI-B5：需要 agent 通道才生效，否则脚本降级）。
+    补丁 XV 清单3：decision.free_activity_enabled=false 时调用方传
+    enabled_free=False，free 不进池（回到固定活动池）。"""
+    pool: list[Activity] = [
         SurfActivity(),
         ReadArticleActivity(),
         MiniGameActivity(),
@@ -492,3 +494,6 @@ def default_activities() -> list[Activity]:
         MemoryBrowsingActivity(),
         FreeActivity(),
     ]
+    if enabled_free:
+        return pool
+    return [a for a in pool if a.name != "free"]

@@ -64,13 +64,70 @@ def is_write_allowed(path: str, workspace: str, write_level: int) -> bool:
     return bool(ws) and p.startswith(ws)
 
 
-def build_tool_manifest(tier: int, write_level: int, has_browser: bool = False) -> list[str]:
-    """当前档位的工具名清单（日志可观测）。"""
+def build_tool_manifest(
+    tier: int, write_level: int, has_browser: bool = False, has_workspace: bool = False
+) -> list[str]:
+    """当前档位的工具名清单（日志可观测，补丁 XV 清单2 起由
+    main._build_agent_tools 的档位日志使用）。
+
+    名称必须与 build_living_tools 的实际挂载一致（一致性由
+    tests/test_m3_patchXV.py 的接线测试守护）：browser 五件套含
+    click/type，工作区三件套含 list。
+    """
     names = ["web_search", "fetch_page", "run_python", "remember"]
     if tier >= 1 and has_browser:
-        names += ["browser_navigate", "browser_read", "browser_screenshot"]
-    if tier >= 2:
-        names += ["workspace_read", "workspace_write"]
+        names += [
+            "browser_navigate", "browser_read", "browser_screenshot",
+            "browser_click", "browser_type",
+        ]
+    if tier >= 2 and has_workspace:
+        names += ["workspace_read", "workspace_write", "workspace_list"]
     if tier >= 3:
         names += ["local_shell"]
     return names
+
+
+# ---------------------------------------------------------------------------
+# 写操作分级判定（补丁 XV 清单4）：write_level × action_kind 允许表。
+# 这是 L2（轻写入）与 L3（全权）的第一个行为差异：评论/点赞 ≠ 发帖/私信/下单。
+# ---------------------------------------------------------------------------
+ACTION_KINDS = (
+    "navigate", "fill", "submit_form",
+    "comment", "post", "message", "purchase", "unknown",
+)
+
+# write_level → 允许的 action_kind；3 = 全权（None 表示不设限，含未标注操作）
+_WRITE_LEVEL_ALLOWED: dict[int, "frozenset[str] | None"] = {
+    0: frozenset(),
+    1: frozenset({"navigate", "fill"}),
+    2: frozenset({"navigate", "fill", "submit_form", "comment"}),
+    3: None,
+}
+
+
+def check_action_kind(write_level: int, action_kind: str | None) -> "tuple[bool, str]":
+    """写操作分级判定。返回 (是否放行, 拒绝原因)。
+
+    保守拒绝策略：write_level < 3 时未提供 action_kind 或取值 unknown 一律
+    拒绝——LLM 没标注的操作按"无法确认风险"对待，宁可让它重标一次也不
+    静默放行；write_level=3（主人明示全权，见总纲 D12）不设限，未标注也
+    放行。放行时第二项为空串。
+    """
+    allowed = _WRITE_LEVEL_ALLOWED.get(clamp_write_level(write_level, 0), frozenset())
+    if allowed is None:
+        return True, ""
+    kind = str(action_kind or "").strip().lower()
+    if not kind or kind not in ACTION_KINDS or kind == "unknown":
+        return False, (
+            "当前权限无法确认该操作的风险等级，已拒绝。"
+            "请在调用时标明 action_kind（navigate/fill/submit_form/comment/"
+            "post/message/purchase）；发帖、私信、下单等高风险动作需要主人把 "
+            "write_level 调到 3。"
+        )
+    if kind in allowed:
+        return True, ""
+    return False, (
+        f"当前写层级（write_level={write_level}）不允许 {kind} 这类操作，已拒绝。"
+        "填表/跳转需要 write_level>=1，评论/提交表单等轻写入需要 >=2，"
+        "发帖/私信/下单需要 3（需联系主人调整）。"
+    )

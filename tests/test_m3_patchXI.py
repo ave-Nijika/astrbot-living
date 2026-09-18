@@ -313,24 +313,20 @@ def test_write_level_gate():
 
 
 def test_tool_manifest_by_tier():
+    """清单函数按档位递进（补丁 XV：与实际挂载名一致，含 click/type/list）。"""
     m0 = build_tool_manifest(0, 0, has_browser=False)
     assert "web_search" in m0 and "browser_navigate" not in m0
     m1 = build_tool_manifest(1, 0, has_browser=True)
     assert "browser_navigate" in m1
-    m2 = build_tool_manifest(2, 2, has_browser=True)
-    assert "workspace_read" in m2
-
-
-def build_tool_manifest(tier, write_level, has_browser=False):
-    """简单工具清单（测试用）。"""
-    names = ["web_search", "fetch_page", "run_python", "remember"]
-    if tier >= 1 and has_browser:
-        names += ["browser_navigate", "browser_read", "browser_screenshot"]
-    if tier >= 2:
-        names += ["workspace_read", "workspace_write"]
-    if tier >= 3:
-        names += ["local_shell"]
-    return names
+    assert "browser_click" in m1 and "browser_type" in m1
+    m2 = build_tool_manifest(2, 2, has_browser=True, has_workspace=True)
+    assert "workspace_read" in m2 and "workspace_list" in m2
+    assert "local_shell" not in m2
+    m3 = build_tool_manifest(3, 3, has_browser=True, has_workspace=True)
+    assert "local_shell" in m3
+    # has_workspace=False 时清单不预告工作区工具（与实际挂载条件一致）
+    m2_now = build_tool_manifest(2, 2, has_browser=True, has_workspace=False)
+    assert "workspace_read" not in m2_now
 
 
 # ---------------------------------------------------------------------------

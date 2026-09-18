@@ -7,12 +7,14 @@ AstrBot 根放进了 sys.path），所以本文件用合成包上下文加载插
 
 import asyncio
 import importlib
+import logging
 import sys
 import types
 from pathlib import Path
 
 import pytest
 
+from core.autonomy import build_tool_manifest
 from core.lazy_memory import LazyMemory
 from core.memory_backend import LivingMemoryBackend, SimpleBackend
 from core.sleep import SleepManager
@@ -150,6 +152,7 @@ def make_plugin(db_path):
     plugin.gate = None
     plugin.loop = None
     plugin._selfheal_task = None
+    plugin._browser_session = None  # 补丁 XV：_build_agent_tools 直调时需要
     plugin.mood = main_module.MoodState(db_path=str(db_path) + ".mood")
     # 屏蔽真实插件数据目录（不写 AstrBot 的 data/）与网络能力
     plugin._gate_db_path = lambda: str(db_path) + ".gate"
@@ -329,6 +332,63 @@ def test_initialize_wires_mood_and_decider(tmp_path):
         assert plugin.loop is None
 
     asyncio.run(flow())
+
+
+# ---------------------------------------------------------------------------
+# 补丁 XV：manifest 进档位日志（清单 2）与 free 开关进两处活动池（清单 3）
+# ---------------------------------------------------------------------------
+def test_build_agent_tools_log_uses_manifest(tmp_path, caplog):
+    """验收 2：_build_agent_tools 的档位日志来自 build_tool_manifest，
+    且清单与实际挂载的工具名集合一致。"""
+
+    async def flow():
+        plugin = make_plugin(tmp_path / "m.db")
+        plugin.config = {
+            "memory": {"backend": "auto"},
+            "autonomy": {
+                "tier": 2,
+                "write_level": 2,
+                "workspace_dir": str(tmp_path / "ws"),
+            },
+        }
+        with caplog.at_level(logging.INFO, logger="astrbot"):
+            tools = plugin._build_agent_tools()
+        return tools
+
+    tools = asyncio.run(flow())
+    expected = build_tool_manifest(2, 2, has_browser=True, has_workspace=True)
+    assert set(expected) == {t.name for t in tools.tools}
+    assert any(
+        "清单=" in r.getMessage() and "workspace_list" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_initialize_pools_respect_free_switch(tmp_path):
+    """验收 3 接线：开关关闭 → initialize 后 decider 与 loop 两池都无
+    free；默认开 → 两池都含 free（构造期路径，与 decider/loop 内部的
+    热读过滤双保险）。"""
+
+    async def flow(enabled):
+        plugin = make_plugin(tmp_path / "m.db")
+        plugin.config = {
+            "memory": {"backend": "auto"},
+            "decision": {"free_activity_enabled": enabled},
+        }
+        await plugin.initialize()
+        try:
+            names_decider = {a.name for a in plugin.loop._decider._activities}
+            names_loop = set(plugin.loop.activity_names)
+        finally:
+            await plugin.terminate()
+        return names_decider, names_loop
+
+    off_d, off_l = asyncio.run(flow(False))
+    assert "free" not in off_d
+    assert "free" not in off_l
+    on_d, on_l = asyncio.run(flow(True))
+    assert "free" in on_d
+    assert "free" in on_l
 
 
 # ---------------------------------------------------------------------------

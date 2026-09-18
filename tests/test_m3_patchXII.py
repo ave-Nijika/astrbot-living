@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 import types
 
-from core.autonomy import build_tool_manifest, is_write_allowed
+from core.autonomy import is_write_allowed
 from core.living_tools import build_living_tools
 from core.mood import MoodState
 from core.ghost_event import build_ghost_event
@@ -85,30 +85,26 @@ def test_tier0_vs_tier3_different_tools():
 # 写操作分层（write_level 在工具执行路径上生效）
 # ---------------------------------------------------------------------------
 def test_write_level_enforced_in_browser_type():
-    """write_level 在工具执行路径上生效：tier>=2 时 BrowserTypeTool 存在，
-    write_level=0 时调用返回错误文本。"""
+    """write_level 在工具执行路径上生效：write_level=0 时任何 action_kind
+    都被拒（补丁 XV 起 action_kind 判定接管分层，拒绝文本明确）。"""
     from core.living_tools import BrowserTypeTool
 
     class FakePage:
-        async def goto(self, url, **kw):
-            pass
-        async def title(self):
-            return "test"
-        async def inner_text(self, sel):
-            return "text"
+        filled = False
+
         async def fill(self, selector, text):
-            pass
+            FakePage.filled = True
 
     class FakeBrowser:
         async def _ensure_page(self):
             return FakePage()
 
-    session = types.SimpleNamespace(_ensure_page=lambda: asyncio.sleep(0, result=None))
-    session._session_ref = types.SimpleNamespace(session=FakeBrowser())
-
     tool = BrowserTypeTool()
     tool._session_ref = types.SimpleNamespace(session=FakeBrowser(), write_level=0)
     tool._write_level = 0
-    result = asyncio.run(tool.call(None, selector="#input", text="hello"))
-    assert "错误" in result or "不允许" in result or "填入" in result
+    result = asyncio.run(
+        tool.call(None, selector="#input", text="hello", action_kind="fill")
+    )
+    assert "已拒绝" in result
+    assert FakePage.filled is False  # 被拒时连页面都不碰
 
