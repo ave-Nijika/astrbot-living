@@ -335,3 +335,28 @@ def test_autonomous_sleep_tick_sources_are_complete():
     assert not inspect.iscoroutinefunction(SleepManagerAutonomous.should_nap), (
         "should_nap 必须是同步方法；调用方不得 await（线上曾 TypeError）"
     )
+
+
+def test_all_living_memory_writes_carry_identity():
+    """守门：living 的每条记忆写入路径都必须注入 participant_identities。
+
+    补丁 IV 引入身份机制时只改了活动记忆，漏掉睡前回顾 / 梦 / remember
+    工具三条路径 —— 这些记忆在图谱里没有 person 节点，形成孤立分量
+    （2026-09-19 线上由"睡前回顾"孤立图谱暴露）。
+    """
+    import inspect
+
+    from core import living_loop as ll
+    from core import living_tools as lt
+
+    for fn_name in ("_write_bedtime_review", "_maybe_dream"):
+        src = inspect.getsource(getattr(ll.LivingLoop, fn_name))
+        assert "participant_identities" in src, (
+            f"{fn_name} 必须注入 participant_identities，否则该记忆成图谱孤岛"
+        )
+
+    src_tool = inspect.getsource(lt.RememberTool.call)
+    assert "participant_identities" in src_tool, "remember 工具写入必须带 bot 身份"
+    assert hasattr(lt.RememberTool, "bind_identity"), "RememberTool 需支持注入身份 getter"
+    sig = inspect.signature(lt.build_living_tools)
+    assert "bot_identity_getter" in sig.parameters, "build_living_tools 需透出身份 getter"

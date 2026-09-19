@@ -170,9 +170,16 @@ class RememberTool(FunctionTool):
     )
 
     _memory_getter: Callable[..., Any] | None = None
+    # 补丁 XX：bot 身份 getter——写记忆时必须带上参与者身份，否则该记忆
+    # 在图谱里没有 person 节点、会形成孤立分量（补丁 IV 漏掉本路径）
+    _bot_identity_getter: Callable[..., Any] | None = None
 
     def bind(self, memory_getter: Callable[..., Any]) -> "RememberTool":
         self._memory_getter = memory_getter
+        return self
+
+    def bind_identity(self, bot_identity_getter: Callable[..., Any]) -> "RememberTool":
+        self._bot_identity_getter = bot_identity_getter
         return self
 
     async def call(self, context, **kwargs) -> ToolExecResult:
@@ -185,7 +192,15 @@ class RememberTool(FunctionTool):
             importance = 0.5
         importance = max(0.0, min(1.0, importance))
         memory = await self._memory_getter()
-        doc_id = await memory.add(text, importance=importance)
+        metadata: dict = {"topics": ["随笔"]}
+        if self._bot_identity_getter is not None:
+            try:
+                identity = await self._bot_identity_getter()
+            except Exception:
+                identity = None
+            if identity:
+                metadata["participant_identities"] = [identity]
+        doc_id = await memory.add(text, importance=importance, metadata=metadata)
         return f"已记住（id={doc_id}）：{text[:50]}"
 
 
@@ -194,6 +209,7 @@ def build_living_tools(
     fetcher: Any = None,
     sandbox: Any = None,
     memory_getter: Callable[..., Any] | None = None,
+    bot_identity_getter: Callable[..., Any] | None = None,
     tier: int = 0,
     write_level: int = 0,
     workspace: str = "",
@@ -228,6 +244,8 @@ def build_living_tools(
     if memory_getter is not None:
         remember_tool = RememberTool()
         remember_tool.bind(memory_getter)
+        if bot_identity_getter is not None:
+            remember_tool.bind_identity(bot_identity_getter)
         tools.append(remember_tool)
 
     # tier >= 1: 浏览器工具

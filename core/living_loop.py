@@ -567,11 +567,17 @@ class LivingLoop:
             review = (
                 f"{date_key}是安静的一天，没做成什么事。该睡了，晚安。"
             )
+        # 补丁 XX：带上 bot 身份——否则这类记忆在图谱里没有 person 节点，
+        # 会形成孤立分量（补丁 IV 引入 participant_identities 时漏了本路径）
+        identity = await self._bot_identity()
+        review_metadata: dict = {"topics": ["睡前回顾"]}
+        if identity:
+            review_metadata["participant_identities"] = [identity]
         try:
             await memory.add(
                 review,
                 importance=0.6,
-                metadata={"topics": ["睡前回顾"]},
+                metadata=review_metadata,
                 session_id=self._session_id(None),
                 persona_id=await self._persona_id(),
             )
@@ -620,10 +626,16 @@ class LivingLoop:
         if not dream:
             return
         date_key = f"{now.month}月{now.day}日"
+        # 补丁 XX：梦同样要带身份与 topic（否则图谱里是孤立节点）
+        identity = await self._bot_identity()
+        dream_metadata: dict = {"topics": ["梦"]}
+        if identity:
+            dream_metadata["participant_identities"] = [identity]
         try:
             await memory.add(
                 f"{date_key}我做了个梦：{dream}",
                 importance=0.2,
+                metadata=dream_metadata,
                 session_id=self._session_id(None),
                 persona_id=await self._persona_id(),
             )

@@ -490,6 +490,8 @@ class LivingPlugin(Star):
             fetcher=self.fetcher,
             sandbox=self.sandbox,
             memory_getter=self._get_memory,
+            # 补丁 XX：remember 工具需带 bot 身份，否则写入的记忆成图谱孤岛
+            bot_identity_getter=self._bot_identity,
             tier=tier,
             write_level=write_level,
             workspace=self._living_workspace(),
