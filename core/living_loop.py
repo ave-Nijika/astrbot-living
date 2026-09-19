@@ -21,7 +21,7 @@ import asyncio
 import json
 import random
 from contextlib import suppress
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Callable
 
 from astrbot.api import logger

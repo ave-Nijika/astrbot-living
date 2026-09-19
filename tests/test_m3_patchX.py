@@ -311,3 +311,27 @@ def test_seven_day_autonomous_schedule_simulation(tmp_path):
     lines = [f"{row[0]} {row[1]:>6} dur/h={row[2]} energy={row[3]}"
              for row in schedule]
     (tmp_path / "schedule.txt").write_text("\n".join(lines), encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# 补丁 X 遗留缺陷守门（2026-09-19 线上暴露）
+# ---------------------------------------------------------------------------
+
+def test_autonomous_sleep_tick_sources_are_complete():
+    """守门：_autonomous_sleep_tick 依赖的模块级符号必须可用。
+
+    线上曾连爆两处——should_nap 被误 await（TypeError）、timedelta 未导入
+    （NameError，被前一处的异常掩盖，修好前一处才暴露）。本测试检查这两处
+    依赖，任何"未导入即使用"或"同步方法被当异步"都会失败。
+    """
+    import inspect
+
+    from core import living_loop as ll
+    from core.sleep import SleepManagerAutonomous
+
+    src = inspect.getsource(ll.LivingLoop._autonomous_sleep_tick)
+    assert "timedelta" in src, "小睡分支应使用 timedelta"
+    assert hasattr(ll, "timedelta"), "living_loop 必须导入 timedelta（曾漏导入导致 NameError）"
+    assert not inspect.iscoroutinefunction(SleepManagerAutonomous.should_nap), (
+        "should_nap 必须是同步方法；调用方不得 await（线上曾 TypeError）"
+    )
