@@ -159,7 +159,7 @@ def test_long_sleep_takes_priority_over_nap(tmp_path):
         )
         now = NOW.replace(hour=15)  # 白天：旧实现会先走小睡分支
         await loop._autonomous_sleep_tick(now)
-        state = gate.sleep_state()
+        state = gate.sleep_state(now)
         await mood.close()
         return state["kind"], state["asleep"]
 
@@ -377,7 +377,7 @@ def test_sequential_heartbeats_long_sleep_eventually_wins(tmp_path):
             mood.energy = 0.05  # 每轮活动把精力耗回保底（真实动力学）
             await loop._autonomous_sleep_tick(now)
             now += timedelta(minutes=45)
-        final_state = gate.sleep_state()
+        final_state = gate.sleep_state(now)
         await mood.close()
         await gate.close()
         return gate.entered_kinds, final_state, mood.sleep_debt
@@ -510,7 +510,7 @@ def test_fixed_mode_tick_is_noop(tmp_path):
             config_getter=lambda: config, sleep_manager=manager, mood=mood,
         )
         await loop._autonomous_sleep_tick(NOW)
-        state = gate.sleep_state()
+        state = gate.sleep_state(NOW)
         await mood.close()
         await gate.close()
         return gate.entered_kinds, state["asleep"]

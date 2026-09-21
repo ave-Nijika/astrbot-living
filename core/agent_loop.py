@@ -125,7 +125,7 @@ class LivingAgentLoop:
             return self._tool_builder()
         if self._tools_fallback is not None:
             return self._tools_fallback
-        from core.living_tools import build_living_tools
+        from .living_tools import build_living_tools  # 相对导入：同上（潜伏雷，agent 循环首次触发即炸）
 
         return build_living_tools()
 

@@ -496,7 +496,7 @@ class LivingLoop:
             fell = state.get("fell_asleep_at") or now
             actual_h = max((now - fell).total_seconds() / 3600.0, 0.0)
             if self._mood is not None:
-                from core.mood import apply_nap_effects, restore_after_sleep
+                from .mood import apply_nap_effects, restore_after_sleep  # 相对导入：插件以包形式加载，绝对导入 core.* 在运行时解析不到
 
                 if kind == "long":
                     planned = await self._planned_sleep_hours()
