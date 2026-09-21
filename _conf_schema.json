@@ -421,6 +421,18 @@
                                 "type": "float",
                                 "default": 0.3,
                                 "invisible": true
+                            },
+                            "schedule": {
+                                "description": "约定压力权重",
+                                "hint": "起床约定临近时的睡意加成权重（M5-补丁4）。",
+                                "type": "float",
+                                "default": 0.25
+                            },
+                            "arousal": {
+                                "description": "沉浸竞争权重",
+                                "hint": "有约定时沉浸（兴奋度×当前兴趣）对睡意的削减权重——熬夜就是它赢了。",
+                                "type": "float",
+                                "default": 0.2
                             }
                         },
                         "invisible": true
@@ -546,6 +558,44 @@
                         "hint": "醒来后按此概率生成一条梦话，写入记忆（默认不外发）。",
                         "type": "float",
                         "default": 0.3,
+                        "invisible": true
+                    },
+                    "schedule_reminder_enabled": {
+                        "description": "起床约定感知",
+                        "hint": "感知主人消息里的起床约定（如\"明早 8 点起\"），作为入睡与醒来的软性参考。",
+                        "type": "bool",
+                        "default": true,
+                        "invisible": true
+                    },
+                    "schedule_discipline": {
+                        "description": "守时自觉性（0-1）",
+                        "hint": "越高越把约定当回事：约定临近时睡意加成越强。调低更容易熬夜睡过头。",
+                        "type": "float",
+                        "default": 0.6,
+                        "invisible": true
+                    },
+                    "schedule_extract_strictness": {
+                        "description": "约定提取严格度（0-1）",
+                        "hint": "LLM 判定\"这是起床约定\"的置信度门槛，越高越难记录。默认 0.7。",
+                        "type": "float",
+                        "default": 0.7,
+                        "invisible": true
+                    },
+                    "schedule_trigger_words": {
+                        "description": "约定触发词表",
+                        "hint": "消息命中任一词才启动约定提取（本地预筛，零 LLM 成本）。",
+                        "type": "list",
+                        "default": [
+                            "起床",
+                            "早起",
+                            "叫我",
+                            "叫醒",
+                            "唤醒",
+                            "早点叫",
+                            "早八",
+                            "wake",
+                            "alarm"
+                        ],
                         "invisible": true
                     }
                 },

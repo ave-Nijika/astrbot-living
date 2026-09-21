@@ -198,7 +198,76 @@ function renderNovice() {
     }
     grid.appendChild(card);
   }
+  grid.appendChild(scheduleCard()); // 第 10 张卡：起床约定（M5-补丁4）
+  renderLifeExtra(presetSchema);
+}
 
+/* 第 10 张卡：起床约定（M5-补丁4 D2）——总开关 + 自觉性滑块。
+ * 读写 advanced.sleep 的两个键，复用既有差量保存；关闭时隐藏滑块 */
+function scheduleCard() {
+  if (!state.values.advanced.sleep) state.values.advanced.sleep = {};
+  const sleepValues = state.values.advanced.sleep;
+  const card = document.createElement("div");
+  card.className = "knob-card schedule-card";
+
+  const title = document.createElement("h3");
+  title.textContent = "起床约定";
+  card.appendChild(title);
+
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent =
+    "感知你的起床约定——你说\"明早 8 点起\"，他会记在心里。像人一样：" +
+    "说了早起可能早睡，也可能熬夜睡过头。";
+  card.appendChild(hint);
+
+  const enabled = sleepValues.schedule_reminder_enabled !== false;
+  const row = document.createElement("div");
+  row.className = "option-row";
+  const sliderWrap = document.createElement("div");
+  sliderWrap.className = enabled ? "schedule-slider" : "schedule-slider hidden";
+  for (const [label, value] of [["开", true], ["关", false]]) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "option";
+    btn.textContent = label;
+    if (enabled === value) btn.classList.add("selected");
+    btn.addEventListener("click", () => {
+      sleepValues.schedule_reminder_enabled = value;
+      setDirty(true);
+      row.querySelectorAll(".option").forEach((el) => el.classList.remove("selected"));
+      btn.classList.add("selected");
+      sliderWrap.classList.toggle("hidden", value === false);
+    });
+    row.appendChild(btn);
+  }
+  card.appendChild(row);
+
+  const sliderLabel = document.createElement("p");
+  sliderLabel.className = "slider-label";
+  const discipline = typeof sleepValues.schedule_discipline === "number"
+    ? sleepValues.schedule_discipline : 0.6;
+  const slider = document.createElement("input");
+  slider.type = "range";
+  slider.min = "0";
+  slider.max = "100";
+  slider.value = String(Math.round(discipline * 100));
+  const updateLabel = () => {
+    sliderLabel.textContent =
+      `自觉性 ${slider.value}%——调高更守时，调低更容易熬夜睡过头`;
+  };
+  updateLabel();
+  slider.addEventListener("input", () => {
+    sleepValues.schedule_discipline = Number(slider.value) / 100;
+    updateLabel();
+    setDirty(true);
+  });
+  sliderWrap.append(sliderLabel, slider);
+  card.appendChild(sliderWrap);
+  return card;
+}
+
+function renderLifeExtra(presetSchema) {
   const life = $("#novice-life");
   life.innerHTML = "";
   const item = presetSchema.life_extra;

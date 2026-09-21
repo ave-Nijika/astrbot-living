@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import random
 from collections import deque
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dt_time
 from typing import Any, Callable
 
 from astrbot.api import logger
@@ -114,16 +114,61 @@ class SleepManagerAutonomous:
             "energy": self._f(raw.get("energy"), 0.35),
             "debt": self._f(raw.get("debt"), 0.35),
             "circadian": self._f(raw.get("circadian"), 0.30),
+            # M5-补丁4：约定压力与沉浸竞争权重（不进新手面板）
+            "schedule": self._f(raw.get("schedule"), 0.25),
+            "arousal": self._f(raw.get("arousal"), 0.20),
         }
 
     # ------------------------------------------------------------------
     # 睡意模型
     # ------------------------------------------------------------------
+    def _interest_ratio(self, mood) -> float:
+        """当前（最近）活动的兴趣权重归一 [0,1]；无记录取 0.5（M5-补丁4 B3）。"""
+        try:
+            topics = mood.recent_topics_list()
+            if not topics:
+                return 0.5
+            weight = mood.interest_weight(topics[-1], repeat_count=0)
+            max_weight = max((mood.interests or {}).values(), default=1.0)
+            if not max_weight or max_weight <= 0:
+                return 0.5
+            return max(0.0, min(1.0, weight / max_weight))
+        except Exception:
+            return 0.5
+
+    async def _schedule_terms(self, mood, now: datetime) -> tuple[float, float]:
+        """约定压力加项与沉浸竞争减项（M5-补丁4 B2/B3）。
+
+        存在未来 12h 内的约定即激活两 项；pressure 只在约定前 3h 内线性
+        非零，沉浸减项与 pressure 数值无关（存在约定即竞争——越兴奋越
+        睡不着，与是否临近约定无关）。无约定/无 schedule 时返回 (0.0, 0.0)
+        ——睡意公式与现状完全一致，不扰动已调好的基础作息。"""
+        if self._schedule is None:
+            return 0.0, 0.0
+        try:
+            commitment = await self._schedule.earliest_future_wake(now)
+            if commitment is None:
+                return 0.0, 0.0
+            pressure = await self._schedule.schedule_pressure(now)
+        except Exception:
+            return 0.0, 0.0
+        weights = self._weights()
+        discipline = max(
+            self._f(self._cfg_group().get("schedule_discipline"), 0.6), 0.0
+        )
+        add = weights["schedule"] * pressure * discipline  # B1/B2
+        arousal = getattr(mood, "arousal", 0.5)
+        sub = weights["arousal"] * arousal * self._interest_ratio(mood)  # B3
+        return add, sub
+
     async def sleepiness(self, mood, now: datetime | None = None) -> tuple[float, dict]:
         """睡意值 ∈ [0,1] 与分解明细（日志可读性是验收重点）。
 
         sleepiness = w_energy*(1-energy) + w_debt*(debt/100)
                    + w_circa*circadian_factor(now) + jitter
+        M5-补丁4 B2/B3：存在未来 12h 内的起床约定时，再加约定压力项
+        +w_schedule×pressure×discipline、减沉浸项 w_arousal×arousal_factor
+        （压力与沉浸公平竞争，行为涌现；无约定时两项为 0，公式不变）。
         jitter = ±sleepiness_jitter 均匀随机——同样状态下不必然同时刻入睡。
         """
         now = now or self._now()
@@ -136,7 +181,10 @@ class SleepManagerAutonomous:
         c_raw = circadian_factor(now, cfg.get("circadian_hint", "23:00-07:00"))
         c_term = weights["circadian"] * c_raw
         jitter = (self._rng_float() * 2.0 - 1.0) * jitter_amp
-        value = max(0.0, min(1.0, e_term + d_term + c_term + jitter))
+        s_add, arousal_sub = await self._schedule_terms(mood, now)
+        value = max(
+            0.0, min(1.0, e_term + d_term + c_term + s_add - arousal_sub + jitter)
+        )
         detail = {
             "energy": mood.energy,
             "e_term": round(e_term, 3),
@@ -145,6 +193,8 @@ class SleepManagerAutonomous:
             "circadian": round(c_raw, 3),
             "c_term": round(c_term, 3),
             "jitter": round(jitter, 3),
+            "schedule": round(s_add, 3),
+            "arousal": round(-arousal_sub, 3),
         }
         return value, detail
 
@@ -201,6 +251,43 @@ class SleepManagerAutonomous:
 
         duration_h = self.sleep_duration_hours(mood, now)
         until = now + timedelta(hours=duration_h)
+        # M5-补丁4 B4：早睡锚定（涌现式睡过头的另一半）。
+        # 存在未来 wake 约定且**实际入睡时刻早于熬夜线（约定日 01:00，本地
+        # 时区，写死不设旋钮）**→ until = min(自然时长, 约定时刻−15min)，
+        # 让"自觉的夜晚"睡满后恰在约定前醒来；晚于熬夜线才入睡 → 不锚定，
+        # 睡满自然时长，睡过头自然涌现（不拦截、不修正——确定性闹钟语义
+        # 禁止出现，锚定只是 min 语义不是强制）。
+        if self._schedule is not None:
+            try:
+                commitment = await self._schedule.earliest_future_wake(now)
+            except Exception:
+                commitment = None
+            if commitment is not None:
+                try:
+                    target = datetime.fromisoformat(str(commitment["target_time"]))
+                except (TypeError, ValueError, KeyError):
+                    target = None
+                if target is not None:
+                    night_owl_line = datetime.combine(target.date(), dt_time(1, 0))
+                    if now < night_owl_line:
+                        anchor = target - timedelta(minutes=15)
+                        if anchor > now:
+                            anchored = min(until, anchor)
+                            if anchored < until:
+                                duration_h = (
+                                    anchored - now
+                                ).total_seconds() / 3600.0
+                                until = anchored
+                                logger.info(
+                                    f"[Schedule] 有 {target:%m-%d %H:%M} 的起床"
+                                    f"约定且早于熬夜线入睡 → 长睡锚定至 "
+                                    f"{until:%H:%M}（约定前 15 分钟）"
+                                )
+                    else:
+                        logger.info(
+                            f"[Schedule] 有 {target:%m-%d %H:%M} 的起床约定，"
+                            f"但晚于熬夜线（01:00）才睡 → 不锚定，睡满自然时长"
+                        )
         await self._gate.enter_autonomous_sleep(until, "long", now)
         logger.info(
             f"[Sleep] 睡意评估 {value:.2f}（精力 {detail['energy']:.2f}→"
@@ -259,13 +346,19 @@ class SleepManagerAutonomous:
     async def apply_woken_from_autonomous(
         self, mood, actual_hours: float, planned_hours: float,
         now: datetime | None = None, kind: str = "long",
+        grouchy_boost: bool = False,
     ) -> dict:
         """自主长睡被吵醒的结算：起床气照常 + 睡眠债按实睡/预计比例保留
         （替代 fixed 窗口的 apply_woken_in_sleep——自主模式没有固定窗）。
         kind="nap" 时债按 0 处理（任务书 M3 补丁 XI-A.1：小睡无"睡眠债"概念）。
-        \"被叫醒了就不睡了\"：gate.exit_autonomous_sleep 由调用方负责。"""
+        \"被叫醒了就不睡了\"：gate.exit_autonomous_sleep 由调用方负责。
+
+        M5-补丁4 C2：grouchy_boost=True（存在已过期未兑现的起床约定，
+        即"明知有约还睡过头被催醒"）时起床气概率 ×2，封顶 100。"""
         result = {"grouchy": False, "debt_added": 0.0}
         percent = max(self._f(self._cfg_group().get("grouchiness_percent"), 20), 0.0)
+        if grouchy_boost:
+            percent = min(percent * 2.0, 100.0)
         grouchy = self._rng_float() < percent / 100.0
         if mood is not None:
             mood.apply_grouchiness(grouchy)
@@ -291,10 +384,14 @@ class SleepManager(SleepManagerAutonomous):
         mood: Any = None,
         rng: Callable[[], float] | None = None,
         now_provider: Callable[[], datetime] | None = None,
+        schedule: Any = None,
     ) -> None:
         self._config_getter = config_getter
         self._gate = gate  # 用它的 in_sleep_window / sleep_window_span
         self._mood = mood
+        # M5-补丁4：起床约定（ScheduleManager）——压力项/锚定的数据源。
+        # None = 无约定链路，睡意公式与现状完全一致
+        self._schedule = schedule
         # rng 统一包装：无论注入 Random 实例、bound method 还是简单
         # callable（lambda: 0.5 等），sleepiness/duration/nap 统一通过
         # self._rng_float() 取 [0,1) 随机值

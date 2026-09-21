@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import json
 import random
 from datetime import datetime, time as dt_time, timedelta
 from typing import Any, Callable
@@ -227,6 +228,58 @@ class LivingGate:
         if self._nap_count_date != now.date().isoformat():
             return 0
         return self._nap_count_today
+
+    # ------------------------------------------------------------------
+    # 起床约定存储（M5-补丁4 A3/A4）：单键 JSON 列表；读取时惰性清除
+    # 已过期项（expires_at <= now）——存储不堆积，压力查询自动归零
+    # ------------------------------------------------------------------
+    async def get_commitments(self, now: datetime | None = None) -> list[dict]:
+        now = now or datetime.now()
+        raw = await self._get_raw("commitments")
+        try:
+            items = json.loads(raw) if raw else []
+        except (TypeError, ValueError):
+            items = []
+        if not isinstance(items, list):
+            items = []
+        valid, dropped = [], False
+        for item in items:
+            if not isinstance(item, dict):
+                dropped = True
+                continue
+            try:
+                expires = datetime.fromisoformat(str(item.get("expires_at")))
+            except (TypeError, ValueError):
+                dropped = True
+                continue
+            if expires <= now:
+                dropped = True  # 过期 → 惰性清除
+                continue
+            valid.append(item)
+        if dropped:
+            await self._set_raw(
+                "commitments", json.dumps(valid, ensure_ascii=False)
+            )
+        return valid
+
+    async def set_commitments(self, items: list[dict]) -> None:
+        await self._set_raw(
+            "commitments", json.dumps(list(items), ensure_ascii=False)
+        )
+
+    async def add_commitment(self, item: dict) -> None:
+        """写入约定（A4 幂等：同 target_time 更新而非新增）。"""
+        items = await self.get_commitments()
+        target = str(item.get("target_time", ""))
+        items = [c for c in items if str(c.get("target_time")) != target]
+        items.append(item)
+        await self.set_commitments(items)
+
+    async def remove_commitment(self, target_time: str) -> None:
+        items = await self.get_commitments()
+        await self.set_commitments(
+            [c for c in items if str(c.get("target_time")) != str(target_time)]
+        )
 
     def sleep_state(self, now: datetime | None = None) -> dict:
         """自主睡眠状态快照（loop 结算与 /living debug 用）。"""

@@ -46,6 +46,8 @@ BASELINE_KEYS = {
         "min_awake_minutes", "min_sleep_hours", "nap_enabled",
         "nap_cooldown_minutes", "nap_max_per_day",
         "nap_max_minutes", "nap_min_minutes", "owner_id",
+        "schedule_discipline", "schedule_extract_strictness",
+        "schedule_reminder_enabled", "schedule_trigger_words",
         "sleep_debt_decay_per_day", "sleep_farewell_message", "sleep_mode",
         "sleep_mute_replies", "sleep_window", "sleepiness_jitter",
         "sleepiness_threshold", "wake_ack_message", "wake_n_messages",

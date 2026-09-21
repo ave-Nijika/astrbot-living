@@ -155,7 +155,7 @@ class RecordingSettle:
     async def begin_autonomous_sleep(self, mood, now=None):
         return {"asleep": False}
 
-    async def apply_woken_from_autonomous(self, mood, actual_h, planned_h, now=None, kind="long"):
+    async def apply_woken_from_autonomous(self, mood, actual_h, planned_h, now=None, kind="long", grouchy_boost=False):
         self.calls.append({"actual": actual_h, "planned": planned_h, "kind": kind})
         return {"grouchy": True, "debt_added": 50.0}
 

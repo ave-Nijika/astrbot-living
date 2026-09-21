@@ -94,6 +94,14 @@ main { padding: 18px 20px 60px; max-width: 1080px; margin: 0 auto; }
   border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
 }
 
+/* 起床约定卡（M5-补丁4）：自觉性滑块 */
+.schedule-card { border-color: var(--accent-soft); }
+.schedule-slider { margin-top: 4px; }
+.schedule-slider .slider-label { color: var(--muted); font-size: 12px; margin: 6px 0; }
+.schedule-slider input[type="range"] {
+  width: 100%; accent-color: var(--accent);
+}
+
 .life-box {
   margin-top: 16px; background: var(--panel);
   border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px;

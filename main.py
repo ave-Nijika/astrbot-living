@@ -47,6 +47,7 @@ from .core.llm_failover import (
 )
 from .core.mood import MoodState
 from .core.sandbox import Sandbox
+from .core.schedule import ScheduleManager
 from .core.share_rewriter import ShareRewriter
 from .core.selfheal import run_identity_selfheal
 from .core.search import BochaSearcher
@@ -100,6 +101,8 @@ class LivingPlugin(Star):
         # 补丁 XVIII：新手旋钮监视
         self._knobs: Any = None
         self._knobs_task: asyncio.Task | None = None
+        # M5-补丁4：起床约定管理器
+        self._schedule: Any = None
         # 补丁 XIII：浏览器会话（惰性创建，跨活动复用 → 登录态保持）
         self._browser_session: Any = None
         # 补丁 XVI：bot 自身身份缓存（来自真实消息事件，与原生侧同源）
@@ -546,10 +549,18 @@ class LivingPlugin(Star):
             await self.gate.load_state()
         except Exception as e:
             logger.warning(f"[{PLUGIN_NAME}] 待机状态恢复失败（按无待机继续）: {e}")
+        # M5-补丁4：起床约定（ScheduleManager）——提取/存储/压力查询，
+        # 复用决策 LLM 装配（与 _dream_llm_call 同一注入模式）
+        self._schedule = ScheduleManager(
+            config_getter=lambda: self.config,
+            gate=self.gate,
+            llm_call=self._decision_llm_call,
+        )
         self.sleep_manager = SleepManager(
             config_getter=lambda: self.config,
             gate=self.gate,
             mood=self.mood,
+            schedule=self._schedule,
         )
         agent_loop = LivingAgentLoop(
             context=self.context,
@@ -593,6 +604,7 @@ class LivingPlugin(Star):
             agent_loop=agent_loop,
             dream_llm_call=self._decision_llm_call,
             persona_id_getter=self._persona_id,
+            schedule=self._schedule,
             share_rewriter=ShareRewriter(
                 llm_call=self._decision_llm_call,
                 config_getter=lambda: self.config,
@@ -1316,6 +1328,13 @@ class LivingPlugin(Star):
                 yield event.plain_result(f"判定出了点岔子：{e}")
 
     @filter.event_message_type(filter.EventMessageType.ALL)
+    async def _extract_schedule_safe(self, schedule, text: str) -> None:
+        """约定提取的后台包装：任何异常只 debug，绝不影响消息主链路。"""
+        try:
+            await schedule.maybe_extract(text, datetime.now())
+        except Exception as e:
+            logger.debug(f"[Schedule] 约定提取失败（忽略）: {e}")
+
     async def on_any_message(self, event: AstrMessageEvent):
         """所有消息的旁路监听：待机刷新 / 吵醒计数 / 静默拦截（B3/B4 + 补丁 II）。
 
@@ -1332,6 +1351,16 @@ class LivingPlugin(Star):
         remember_identity = getattr(self, "_remember_self_identity", None)
         if callable(remember_identity):
             remember_identity(event)
+        # M5-补丁4 A1/A2：起床约定提取——本地词表预筛（零 LLM 零开销），
+        # 命中才以后台任务走一次轻量 LLM 确认（不阻塞消息处理链、静默
+        # 不打扰对话）；总开关关闭时整条链路零生效
+        schedule = getattr(self, "_schedule", None)
+        if schedule is not None:
+            text = str(getattr(event, "message_str", "") or "")
+            if text.strip():
+                asyncio.create_task(
+                    self._extract_schedule_safe(schedule, text)
+                )
         if self.sleep_manager is None:
             return
         now = datetime.now()

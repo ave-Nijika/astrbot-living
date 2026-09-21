@@ -79,6 +79,7 @@ class LivingLoop:
         persona_id_getter: Callable[..., Any] | None = None,
         bot_identity_getter: Callable[..., Any] | None = None,
         share_rewriter: Any = None,
+        schedule: Any = None,
     ) -> None:
         self._gate = gate
         self._get_memory = memory_getter
@@ -103,6 +104,8 @@ class LivingLoop:
         self._bot_identity_getter = bot_identity_getter
         # M3 补丁 VIII：分享角色化改写器（None = 直发原文，向后兼容）
         self._share_rewriter = share_rewriter
+        # M5-补丁4：起床约定（ScheduleManager）——睡过头认知/催醒加重的数据源
+        self._schedule = schedule
         # M3 补丁 IV-B1：活动周期互斥锁——心跳与 /living do 可能并发进入
         # 周期，双周期同时写记忆/同时调 LLM 既浪费 token 又可能数据竞争
         self._cycle_lock = asyncio.Lock()
@@ -365,9 +368,20 @@ class LivingLoop:
                     actual_h = max((now - fell).total_seconds() / 3600.0, 0.0)
                     planned_h = await self._planned_sleep_hours()
                     kind = state.get("kind") or "long"
+                    # M5-补丁4 C2：存在已过期未兑现的起床约定（明知有约还
+                    # 睡过头被催醒）→ 起床气概率 ×2
+                    grouchy_boost = False
+                    if self._schedule is not None:
+                        try:
+                            grouchy_boost = (
+                                await self._schedule.overdue_unfulfilled(now)
+                            ) is not None
+                        except Exception:
+                            grouchy_boost = False
                     try:
                         settle = await self._sleep_manager.apply_woken_from_autonomous(
                             self._mood, actual_h, planned_h, kind=kind,
+                            grouchy_boost=grouchy_boost,
                         )
                         logger.info(
                             f"[LivingLoop] 自主睡眠被吵醒（实睡 {actual_h:.1f}h/"
@@ -517,6 +531,9 @@ class LivingLoop:
                         f"能量恢复 {detail['energy']:.2f}，"
                         f"债务剩余 {detail['debt_remaining']:.0f}"
                     )
+                    # M5-补丁4 C1/C3：核对起床约定——迟到写自我认知记忆
+                    # （幂等：结算即消费该约定），0.5 概率主动交代
+                    await self._handle_oversleep_commitment(now)
                 else:
                     detail = await apply_nap_effects(self._mood, actual_h * 60.0)
                     logger.info(
@@ -587,6 +604,70 @@ class LivingLoop:
         except Exception:
             pass
         return 8.0
+
+    async def _handle_oversleep_commitment(self, wake_time: datetime) -> bool:
+        """自然醒后核对起床约定（M5-补丁4 C1/C3）。
+
+        consume_due_wake 取走 target 已到的约定（无论守时与否都清除——
+        C3 兑现或过期后从存储清除；清除同时是幂等保证：同一约定只结算
+        一次）。迟到超过 15 分钟容差 → 写第一人称"睡过头"认知记忆
+        （importance 0.5、身份注入，按 M5-补丁2 后写入规范），并以 0.5
+        概率经既有 _maybe_share 主动向主人交代。任何失败只 WARNING。"""
+        if self._schedule is None:
+            return False
+        try:
+            commitment = await self._schedule.consume_due_wake(wake_time)
+        except Exception as e:
+            logger.warning(f"[Schedule] 约定核对失败（跳过）: {e}")
+            return False
+        if commitment is None:
+            return False
+        try:
+            target = datetime.fromisoformat(str(commitment["target_time"]))
+        except (TypeError, ValueError, KeyError):
+            return False
+        late_minutes = (wake_time - target).total_seconds() / 60.0
+        if late_minutes <= 15.0:
+            logger.info(
+                f"[Schedule] 守时：约定 {target:%H:%M}，实际 {wake_time:%H:%M} 起床"
+            )
+            return False
+        note = (
+            f"我睡过头了。本来约好 {target:%H:%M} 起床，结果一觉睡到 "
+            f"{wake_time:%H:%M}，晚了 {late_minutes:.0f} 分钟。"
+        )
+        try:
+            memory = await self._get_memory()
+        except Exception as e:
+            logger.warning(f"[Schedule] 记忆不可用，睡过头认知未写入: {e}")
+            return False
+        identity = await self._bot_identity()
+        metadata: dict = {"topics": ["睡过头"]}
+        if identity:
+            metadata["participant_identities"] = [identity]
+        try:
+            await memory.add(
+                note,
+                importance=0.5,
+                metadata=metadata,
+                session_id=self._session_id(None),
+                persona_id=await self._persona_id(),
+            )
+            logger.info(
+                f"[Schedule] 睡过头 {late_minutes:.0f} 分钟，已写入自我认知记忆"
+            )
+        except Exception as e:
+            logger.warning(f"[Schedule] 睡过头认知写入失败: {e}")
+            return False
+        # 分享掷点：rng 兼容 Random 实例与裸函数两种注入形态
+        rng = self._rng
+        roll = rng.random() if hasattr(rng, "random") else rng()
+        if roll < 0.5:
+            try:
+                await self._maybe_share(note, wake_time)
+            except Exception as e:
+                logger.warning(f"[Schedule] 睡过头交代发送失败: {e}")
+        return True
 
     @staticmethod
     def _is_bedtime_review(row: Any) -> bool:
