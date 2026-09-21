@@ -181,10 +181,8 @@ class MoodState:
         if stored_date is not None and stored_date != today:
             # 隔夜结算只在"确实跨了天"时触发：首次加载（无 stored_date）应当
             # 保持出厂默认——刚来到世界上的第一刻不算"睡了一夜"
-            # 为什么只在日期翻转时结算：兴趣的消退、疲惫的恢复、睡眠债的
-            # 消退都是"隔夜"尺度的事，逐次活动结算会让高频活动立刻磨掉
-            # 自己刚养起来的状态
-            self.decay_interests(interest_daily_decay)
+            # M5-补丁2 C3：兴趣衰减已改由 decay_interests_elapsed 按经过
+            # 时长在心跳里连续进行，跨日一次性 ×decay 不再执行
             self.arousal = _clamp(
                 self.arousal * AROUSAL_SLEEP_SETTLE, UNIT_MIN, UNIT_MAX
             )
@@ -343,6 +341,56 @@ class MoodState:
     def recent_topic_count(self, topic: str) -> int:
         return self.recent_topics.count(topic)
 
+    async def accrue_sleep_debt(
+        self, now: datetime | None = None, rate_per_hour: float = 4.0
+    ) -> float:
+        """睡眠债按清醒经过时长持续累积（M5-补丁2 A4）。
+
+        心跳每次调用：按距上次累积的时长 × rate 计入 debt（上限 100），
+        并把时间戳前移。首次调用只落时间戳不累积；长睡醒来由
+        restore_after_sleep 重置时间戳（睡眠期间不计债）。时间戳持久化，
+        跨重启不丢累积窗口。"""
+        now = now or self._now()
+        raw = await self._get_raw("debt_accrue_at")
+        if raw:
+            try:
+                last = datetime.fromtimestamp(float(raw))
+                hours = (now - last).total_seconds() / 3600.0
+                if hours > 0:
+                    self.sleep_debt = _clamp(
+                        self.sleep_debt + hours * max(rate_per_hour, 0.0),
+                        FATIGUE_MIN,
+                        FATIGUE_MAX,
+                    )
+            except (TypeError, ValueError):
+                pass
+        await self._set_raw("debt_accrue_at", repr(now.timestamp()))
+        return self.sleep_debt
+
+    async def decay_interests_elapsed(
+        self, now: datetime | None = None, daily_decay: float = DAILY_INTEREST_DECAY
+    ) -> float:
+        """兴趣按经过时长衰减（M5-补丁2 C3）：rate = daily_decay ** (hours/24)。
+
+        心跳调用，替代旧的"跨日一次 ×0.9"——按真实经过的小时数连续衰减，
+        不再依赖日期翻转。时间戳持久化；不足 1 小时不衰减（避免高频心跳
+        反复乘小数的浮点噪声）。"""
+        now = now or self._now()
+        factor = max(min(float(daily_decay), 1.0), 0.01)
+        raw = await self._get_raw("interests_decay_at")
+        now_ts = now.timestamp()
+        if raw:
+            try:
+                hours = (now_ts - float(raw)) / 3600.0
+                if hours >= 1.0:
+                    self.decay_interests(factor ** (hours / 24.0))
+                else:
+                    return 0.0
+            except (TypeError, ValueError):
+                pass
+        await self._set_raw("interests_decay_at", repr(now_ts))
+        return 0.0
+
     def cooldown_hot_interests(self, threshold: float, factor: float) -> list[str]:
         """一次性降温（补丁 VII 需求 5）：兴趣 >= threshold 的条目乘 factor。
 
@@ -399,6 +447,7 @@ async def restore_after_sleep(mood, actual_hours: float, planned_hours: float) -
 
     睡满预计时长 → 债清零；早醒 → 按实睡/预计比例保留残余债
     （"睡到中午"与"八九点就起来"的差别在这里体现）。
+    M5-补丁2 A4：同时重置清醒计债时间戳——睡眠期间不计债，醒来重新起算。
     返回结算明细供日志。
     """
     ratio = 1.0
@@ -408,6 +457,8 @@ async def restore_after_sleep(mood, actual_hours: float, planned_hours: float) -
     restore = 0.85 + 0.15 * ratio  # 睡得越足恢复越高（0.85~1.0）
     mood.energy = mood._clamp_energy(max(mood.energy, restore))
     mood.arousal = _clamp(mood.arousal * AROUSAL_SLEEP_SETTLE, UNIT_MIN, UNIT_MAX)
+    await mood._set_raw("debt_accrue_at", repr(mood._now().timestamp()))
+    await mood._set_raw("interests_decay_at", repr(mood._now().timestamp()))
     await mood.save()
     return {
         "debt_remaining": mood.sleep_debt,
@@ -417,10 +468,11 @@ async def restore_after_sleep(mood, actual_hours: float, planned_hours: float) -
 
 
 async def apply_nap_effects(mood, nap_minutes: float) -> dict:
-    """白天小睡结束结算：energy +0.3、sleep_debt -20（下限 0）。"""
+    """白天小睡结束结算：energy +0.3。
+
+    M5-补丁2 A3：不再削减 sleep_debt——小睡的正确定位是"临时补精神"，
+    债只由清醒时长累积（A4）、由长睡偿还。旧实现每次小睡清 20×2×时长的债，
+    是"小睡死循环"（债恒为 0 → 长睡永不可达）的直接推手。"""
     mood.energy = mood._clamp_energy(mood.energy + 0.3)
-    mood.sleep_debt = _clamp(
-        mood.sleep_debt - 20.0 * (nap_minutes / 60.0) * 2, FATIGUE_MIN, FATIGUE_MAX
-    )
     await mood.save()
     return {"energy": mood.energy, "debt": mood.sleep_debt}

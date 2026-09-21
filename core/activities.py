@@ -77,9 +77,9 @@ class ActivityContext:
     def pick_topic(self) -> str:
         """主题词来源（按优先级）：
         1. 决策参数 topic（LLM/手动指定）；
-        2. 从候选池**加权随机**：近期出现过的主题按重复次数乘衰减系数、
-           兴趣值加权——执行层的去偏执兜底（任务书 M3 补丁 VII 需求 4：
-           决策层锁死时执行层兜底，两层独立生效）。
+        2. 从候选池**加权随机**：近期出现过的主题按指纹剔除、其余按兴趣
+           加权（M5-补丁2 C2/C4：惩罚从"降权"升级为"指纹级相对排除"，
+           变体轮换不再能绕过——最近聊过咖啡，另一个咖啡变体也会被剔）。
         """
         topic = (self.params or {}).get("topic")
         if topic and str(topic).strip():
@@ -89,38 +89,61 @@ class ActivityContext:
     def _weighted_pool_choice(self) -> str:
         import random as _random
 
+        from .topic_fingerprint import topic_fingerprint
+
         recent = list(self.recent_topics or [])
-        candidates = [t for t in TOPIC_POOL if t not in recent] or list(TOPIC_POOL)
-        weights = []
-        for candidate in candidates:
-            repeat = recent.count(candidate)
-            table = self.interest_penalty_table or (0.5, 0.3, 0.15)
-            penalty = (
-                1.0
-                if repeat <= 0
-                else table[min(max(repeat, 1), len(table)) - 1]
-            )
-            interest = 1.0
-            if self.mood is not None:
+        recent_fps = {topic_fingerprint(t) for t in recent}
+        # C2 指纹级相对排除 + C4 按指纹聚合：同指纹变体的权重相加参与
+        # 桶间排序，桶内再按权重选一个变体（interests 存储 key 不变）
+        buckets: dict[str, list[str]] = {}
+        for candidate in TOPIC_POOL:
+            fp = topic_fingerprint(candidate)
+            if fp in recent_fps:
+                continue  # 指纹命中最近话题 → 整桶剔除（相对排除）
+            buckets.setdefault(fp, []).append(candidate)
+        if not buckets:
+            # 全部候选都被排除 → 回退全池等权（避免无话可说）
+            return self.rng.choice(list(TOPIC_POOL))
+        if self.mood is not None:
+            def _weight(candidate: str) -> float:
                 try:
-                    interest = max(
-                        self.mood.interest_weight(candidate, repeat_count=0),
-                        0.1,
-                    )
+                    return max(self.mood.interest_weight(candidate, repeat_count=0), 0.1)
                 except Exception:
-                    interest = 1.0
-            weights.append(max(penalty * interest, 0.05))
-        # 等权时走 rng.choice（兼容脚本化 rng）；否则加权轮盘
-        if len(set(weights)) == 1:
-            return self.rng.choice(candidates)
-        total = sum(weights)
+                    return 1.0
+        else:
+            def _weight(candidate: str) -> float:
+                return 1.0
+        bucket_fps = list(buckets)
+        bucket_weights = [
+            sum(_weight(c) for c in buckets[fp]) for fp in bucket_fps
+        ]
+        # 等权时走 rng.choice（兼容脚本化 rng）；否则加权轮盘选桶
+        if len(set(bucket_weights)) == 1:
+            chosen_fp = self.rng.choice(bucket_fps)
+        else:
+            total = sum(bucket_weights)
+            point = self.rng.random() * total
+            cumulative = 0.0
+            chosen_fp = bucket_fps[-1]
+            for fp, weight in zip(bucket_fps, bucket_weights):
+                cumulative += weight
+                if point < cumulative:
+                    chosen_fp = fp
+                    break
+        variants = buckets[chosen_fp]
+        if len(variants) == 1:
+            return variants[0]
+        variant_weights = [_weight(c) for c in variants]
+        total = sum(variant_weights)
+        if total <= 0:
+            return self.rng.choice(variants)
         point = self.rng.random() * total
         cumulative = 0.0
-        for candidate, weight in zip(candidates, weights):
+        for candidate, weight in zip(variants, variant_weights):
             cumulative += weight
             if point < cumulative:
                 return candidate
-        return candidates[-1]
+        return variants[-1]
 
 
 @dataclass

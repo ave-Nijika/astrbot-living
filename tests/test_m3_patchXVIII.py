@@ -44,6 +44,7 @@ BASELINE_KEYS = {
         "awake_standby_minutes", "circadian_hint", "dream_probability",
         "fatigue_rate_per_hour", "grouchiness_percent", "max_sleep_hours",
         "min_awake_minutes", "min_sleep_hours", "nap_enabled",
+        "nap_cooldown_minutes", "nap_max_per_day",
         "nap_max_minutes", "nap_min_minutes", "owner_id",
         "sleep_debt_decay_per_day", "sleep_farewell_message", "sleep_mode",
         "sleep_mute_replies", "sleep_window", "sleepiness_jitter",

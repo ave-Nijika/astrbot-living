@@ -214,15 +214,46 @@ class SleepManagerAutonomous:
                 "until": until, "detail": detail}
 
     def should_nap(self, mood, now: datetime | None = None) -> tuple[bool, float]:
-        """白天小睡判定：nap_enabled 且 energy < 0.25 且距上次醒来 >= 300 分钟。"""
+        """白天小睡判定（M5-补丁2 A1/A2/A6/A7 约束链，全部通过才小睡）：
+
+        - nap_enabled 开启；
+        - energy < 0.25（精力不足才补）；
+        - 距上次醒来 >= min_awake_minutes（A7：与长睡共用同一清醒下限，
+          替代旧的硬编码 300 分钟）；
+        - 当前不在昼夜提示窗口（A6：夜里只允许长睡，不打瞌睡）；
+        - 距上次小睡结束 >= nap_cooldown_minutes（A1：斩断"每轮心跳都在
+          小睡"的死循环）；
+        - 当日小睡次数 < nap_max_per_day（A2：每日上限，跨日惰性归零）。
+        """
         cfg = self._cfg_group()
         if not bool(cfg.get("nap_enabled", True)):
             return False, 0.0
         if mood.energy >= 0.25:
             return False, 0.0
+        now = now or self._now()
+        min_awake = max(self._f(cfg.get("min_awake_minutes"), 240), 0.0)
         since_wakeup = gate_minutes_since_wakeup(self._gate, now)
-        if since_wakeup is not None and since_wakeup < 300:
+        if since_wakeup is not None and since_wakeup < min_awake:
             return False, 0.0
+        # A6：昼夜提示窗口（默认 23:00-07:00）内禁止小睡
+        from .living_state import in_time_window, parse_time_window
+
+        window = parse_time_window(cfg.get("circadian_hint", "23:00-07:00"))
+        if window and in_time_window(now, window):
+            return False, 0.0
+        # A1：小睡冷却
+        cooldown = max(self._f(cfg.get("nap_cooldown_minutes"), 240), 0.0)
+        last_nap_ended = getattr(self._gate, "last_nap_ended_at", lambda: None)()
+        if last_nap_ended is not None:
+            elapsed = (now - last_nap_ended).total_seconds() / 60.0
+            if elapsed < cooldown:
+                return False, 0.0
+        # A2：每日上限（0 = 不限制）
+        max_per_day = int(self._f(cfg.get("nap_max_per_day"), 2))
+        if max_per_day > 0:
+            counter = getattr(self._gate, "nap_count_today", lambda now=None: 0)
+            if counter(now) >= max_per_day:
+                return False, 0.0
         return True, self.nap_duration_minutes()
 
     async def apply_woken_from_autonomous(

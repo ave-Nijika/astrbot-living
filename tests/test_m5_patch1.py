@@ -48,11 +48,11 @@ def test_get_payload_structure_and_key_counts():
     advanced_count = sum(
         len(g["items"]) for g in payload["schema"]["advanced"]["items"].values()
     )
-    assert advanced_count == 57
+    assert advanced_count == 59  # 57 + M5-补丁2 的 nap_cooldown_minutes/nap_max_per_day
 
     # 当前值区：knobs 含全部旋钮默认、advanced 7 组 57 键
     assert sum(1 for k in payload["knobs"] if k.startswith("preset_")) == 9
-    assert sum(len(v) for v in payload["advanced"].values()) == 57
+    assert sum(len(v) for v in payload["advanced"].values()) == 59
 
 
 # ---------------------------------------------------------------------------

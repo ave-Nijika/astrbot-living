@@ -307,8 +307,10 @@ def test_bedtime_review_written_on_sleep_onset():
     loop = make_loop(gate=gate, memory=memory)
 
     asyncio.run(loop.heartbeat_once_detailed(NOW, force=False))
-    reviews = [c for c, _ in memory.added if "睡前" in c]
-    assert reviews and "9月8日" in reviews[0]
+    # M5-补丁2 B3：正文不再以日期开头，改"今天想了想：…"句式
+    reviews = [c for c, _ in memory.added if "想了想" in c]
+    assert reviews and "9月8日" in reviews[0]  # 活动内容保留（含其日期）
+    assert reviews[0].startswith("今天想了想：")
     # 二次心跳不重复写回顾
     asyncio.run(loop.heartbeat_once_detailed(NOW, force=False))
-    assert len([c for c, _ in memory.added if "睡前" in c]) == 1
+    assert len([c for c, _ in memory.added if "想了想" in c]) == 1

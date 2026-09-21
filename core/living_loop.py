@@ -481,8 +481,17 @@ class LivingLoop:
             return
         state = self._gate.sleep_state(now)
 
-        # 1) 到点自然醒：结算恢复（debt 按实睡比例、energy 恢复）+ 日志
-        if state["asleep"] and now >= state["until"]:
+        # 1) 到点自然醒：结算恢复（debt 按实睡比例、energy 恢复）+ 日志。
+        #    M5-补丁2：原条件 `state["asleep"] and now >= until` 恒为 False
+        #    （asleep 本身即 now < until）——自然醒结算是死代码：小睡记账
+        #    （A8）永不发生、长睡醒来不恢复精力（VM 上 energy 恒保底 0.05
+        #    的真正根源）。改为"存在已过期的睡眠记录即结算"。
+        expired = (
+            state["until"] is not None
+            and state["fell_asleep_at"] is not None
+            and now >= state["until"]
+        )
+        if expired:
             kind = state["kind"] or "long"
             fell = state.get("fell_asleep_at") or now
             actual_h = max((now - fell).total_seconds() / 3600.0, 0.0)
@@ -512,15 +521,32 @@ class LivingLoop:
         if state["asleep"]:
             return  # 还在睡（静默/计数/紧急唤醒由既有链路处理）
 
-        # 2) 不在睡：先评估白天小睡，再评估长睡（互斥，先到先得）
-        nap = self._sleep_manager.should_nap(self._mood, now) if self._mood is not None else (False, 0.0)
-        if nap[0]:
-            minutes = nap[1]
-            until = now + timedelta(minutes=minutes)
-            await self._gate.enter_autonomous_sleep(until, "nap", now)
-            logger.info(f"[Sleep] 白天小睡 {minutes:.0f} 分钟（精力不足，补觉）")
-            return
+        # 2.5) 醒着时的连续结算（M5-补丁2 A4/C3）：睡眠债按清醒经过时长
+        # 累积、兴趣按经过时长衰减——心跳级推进，替代旧的跨日一次性结算
+        if self._mood is not None:
+            try:
+                fatigue_rate = _to_float(
+                    _conf_group(self._config_getter(), "sleep").get(
+                        "fatigue_rate_per_hour"
+                    ),
+                    4.0,
+                )
+                await self._mood.accrue_sleep_debt(now, rate_per_hour=fatigue_rate)
+                daily_decay = _to_float(
+                    _conf_group(self._config_getter(), "decision").get(
+                        "interest_daily_decay"
+                    ),
+                    0.9,
+                )
+                await self._mood.decay_interests_elapsed(
+                    now, daily_decay=daily_decay
+                )
+            except Exception as e:
+                logger.warning(f"[LivingLoop] 清醒结算失败（不影响心跳）: {e}")
 
+        # 3) 先判长睡（M5-补丁2 A5 顺序反转），睡意达阈值即长睡；
+        #    未达阈值才考虑小睡（受冷却/每日上限/夜间禁睡/min_awake 约束）。
+        #    旧顺序"先小睡后长睡"让小睡分支恒先命中并 return，长睡不可达。
         result = await self._sleep_manager.begin_autonomous_sleep(
             self._mood, now
         )
@@ -529,6 +555,14 @@ class LivingLoop:
                 f"[Living] 进入自主睡眠，预计 "
                 f"{result['until'].strftime('%H:%M')} 自然醒"
             )
+            return
+
+        nap = self._sleep_manager.should_nap(self._mood, now) if self._mood is not None else (False, 0.0)
+        if nap[0]:
+            minutes = nap[1]
+            until = now + timedelta(minutes=minutes)
+            await self._gate.enter_autonomous_sleep(until, "nap", now)
+            logger.info(f"[Sleep] 白天小睡 {minutes:.0f} 分钟（精力不足，补觉）")
 
     async def _planned_sleep_hours(self) -> float:
         """本次入睡时记录的预计时长（供醒来比例结算）。"""
@@ -542,35 +576,68 @@ class LivingLoop:
             pass
         return 8.0
 
+    @staticmethod
+    def _is_bedtime_review(row: Any) -> bool:
+        """判断一条记忆是否是"睡前回顾"自身（M5-补丁2 B1）。
+
+        以 metadata.topics 标记为准（兼容 list / 字符串 / 缺失三种形态）。
+        """
+        if not isinstance(row, dict):
+            return False
+        meta = row.get("metadata") or {}
+        if not isinstance(meta, dict):
+            return False
+        topics = meta.get("topics") or []
+        if isinstance(topics, str):
+            topics = [topics]
+        return any(str(t) == "睡前回顾" for t in topics)
+
     async def _write_bedtime_review(self, now: datetime) -> None:
         """睡前回顾（任务书 B2）：把今天的活动记忆聚成一句话存起来。
 
         用脚本聚合而非 LLM：回顾的价值在"记下来了"，不在辞藻——省下的
         token 留给梦。
+
+        M5-补丁2 质检：B1 检索结果过滤掉回顾自身（旧的日期前缀正文会被
+        自己检索命中，回声层层嵌套）；B2 同一天幂等（一天只写一条）；
+        B3 正文不再以日期字符串开头（缩小自我命中面）。
         """
         try:
             memory = await self._get_memory()
         except Exception as e:
             logger.warning(f"[LivingLoop] 睡前回顾：记忆不可用，跳过（{e}）")
             return
+        try:
+            # B2：先查今天是否已写过（新格式正文含"今天想了想"，可被检索命中）
+            recent = await memory.search("今天想了想", k=10)
+            for row in recent or []:
+                if not self._is_bedtime_review(row):
+                    continue
+                meta = row.get("metadata") or {}
+                if str(meta.get("review_date") or "") == now.date().isoformat():
+                    logger.info("[LivingLoop] 睡前回顾今日已写，跳过（幂等）")
+                    return
+        except Exception as e:
+            logger.debug(f"[LivingLoop] 睡前回顾幂等检查失败（继续）: {e}")
+
         date_key = f"{now.month}月{now.day}日"
         try:
-            rows = await memory.search(date_key, k=5)
+            rows = await memory.search(date_key, k=8)
         except Exception as e:
             logger.debug(f"[LivingLoop] 睡前回顾检索失败: {e}")
             rows = []
-        contents = [str(r.get("content", "")).strip() for r in rows or []]
+        # B1：过滤掉回顾自身——把回声当作"今天做的事"再写一遍会层层嵌套
+        rows = [r for r in (rows or []) if not self._is_bedtime_review(r)]
+        contents = [str(r.get("content", "")).strip() for r in rows]
         contents = [c for c in contents if c][:3]
         if contents:
-            review = f"{date_key}睡前想了想今天：{'；'.join(c[:40] for c in contents)}。该睡了，晚安。"
+            review = f"今天想了想：{'；'.join(c[:40] for c in contents)}。该睡了，晚安。"
         else:
-            review = (
-                f"{date_key}是安静的一天，没做成什么事。该睡了，晚安。"
-            )
+            review = "今天是安静的一天，没做成什么事。该睡了，晚安。"
         # 补丁 XX：带上 bot 身份——否则这类记忆在图谱里没有 person 节点，
         # 会形成孤立分量（补丁 IV 引入 participant_identities 时漏了本路径）
         identity = await self._bot_identity()
-        review_metadata: dict = {"topics": ["睡前回顾"]}
+        review_metadata: dict = {"topics": ["睡前回顾"], "review_date": now.date().isoformat()}
         if identity:
             review_metadata["participant_identities"] = [identity]
         try:

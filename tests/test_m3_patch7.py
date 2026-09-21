@@ -72,6 +72,10 @@ def test_bump_new_topic_gains_full(tmp_path):
 
 
 def test_interest_daily_decay_configurable(tmp_path):
+    """M5-补丁2 C3：跨日一次性衰减已移除；衰减系数改由
+    decay_interests_elapsed 按经过时长生效且可配置。"""
+    from datetime import timedelta
+
     d1 = datetime(2026, 9, 16, 23, 0, 0)
     d2 = datetime(2026, 9, 17, 8, 0, 0)
 
@@ -82,12 +86,19 @@ def test_interest_daily_decay_configurable(tmp_path):
         await mood.save()
         await mood.close()
         mood2 = MoodState(str(tmp_path / "mood.db"), now_provider=lambda: d2)
-        await mood2.load(interest_daily_decay=0.5)  # 自定义衰减
-        value = mood2.get_interests()["宇宙探索"]
+        await mood2.load(interest_daily_decay=0.5)
+        rollover_value = mood2.get_interests()["宇宙探索"]  # 跨日 load 不再衰减
+        await mood2._set_raw(
+            "interests_decay_at", repr((d2 - timedelta(hours=24)).timestamp())
+        )
+        await mood2.decay_interests_elapsed(d2, daily_decay=0.5)
+        after = mood2.get_interests()["宇宙探索"]
         await mood2.close()
-        return value
+        return rollover_value, after
 
-    assert asyncio.run(flow()) == pytest.approx(0.5)
+    rollover_value, after = asyncio.run(flow())
+    assert rollover_value == pytest.approx(1.0)  # 跨日不衰减（C3）
+    assert after == pytest.approx(0.5)  # 24h → ×0.5（可配置系数）
 
 
 # ---------------------------------------------------------------------------

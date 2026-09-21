@@ -504,7 +504,8 @@ def test_bedtime_review_metadata_has_topics(tmp_path):
     # 补丁 III：回顾记忆的 metadata 携带 topics=["睡前回顾"]
     reviews = [
         c for c in memory.added
-        if c["metadata"] == {"topics": ["睡前回顾"]}
+        if isinstance(c.get("metadata"), dict)
+        and c["metadata"].get("topics") == ["睡前回顾"]
     ]
     assert reviews, "睡前回顾应携带 topics 状态"
 

@@ -443,6 +443,20 @@
                         "default": 90,
                         "invisible": true
                     },
+                    "nap_cooldown_minutes": {
+                        "description": "两次小睡最小间隔（分钟）",
+                        "hint": "距上次小睡结束不足该时长时不再小睡——防止白天连续打盹挤掉长睡（M5-补丁2 A1）。",
+                        "type": "int",
+                        "default": 240,
+                        "invisible": true
+                    },
+                    "nap_max_per_day": {
+                        "description": "每日小睡次数上限",
+                        "hint": "当日小睡达到该次数后不再小睡（跨日重置）。0 = 不限制（M5-补丁2 A2）。",
+                        "type": "int",
+                        "default": 2,
+                        "invisible": true
+                    },
                     "circadian_hint": {
                         "description": "昼夜节律提示窗口",
                         "hint": "该时段睡意倾向最高（仅加权，不强制）。格式 HH:MM-HH:MM。",

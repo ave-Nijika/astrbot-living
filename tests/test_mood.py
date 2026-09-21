@@ -106,7 +106,8 @@ def test_interest_weight_neutral_default(tmp_path):
 
 
 def test_daily_interest_decay_on_date_rollover(tmp_path):
-    """每日兴趣衰减 ×0.9：跨日 load 触发一次，同日重复 load 不衰减。"""
+    """跨日 load 不再做一次性衰减（M5-补丁2 C3：衰减改由
+    decay_interests_elapsed 按经过时长在心跳里连续进行）。"""
     d1 = datetime(2026, 9, 8, 23, 0, 0)
     d2 = datetime(2026, 9, 9, 8, 0, 0)
 
@@ -133,7 +134,7 @@ def test_daily_interest_decay_on_date_rollover(tmp_path):
     same_day = asyncio.run(first_day())
     assert same_day == pytest.approx(1.0)
     next_day_value = asyncio.run(next_day())
-    assert next_day_value == pytest.approx(0.9)
+    assert next_day_value == pytest.approx(1.0)  # 跨日不衰减（C3）
 
 
 def test_digest_is_human_readable(tmp_path):

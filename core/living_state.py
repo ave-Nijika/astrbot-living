@@ -144,6 +144,10 @@ class LivingGate:
         self._sleep_kind: str | None = None
         self._fell_asleep_at: datetime | None = None
         self._last_wakeup_at: datetime | None = None
+        # 小睡状态（M5-补丁2 A8）：冷却与每日上限的依据，必须跨重启存活
+        self._last_nap_ended_at: datetime | None = None
+        self._nap_count_today: int = 0
+        self._nap_count_date: str | None = None
 
     # ------------------------------------------------------------------
     # 自主作息（任务书 M3 补丁 X）
@@ -186,8 +190,12 @@ class LivingGate:
 
     async def exit_autonomous_sleep(self, now: datetime | None = None) -> None:
         """结束本次自主睡眠（到点自然醒 / 被吵醒 / 紧急唤醒共用），
-        记录醒来时刻供 min_awake_minutes 与醒后时长判定。"""
+        记录醒来时刻供 min_awake_minutes 与醒后时长判定。
+
+        M5-补丁2 A8：本次是**小睡**（kind="nap"）时同时记账——冷却时间戳
+        与当日计数落库，跨重启依然有效。"""
         now = now or datetime.now()
+        kind = self._sleep_kind
         self._sleep_until = None
         self._sleep_kind = None
         self._fell_asleep_at = None
@@ -196,6 +204,29 @@ class LivingGate:
         await self._set_raw("sleep_kind", "")
         await self._set_raw("fell_asleep_at", "")
         await self._set_raw("last_wakeup_at", now.isoformat())
+        if kind == "nap":
+            await self._record_nap_ended(now)
+
+    async def _record_nap_ended(self, now: datetime) -> None:
+        today = now.date().isoformat()
+        if self._nap_count_date != today:
+            self._nap_count_today = 0
+        self._nap_count_date = today
+        self._nap_count_today += 1
+        self._last_nap_ended_at = now
+        await self._set_raw("last_nap_ended_at", now.isoformat())
+        await self._set_raw("nap_count_today", str(self._nap_count_today))
+        await self._set_raw("nap_count_date", today)
+
+    def last_nap_ended_at(self) -> datetime | None:
+        return self._last_nap_ended_at
+
+    def nap_count_today(self, now: datetime | None = None) -> int:
+        """当日小睡次数（M5-补丁2 A2）；日期已翻转时按 0 处理（惰性重置）。"""
+        now = now or datetime.now()
+        if self._nap_count_date != now.date().isoformat():
+            return 0
+        return self._nap_count_today
 
     def sleep_state(self, now: datetime | None = None) -> dict:
         """自主睡眠状态快照（loop 结算与 /living debug 用）。"""
@@ -261,12 +292,20 @@ class LivingGate:
     # ------------------------------------------------------------------
     async def load_state(self) -> None:
         """启动时恢复待机与自主睡眠状态（跨重启：重启时若在睡，继续睡到
-        预计醒来时刻，不重置为"刚入睡"）。"""
+        预计醒来时刻，不重置为"刚入睡"）。M5-补丁2 A8：小睡记账一并恢复。"""
         raw = await self._get_raw("awake_until")
         self._awake_until = _parse_iso(raw)
         self._sleep_until = _parse_iso(await self._get_raw("sleep_until"))
         self._fell_asleep_at = _parse_iso(await self._get_raw("fell_asleep_at"))
         self._last_wakeup_at = _parse_iso(await self._get_raw("last_wakeup_at"))
+        self._last_nap_ended_at = _parse_iso(await self._get_raw("last_nap_ended_at"))
+        try:
+            self._nap_count_today = max(
+                int(await self._get_raw("nap_count_today") or 0), 0
+            )
+        except (TypeError, ValueError):
+            self._nap_count_today = 0
+        self._nap_count_date = await self._get_raw("nap_count_date")
         kind = await self._get_raw("sleep_kind")
         # 重启时已过预计醒来时刻 → 视作已自然醒（不在睡）
         self._sleep_kind = kind if self.asleep_in_autonomous() else (
