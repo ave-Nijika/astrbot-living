@@ -58,8 +58,15 @@ def clean_nested_reviews(lm_db_path: Path) -> tuple[int, int]:
     """清 livingmemory.db 里的嵌套回顾。返回 (删除数, 保留数)。"""
     conn = sqlite3.connect(str(lm_db_path))
     try:
+        # 注：documents 表的正文字段名是 text（不是 content）——首次上线时
+        # 脚本按 content 查询在真实库上直接跳过，此处修正（VM 实测发现）。
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(documents)").fetchall()}
+        body_col = "text" if "text" in cols else ("content" if "content" in cols else None)
+        if body_col is None:
+            print(f"documents 表无可用正文字段（现有：{sorted(cols)}），跳过回顾清理")
+            return 0, 0
         rows = conn.execute(
-            "SELECT id, content FROM documents WHERE content LIKE '%睡前想了想今天%'"
+            f"SELECT id, {body_col} FROM documents WHERE {body_col} LIKE '%睡前想了想今天%'"
         ).fetchall()
         to_delete = [
             (row_id, content)
