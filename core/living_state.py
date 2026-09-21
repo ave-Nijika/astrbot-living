@@ -476,14 +476,30 @@ class LivingGate:
             # 明确要求结束本次休眠）
             pass
         else:
-            # 1. 休眠窗口（M3：force 触发吵醒流程而非拒绝，M1 仅做时间窗判定）
-            window = parse_time_window(
-                _conf_group(config, "sleep").get("sleep_window")
+            # 1. 睡眠判定——按 sleep_mode 互斥（M5-补丁3 A1-A3）：
+            #    autonomous 由"是否在自主睡眠中"决定，fixed 窗口不参与；
+            #    fixed 沿用固定窗口判定（行为与 M5-补丁3 前完全一致）。
+            mode = str(
+                _conf_group(config, "sleep").get("sleep_mode") or "fixed"
             )
-            if window and in_time_window(now, window):
-                if force:
-                    return True, "woken_from_sleep"
-                return False, "sleeping"
+            if mode == "autonomous":
+                if self.asleep_in_autonomous(now):
+                    # 在自主睡眠中：force 进吵醒结算（沿用既有 reason 名，
+                    # heartbeat 的 woken 分支已按 autonomous_mode 内部分流）
+                    if force:
+                        return True, "woken_from_sleep"
+                    return False, "sleeping"
+                # 醒着：跳过窗口判定，直接走第 2-4 关——即使真实时间落在
+                # fixed 的 sleep_window 里也不得拦截（双轨冲突修复点）
+            else:
+                # fixed：固定窗口（M3：force 触发吵醒流程而非拒绝）
+                window = parse_time_window(
+                    _conf_group(config, "sleep").get("sleep_window")
+                )
+                if window and in_time_window(now, window):
+                    if force:
+                        return True, "woken_from_sleep"
+                    return False, "sleeping"
 
         # 2. 今日活动上限（0 = 不限制）
         limit = _to_int(decision.get("daily_impulse_limit"), 3)

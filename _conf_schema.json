@@ -350,7 +350,7 @@
                 "items": {
                     "sleep_window": {
                         "description": "作息窗口",
-                        "hint": "格式 'HH:MM-HH:MM'。",
+                        "hint": "格式 'HH:MM-HH:MM'。仅 fixed（规律作息）模式生效；autonomous（想睡就睡）模式下入睡时机由睡意动力学决定，本窗口不参与判定。",
                         "type": "string",
                         "default": "00:30-08:00",
                         "invisible": true

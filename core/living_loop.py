@@ -306,35 +306,44 @@ class LivingLoop:
         # 睡眠状态跟踪（任务书 B2/B5 + 补丁 II 三）：入睡写睡前回顾、
         # 醒来掷梦、状态翻转打 INFO 日志（只在翻转时打，不是每次心跳）。
         # "在睡" = 休眠窗内且不在清醒待机——被吵醒进待机后不算在睡。
-        try:
-            in_window = self._gate.in_sleep_window(now)
-        except Exception:
-            in_window = False
-        standby_active = self._gate.awake_standby_active(now)
-        asleep_now = in_window and not standby_active
+        # M5-补丁3 B1：本段是 **fixed 专属**——autonomous 模式的入睡/醒来
+        # 由 _autonomous_sleep_tick 驱动，窗口翻转不得参与（双轨冲突修复：
+        # 此前 autonomous 下窗口翻转照常发生，产生"进入休眠（窗口…）"
+        # 日志并错误触发睡前回顾）。
+        if self._sleep_mode() != "autonomous":
+            try:
+                in_window = self._gate.in_sleep_window(now)
+            except Exception:
+                in_window = False
+            standby_active = self._gate.awake_standby_active(now)
+            asleep_now = in_window and not standby_active
 
-        # 待机刚过期（补丁 II 三）：清除待机；仍在休眠窗内则发入睡告别
-        try:
-            standby_expired = await self._gate.consume_standby_expiry(now)
-        except Exception:
-            standby_expired = False
-        if standby_expired:
-            logger.info("[LivingLoop] 清醒待机结束")
-            if in_window:
-                await self._send_sleep_farewell(now)
+            # 待机刚过期（补丁 II 三）：清除待机；仍在休眠窗内则发入睡告别
+            try:
+                standby_expired = await self._gate.consume_standby_expiry(now)
+            except Exception:
+                standby_expired = False
+            if standby_expired:
+                logger.info("[LivingLoop] 清醒待机结束")
+                if in_window:
+                    await self._send_sleep_farewell(now)
 
-        if asleep_now and not self._asleep:
-            self._asleep = True
-            self._log_sleep_entry(now)
-            await self._write_bedtime_review(now)
-        elif not in_window and self._asleep:
-            # 自然出窗：休眠结束（被吵醒导致的翻转在 woken 分支里消化）
-            self._asleep = False
-            self._pending_dream = True  # 自然醒，醒来也许有梦
-            logger.info("[LivingLoop] 休眠结束，恢复正常活动")
-        elif standby_active and self._asleep:
-            # 被吵醒进入待机：翻转在这里消化（"休眠结束"日志不出，
-            # 唤醒日志由 woken 分支负责）
+            if asleep_now and not self._asleep:
+                self._asleep = True
+                self._log_sleep_entry(now)
+                await self._write_bedtime_review(now)
+            elif not in_window and self._asleep:
+                # 自然出窗：休眠结束（被吵醒导致的翻转在 woken 分支里消化）
+                self._asleep = False
+                self._pending_dream = True  # 自然醒，醒来也许有梦
+                logger.info("[LivingLoop] 休眠结束，恢复正常活动")
+            elif standby_active and self._asleep:
+                # 被吵醒进入待机：翻转在这里消化（"休眠结束"日志不出，
+                # 唤醒日志由 woken 分支负责）
+                self._asleep = False
+        else:
+            # autonomous：`self._asleep` 是 fixed 专属标志，恒保持 False
+            # （含 fixed → autonomous 热切换后的残留清理）
             self._asleep = False
 
         # M3 补丁 X：自主作息——到点自然醒（结算恢复）与白天小睡。
@@ -555,6 +564,9 @@ class LivingLoop:
                 f"[Living] 进入自主睡眠，预计 "
                 f"{result['until'].strftime('%H:%M')} 自然醒"
             )
+            # M5-补丁3 B2：autonomous 的睡前回顾由长睡入睡触发
+            #（fixed 由 heartbeat 翻转段触发；小睡不写回顾）
+            await self._write_bedtime_review(now)
             return
 
         nap = self._sleep_manager.should_nap(self._mood, now) if self._mood is not None else (False, 0.0)
