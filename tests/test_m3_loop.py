@@ -346,7 +346,7 @@ def test_dream_probability_miss_is_silent():
     assert dreams == []  # 概率落空，梦的 LLM 没被调用
 
 
-def test_bedtime_review_written_on_sleep_onset():
+def test_bedtime_review_written_on_sleep_onset(tmp_path):
     """长睡 enter（M6-补丁1 起回顾的触发点）→ 写一条睡前回顾记忆。"""
     gate = FakeGate(in_sleep=False)
     memory = FakeMemory(rows=[
@@ -357,7 +357,7 @@ def test_bedtime_review_written_on_sleep_onset():
         **BASE_CONFIG,
         "sleep": {**BASE_CONFIG["sleep"], "sleepiness_threshold": 0.0},
     }
-    mood = MoodState(db_path=str(Path(__file__).parent / "_review_mood.db"))
+    mood = MoodState(db_path=str(tmp_path / "mood.db"))
     asyncio.run(mood.load())
     mood.energy = 0.05
     manager = SleepManager(config_getter=lambda: config, gate=gate,
