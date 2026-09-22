@@ -324,7 +324,7 @@ def test_share_blocked_by_message_gate():
     sender = FakeSender()
     gate = FakeGate(allow=False)
     loop = make_loop(gate=gate, sender=sender, config=config)
-    asyncio.run(loop._maybe_share("想说话", NOW))
+    asyncio.run(loop._maybe_share("今天有点想聊天", NOW))
     assert sender.sent == []
     assert gate.message_sends == 0
 
@@ -338,7 +338,7 @@ def test_share_send_failure_does_not_count():
     sender = FakeSender(ok=False)
     gate = FakeGate(allow=True)
     loop = make_loop(gate=gate, sender=sender, config=config)
-    asyncio.run(loop._maybe_share("想说话", NOW))
+    asyncio.run(loop._maybe_share("今天有点想聊天", NOW))
     assert gate.message_sends == 0
 
 

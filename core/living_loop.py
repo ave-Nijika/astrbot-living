@@ -38,6 +38,10 @@ MEMORY_WRITE_TIMEOUT = 30.0
 CONFIG_POLL_SECONDS = 5.0
 DEFAULT_AGENT_ACTIVITIES = ("surf", "read", "game")
 DREAM_MAX_CHARS = 120
+# M7-补丁1 A1：分享文本最小长度。正常分享文案（梦、活动总结、睡过头交代）
+# 都远超 4 字；空壳/占位通常 0-3 字。低于下限视为空产物——不调改写器、
+# 不发送（根因：LLM 面对空材料会生成"你倒是发过来"式回应措辞）。
+MIN_SHARE_TEXT_LEN = 4
 
 
 def _to_float(value: Any, default: float) -> float:
@@ -901,8 +905,9 @@ class LivingLoop:
         await self._gate.note_activity_finished()
         logger.info(f"[LivingLoop] 活动结束 name={activity.name}")
 
-        # 候选分享（内部过输出闸门）
-        if outcome is not None and outcome.summary:
+        # 候选分享（内部过输出闸门）。M7-补丁1 A2：空/纯空白 summary 不进
+        # 分享——与 _maybe_share 入口防线（A1）相互独立，双防线
+        if outcome is not None and outcome.summary and str(outcome.summary).strip():
             await self._maybe_share(outcome.summary, now)
         return {
             "activity": activity.name,
@@ -1134,6 +1139,10 @@ class LivingLoop:
     # 分享（输出闸门链路，任务书 E）
     # ------------------------------------------------------------------
     async def _maybe_share(self, text: str, now: datetime) -> None:
+        # M7-补丁1 A1：空产物防护——低于下限直接静默返回（不打分享日志、
+        # 不浪费闸门掷点，更不进改写流水线）
+        if len(str(text or "").strip()) < MIN_SHARE_TEXT_LEN:
+            return
         sessions = [
             s.strip()
             for s in str(

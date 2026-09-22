@@ -269,7 +269,7 @@ def test_sequential_no_silent_to_open_flip_across_window_end(tmp_path):
 
         # 05:50（窗内）长睡入睡——真实 tick 路径（circadian 1.0 → 睡意 0.633）
         await loop._autonomous_sleep_tick(NOW)
-        entered = gate.sleep_state()
+        entered = gate.sleep_state(NOW)
 
         r_0610 = await gate.should_wake(NOW + timedelta(minutes=20))
         r_0900 = await gate.should_wake(NOW + timedelta(hours=3, minutes=10))
@@ -279,7 +279,7 @@ def test_sequential_no_silent_to_open_flip_across_window_end(tmp_path):
         await loop._autonomous_sleep_tick(wake_time)
         r_1055 = await gate.should_wake(wake_time + timedelta(minutes=5))
 
-        final = gate.sleep_state()
+        final = gate.sleep_state(wake_time + timedelta(minutes=5))
         await mood.close()
         await gate.close()
         return entered, r_0610, r_0900, r_1055, final

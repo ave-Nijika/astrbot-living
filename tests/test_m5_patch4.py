@@ -249,7 +249,7 @@ def test_early_sleep_anchored_before_commitment(tmp_path):
         mood.arousal = 0.3
 
         result = await manager.begin_autonomous_sleep(mood, NOW.replace(hour=23))
-        state = gate.sleep_state()
+        state = gate.sleep_state(NOW.replace(hour=23))
         await mood.close()
         await gate.close()
         return result, state
