@@ -420,7 +420,7 @@ def test_decision_llm_no_text_anywhere_returns_none(tmp_path):
 # ---------------------------------------------------------------------------
 def test_config_group_prefix_and_bare_key(tmp_path):
     """组前缀形式直接写组；裸键在允许组内唯一匹配时也能写。"""
-    from test_command_system import build_plugin, run_cmd
+    from test_command_system import _close_plugin, build_plugin, run_cmd
 
     plugin, _memory, _act, _read, _sender = build_plugin(tmp_path)
 
@@ -436,12 +436,14 @@ def test_config_group_prefix_and_bare_key(tmp_path):
         run_cmd(plugin, "/living config impulse_check_interval_minutes 7")
     )[0]
     assert plugin.config["decision"]["impulse_check_interval_minutes"] == 7
+    _close_plugin(plugin)  # M8-补丁1：连接收尾（复用 command_system 的 helper）
 
 
 def test_config_missing_group_reports_clearly(tmp_path):
     """组不存在/键不存在时给出可操作的错误（而不是静默失败）。"""
-    from test_command_system import build_plugin, run_cmd
+    from test_command_system import _close_plugin, build_plugin, run_cmd
 
     plugin, _memory, _act, _read, _sender = build_plugin(tmp_path)
     lines = asyncio.run(run_cmd(plugin, "/living config nosuch.key 1"))[0]
     assert any("不允许" in line for line in lines)
+    _close_plugin(plugin)  # M8-补丁1：连接收尾

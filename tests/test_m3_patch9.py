@@ -99,6 +99,7 @@ def test_describe_mute_contains_guidance(tmp_path):
     for i in range(1):
         manager.register_message(datetime(2026, 9, 17, 4, 0, i))
     text = manager.describe_mute(datetime(2026, 9, 17, 4, 0, 1), count=1)
+    asyncio.run(gate.close())  # M8-补丁1：连接收尾
     assert "正在休眠（自主作息，睡意已达）" in text
     assert "在睡期第 1 条" in text
     assert "再发 2 条可唤醒" in text
@@ -125,6 +126,7 @@ def test_force_awake_disables_sleeping_and_mute(tmp_path):
     # 强醒期内：不拦、不 sleeping
     assert manager.should_mute_message(T_IN, "又一条消息") is False
     allow2, reason2 = asyncio.run(gate.should_wake(T_IN))
+    asyncio.run(gate.close())  # M8-补丁1：连接收尾
     assert allow2 is True
     assert reason2 != "sleeping"
 
@@ -144,7 +146,9 @@ def test_force_awake_expires_restores_sleeping(tmp_path):
     assert manager.should_mute_message(T_IN + timedelta(minutes=10), "x") is False
     # 过期后：恢复在睡判定
     assert gate.force_awake_active(T_IN + timedelta(minutes=31)) is False
-    assert manager.should_mute_message(T_IN + timedelta(minutes=31), "x") is True
+    muted = manager.should_mute_message(T_IN + timedelta(minutes=31), "x")
+    asyncio.run(gate.close())  # M8-补丁1：连接收尾
+    assert muted is True
 
 
 def test_wake_now_resets_wake_state():

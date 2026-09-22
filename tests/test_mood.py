@@ -21,7 +21,9 @@ def test_defaults_on_empty_db(tmp_path):
     async def flow():
         mood = make_mood(tmp_path)
         await mood.load()
-        return mood.valence, mood.arousal, mood.energy, mood.get_interests()
+        result = (mood.valence, mood.arousal, mood.energy, mood.get_interests())
+        await mood.close()
+        return result
 
     valence, arousal, energy, interests = asyncio.run(flow())
     assert valence == pytest.approx(0.2)
@@ -38,15 +40,18 @@ def test_success_updates_valence_energy_and_topic_interest(tmp_path):
         mood = make_mood(tmp_path, now=d1)
         await mood.load()
         await mood.record_activity("surf", ok=True, topic="深海生物")
+        await mood.close()
         # 新实例验证持久化
         mood2 = make_mood(tmp_path, now=d1)
         await mood2.load()
-        return mood2
+        result = (mood2.valence, mood2.energy, mood2.get_interests())
+        await mood2.close()
+        return result
 
-    mood = asyncio.run(flow())
-    assert mood.valence == pytest.approx(0.25)
-    assert mood.energy == pytest.approx(0.7)
-    assert mood.get_interests()["深海生物"] == pytest.approx(0.15)
+    valence, energy, interests = asyncio.run(flow())
+    assert valence == pytest.approx(0.25)
+    assert energy == pytest.approx(0.7)
+    assert interests["深海生物"] == pytest.approx(0.15)
 
 
 def test_failure_updates_valence_energy_without_interest(tmp_path):
@@ -55,7 +60,9 @@ def test_failure_updates_valence_energy_without_interest(tmp_path):
     async def flow():
         await mood.load()
         await mood.record_activity("read", ok=False, topic="咖啡")
-        return mood.valence, mood.energy, mood.get_interests()
+        result = (mood.valence, mood.energy, mood.get_interests())
+        await mood.close()
+        return result
 
     valence, energy, interests = asyncio.run(flow())
     assert valence == pytest.approx(0.2 - 0.08)
@@ -70,7 +77,9 @@ def test_reminisce_success_bumps_memory_interest(tmp_path):
     async def flow():
         await mood.load()
         await mood.record_activity("reminisce", ok=True, topic=None)
-        return mood.get_interests()
+        interests = mood.get_interests()
+        await mood.close()
+        return interests
 
     assert asyncio.run(flow()).get("记忆") == pytest.approx(0.1)
 
@@ -87,7 +96,9 @@ def test_clamps_on_repeated_updates(tmp_path):
         for _ in range(50):
             mood.bump_interest("咖啡", 0.3)
         await mood.record_activity("game", ok=True, topic="独立游戏")
-        return low_valence, low_energy, mood.get_interests()
+        result = (low_valence, low_energy, mood.get_interests())
+        await mood.close()
+        return result
 
     low_valence, low_energy, interests = asyncio.run(flow())
     assert low_valence == pytest.approx(-1.0)
@@ -99,10 +110,20 @@ def test_clamps_on_repeated_updates(tmp_path):
 def test_interest_weight_neutral_default(tmp_path):
     """无记录主题返回 0.3 中性——没接触过的东西也值得一试。"""
     mood = make_mood(tmp_path)
-    asyncio.run(mood.load())
-    assert mood.interest_weight("从没见过的话题") == pytest.approx(0.3)
-    mood.bump_interest("咖啡", 0.5)
-    assert mood.interest_weight("咖啡") == pytest.approx(0.5)
+
+    async def flow():
+        await mood.load()
+        mood.bump_interest("咖啡", 0.5)
+        result = (
+            mood.interest_weight("从没见过的话题"),
+            mood.interest_weight("咖啡"),
+        )
+        await mood.close()
+        return result
+
+    neutral, coffee = asyncio.run(flow())
+    assert neutral == pytest.approx(0.3)
+    assert coffee == pytest.approx(0.5)
 
 
 def test_daily_interest_decay_on_date_rollover(tmp_path):
@@ -146,7 +167,9 @@ def test_digest_is_human_readable(tmp_path):
         mood.valence = -0.6
         mood.energy = 0.2
         mood.bump_interest("咖啡", 0.8)
-        return mood.digest()
+        text = mood.digest()
+        await mood.close()
+        return text
 
     text = asyncio.run(flow())
     assert "低落" in text

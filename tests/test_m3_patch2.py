@@ -106,6 +106,7 @@ def test_standby_skips_sleeping_verdict():
     gate = make_gate()
     asyncio.run(gate.refresh_awake_until(30, now=T0))
     allow, reason = asyncio.run(gate.should_wake(T0))
+    asyncio.run(gate.close())  # M8-补丁1：连接收尾
     assert allow is True
     assert reason != "sleeping"
 
@@ -115,6 +116,7 @@ def test_standby_force_does_not_trigger_wake_settlement():
     gate = make_gate()
     asyncio.run(gate.refresh_awake_until(30, now=T0))
     allow, reason = asyncio.run(gate.should_wake(T0, force=True))
+    asyncio.run(gate.close())  # M8-补丁1：连接收尾
     assert allow is True
     assert reason == "ok"  # 非 woken_from_sleep：不会重复扣睡眠债
 
@@ -128,6 +130,7 @@ def test_standby_expiry_restores_sleeping():
         await gate.refresh_awake_until(30, now=T0)  # 待机至 3:30
     asyncio.run(_prep())
     allow, reason = asyncio.run(gate.should_wake(T0 + timedelta(minutes=31)))
+    asyncio.run(gate.close())  # M8-补丁1：连接收尾
     assert allow is False  # 3:31 仍在长睡中 → 回去睡
     assert reason == "sleeping"
 
@@ -137,7 +140,9 @@ def test_standby_active_mute_exempt():
     gate = make_gate()
     manager = make_manager(gate)
     asyncio.run(gate.refresh_awake_until(30, now=T0))
-    assert manager.should_mute_message(T0, "有人说话") is False
+    result = manager.should_mute_message(T0, "有人说话")
+    asyncio.run(gate.close())  # M8-补丁1：连接收尾
+    assert result is False
 
 
 def test_awake_until_persists_across_restart(tmp_path):
@@ -148,12 +153,16 @@ def test_awake_until_persists_across_restart(tmp_path):
     path = str(tmp_path / "gate.db")
     gate1 = LivingGate(config_getter=lambda: BASE_CONFIG, db_path=path, rng=lambda: 0.5)
     asyncio.run(gate1.refresh_awake_until(30, now=T0))
+    asyncio.run(gate1.close())  # M8-补丁1：连接收尾
 
     gate2 = LivingGate(config_getter=lambda: BASE_CONFIG, db_path=path, rng=lambda: 0.5)
     asyncio.run(gate2.load_state())
-    assert gate2.awake_standby_active(T0) is True
+    standby = (gate2.awake_standby_active(T0),
+               gate2.awake_standby_active(T0 + timedelta(minutes=31)))
+    asyncio.run(gate2.close())  # M8-补丁1：连接收尾
+    assert standby[0] is True
     # 过期后不再待机
-    assert gate2.awake_standby_active(T0 + timedelta(minutes=31)) is False
+    assert standby[1] is False
 
 
 def test_consume_standby_expiry_transitions():
@@ -164,7 +173,9 @@ def test_consume_standby_expiry_transitions():
     asyncio.run(gate.refresh_awake_until(30, now=T0))
     assert asyncio.run(gate.consume_standby_expiry(T0 + timedelta(minutes=10))) is False
     assert asyncio.run(gate.consume_standby_expiry(T0 + timedelta(minutes=31))) is True
-    assert gate.awake_standby_active(T0) is False  # 已清除
+    cleared = gate.awake_standby_active(T0)
+    asyncio.run(gate.close())  # M8-补丁1：连接收尾
+    assert cleared is False  # 已清除
 
 
 def test_standby_does_not_bypass_daily_limit():
@@ -175,7 +186,9 @@ def test_standby_does_not_bypass_daily_limit():
         for _ in range(3):
             await gate.note_activity_started(DAY)
         await gate.refresh_awake_until(30, now=T0)
-        return await gate.should_wake(T0)
+        result = await gate.should_wake(T0)
+        await gate.close()
+        return result
 
     allow, reason = asyncio.run(flow())
     assert allow is False and reason == "daily_limit"
@@ -194,16 +207,22 @@ def test_refresh_standby_sliding_window():
     refreshed = asyncio.run(
         manager.refresh_standby(datetime(2026, 9, 9, 3, 20))  # 3:20 主人发消息
     )
+    windows = (gate.awake_standby_active(datetime(2026, 9, 9, 3, 49)),
+               gate.awake_standby_active(datetime(2026, 9, 9, 3, 51)))
+    asyncio.run(gate.close())  # M8-补丁1：连接收尾
     assert refreshed is True
     # 3:49 还在待机（3:20+30=3:50 才过期）
-    assert gate.awake_standby_active(datetime(2026, 9, 9, 3, 49)) is True
-    assert gate.awake_standby_active(datetime(2026, 9, 9, 3, 51)) is False
+    assert windows[0] is True
+    assert windows[1] is False
 
 
 def test_refresh_standby_false_when_not_in_standby():
     """不在待机期：refresh_standby 返回 False（调用方走吵醒计数）。"""
-    manager = make_manager(make_gate())
-    assert asyncio.run(manager.refresh_standby(T0)) is False
+    gate = make_gate()
+    manager = make_manager(gate)
+    result = asyncio.run(manager.refresh_standby(T0))
+    asyncio.run(gate.close())  # M8-补丁1：连接收尾
+    assert result is False
 
 
 def test_register_message_records_wake_session():
@@ -219,18 +238,22 @@ def test_register_message_records_wake_session():
             datetime(2026, 9, 9, 3, 0, i), sender_id="u1",
             session="aiocqhttp:GroupMessage:42",
         )
+    asyncio.run(gate.close())  # M8-补丁1：连接收尾
     assert wake is True
     assert manager.last_wake_session == "aiocqhttp:GroupMessage:42"
 
 
 def test_refresh_standby_records_active_session():
-    manager = make_manager(make_gate())
+    gate = make_gate()
+    manager = make_manager(gate)
     asyncio.run(manager.begin_standby(T0))
     asyncio.run(
         manager.refresh_standby(T0 + timedelta(minutes=1),
                                 session="aiocqhttp:GroupMessage:42")
     )
-    assert manager.last_active_session == "aiocqhttp:GroupMessage:42"
+    session = manager.last_active_session
+    asyncio.run(gate.close())  # M8-补丁1：连接收尾
+    assert session == "aiocqhttp:GroupMessage:42"
 
 
 # ---------------------------------------------------------------------------

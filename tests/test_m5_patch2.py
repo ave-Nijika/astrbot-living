@@ -77,6 +77,7 @@ def test_nap_cooldown_blocks(tmp_path):
         blocked, _ = manager.should_nap(mood, ended_at + timedelta(minutes=30))
         # 冷却过后 → True
         allowed, _ = manager.should_nap(mood, ended_at + timedelta(minutes=241))
+        await gate.close()
         return blocked, allowed
 
     blocked, allowed = asyncio.run(flow())
@@ -113,6 +114,8 @@ def test_nap_daily_limit_and_cross_day(tmp_path):
         )
         await gate2.exit_autonomous_sleep(yesterday + timedelta(minutes=NAP_DURATION_MIN))
         allowed_today, _ = manager2.should_nap(mood, NOW)
+        await gate.close()
+        await gate2.close()
         return blocked, allowed_today
 
     blocked, allowed_today = asyncio.run(flow())
@@ -161,6 +164,7 @@ def test_long_sleep_takes_priority_over_nap(tmp_path):
         await loop._autonomous_sleep_tick(now)
         state = gate.sleep_state(now)
         await mood.close()
+        await gate.close()
         return state["kind"], state["asleep"]
 
     kind, asleep = asyncio.run(flow())

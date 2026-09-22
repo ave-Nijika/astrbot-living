@@ -196,6 +196,23 @@ async def run_cmd(plugin, message_str):
     return lines, event
 
 
+def _close_plugin(plugin):
+    """M8-补丁1：收尾关闭 gate/mood 的 aiosqlite 连接。
+
+    连接后台线程跨 asyncio.run 存活，不关会在 GC/进程收尾时向已关 loop
+    投递（Event loop is closed）。close 的 future 绑定本次（存活的）run
+    的 loop，安全；两者 close 均幂等（_db 为 None 时 no-op）。"""
+    async def _close():
+        for obj in (plugin.mood, plugin.gate):
+            close = getattr(obj, "close", None)
+            if callable(close):
+                try:
+                    await close()
+                except Exception:
+                    pass
+    asyncio.run(_close())
+
+
 # ---------------------------------------------------------------------------
 # 根命令与状态类
 # ---------------------------------------------------------------------------
@@ -206,8 +223,7 @@ def test_root_living_shows_summary(tmp_path):
     assert any("主循环" in line for line in lines)
     assert any("今日活动" in line for line in lines)
     assert memory.search_calls, "根状态应读取最近记忆"
-
-
+    _close_plugin(plugin)  # M8-补丁1：连接收尾
 def test_status_shows_details(tmp_path):
     plugin, _memory, _act, _read, _sender = build_plugin(tmp_path)
     plugin.mood.sleep_debt = 40.0
@@ -218,8 +234,7 @@ def test_status_shows_details(tmp_path):
     assert "睡眠债" in text
     assert "清醒待机：生效中" in text
     assert "自主作息" in text  # M6-补丁1：休眠窗文案随 fixed 移除
-
-
+    _close_plugin(plugin)  # M8-补丁1：连接收尾
 def test_mood_shows_dimensions_and_interests(tmp_path):
     plugin, _memory, _act, _read, _sender = build_plugin(tmp_path)
     plugin.mood.bump_interest("咖啡", 0.8)
@@ -228,8 +243,7 @@ def test_mood_shows_dimensions_and_interests(tmp_path):
     assert "心境详情" in text
     assert "valence=" in text
     assert "咖啡" in text
-
-
+    _close_plugin(plugin)  # M8-补丁1：连接收尾
 def test_memories_default_five_and_custom_n(tmp_path):
     rows = [{"content": f"记忆{i}", "score": 0} for i in range(7)]
     plugin, memory, _act, _read, _sender = build_plugin(tmp_path, memory_rows=rows)
@@ -242,14 +256,12 @@ def test_memories_default_five_and_custom_n(tmp_path):
 
     asyncio.run(run_cmd(plugin, "/living memories 2"))
     assert memory.search_calls[-1] == ("", 2)
-
-
+    _close_plugin(plugin)  # M8-补丁1：连接收尾
 def test_memories_empty_db(tmp_path):
     plugin, _memory, _act, _read, _sender = build_plugin(tmp_path)
     lines = asyncio.run(run_cmd(plugin, "/living memories"))[0]
     assert any("还没有任何记忆" in line for line in lines)
-
-
+    _close_plugin(plugin)  # M8-补丁1：连接收尾
 # ---------------------------------------------------------------------------
 # pause / resume
 # ---------------------------------------------------------------------------
@@ -267,8 +279,7 @@ def test_pause_resume_via_command(tmp_path):
     lines = asyncio.run(run_cmd(plugin, "/living resume"))[0]
     assert loop.paused is False
     assert any("已恢复" in line for line in lines)
-
-
+    _close_plugin(plugin)  # M8-补丁1：连接收尾
 def test_paused_loop_skips_heartbeat(tmp_path):
     """pause 后心跳不触发活动/判定（定时器继续跑，resume 即恢复）。"""
     plugin, _memory, activity, _read, _sender = build_plugin(tmp_path)
@@ -306,8 +317,7 @@ def test_paused_loop_skips_heartbeat(tmp_path):
     assert judged_while_paused == 0
     assert runs_while_paused == 0
     assert judged_after >= 1  # resume 后恢复判定
-
-
+    _close_plugin(plugin)  # M8-补丁1：连接收尾
 # ---------------------------------------------------------------------------
 # wake / sleep
 # ---------------------------------------------------------------------------
@@ -325,8 +335,7 @@ def test_wake_subcommand_forces(tmp_path):
     lines = asyncio.run(run_cmd(plugin, "/living wake"))[0]
     assert calls == [True]
     assert any("醒了" in line for line in lines)
-
-
+    _close_plugin(plugin)  # M8-补丁1：连接收尾
 def test_sleep_clears_standby_and_sends_farewell(tmp_path):
     config = {
         **BASE_CONFIG,
@@ -342,8 +351,7 @@ def test_sleep_clears_standby_and_sends_farewell(tmp_path):
     assert any("已清除" in line for line in lines)
     assert gate.awake_standby_active() is False  # 待机已清除
     assert sender.sent == [("aiocqhttp:GroupMessage:42", "我先睡了，晚安。")]
-
-
+    _close_plugin(plugin)  # M8-补丁1：连接收尾
 # ---------------------------------------------------------------------------
 # /living do
 # ---------------------------------------------------------------------------
@@ -355,21 +363,18 @@ def test_do_runs_named_activity_with_topic(tmp_path):
     assert activity.runs == 1
     assert read_activity.runs == 0
     assert activity.last_ctx.params == {"topic": "深海生物"}
-
-
+    _close_plugin(plugin)  # M8-补丁1：连接收尾
 def test_do_unknown_activity_shows_options(tmp_path):
     plugin, _memory, _act, _read, _sender = build_plugin(tmp_path)
     lines = asyncio.run(run_cmd(plugin, "/living do 跳伞"))[0]
     assert any("未知活动" in line for line in lines)
     assert any("surf" in line for line in lines)  # 提示可选活动
-
-
+    _close_plugin(plugin)  # M8-补丁1：连接收尾
 def test_do_without_activity_shows_usage(tmp_path):
     plugin, _memory, _act, _read, _sender = build_plugin(tmp_path)
     lines = asyncio.run(run_cmd(plugin, "/living do"))[0]
     assert any("用法" in line for line in lines)
-
-
+    _close_plugin(plugin)  # M8-补丁1：连接收尾
 def test_do_respects_daily_limit(tmp_path):
     """红线：/living do 不能绕过每日上限——满了提示且不执行。"""
     plugin, memory, activity, _read, _sender = build_plugin(tmp_path)
@@ -388,8 +393,7 @@ def test_do_respects_daily_limit(tmp_path):
     assert any("上限" in line for line in lines)
     assert activity.runs == 0
     assert len(memory.added) == before  # 没有写活动记忆
-
-
+    _close_plugin(plugin)  # M8-补丁1：连接收尾
 # ---------------------------------------------------------------------------
 # /living config
 # ---------------------------------------------------------------------------
@@ -404,16 +408,14 @@ def test_config_hot_effect(tmp_path):
     assert plugin.config["decision"]["daily_impulse_limit"] == 10  # int 转换
     reached, count, limit = asyncio.run(plugin.gate.daily_limit_info(T0))
     assert limit == 10  # 热生效：gate 读到了新值
-
-
+    _close_plugin(plugin)  # M8-补丁1：连接收尾
 def test_config_bool_conversion(tmp_path):
     plugin, _memory, _act, _read, _sender = build_plugin(tmp_path)
     lines = asyncio.run(
         run_cmd(plugin, "/living config sleep.sleep_mute_replies false")
     )[0]
     assert plugin.config["sleep"]["sleep_mute_replies"] is False
-
-
+    _close_plugin(plugin)  # M8-补丁1：连接收尾
 def test_config_rejects_unknown_group(tmp_path):
     plugin, _memory, _act, _read, _sender = build_plugin(tmp_path)
     lines = asyncio.run(
@@ -421,14 +423,12 @@ def test_config_rejects_unknown_group(tmp_path):
     )[0]
     assert any("不允许" in line for line in lines)
     assert "evil" not in plugin.config
-
-
+    _close_plugin(plugin)  # M8-补丁1：连接收尾
 def test_config_missing_value_shows_usage(tmp_path):
     plugin, _memory, _act, _read, _sender = build_plugin(tmp_path)
     lines = asyncio.run(run_cmd(plugin, "/living config decision.daily_impulse_limit"))[0]
     assert any("用法" in line for line in lines)
-
-
+    _close_plugin(plugin)  # M8-补丁1：连接收尾
 # ---------------------------------------------------------------------------
 # debug / 未知子命令
 # ---------------------------------------------------------------------------
@@ -443,8 +443,7 @@ def test_debug_shows_chain_and_provider(tmp_path):
     assert "决策模式：hybrid" in text
     assert "provider 链" in text
     assert "tokens=1234" in text
-
-
+    _close_plugin(plugin)  # M8-补丁1：连接收尾
 class AgentResultLike:
     def __init__(self, tokens, steps, max_steps):
         self.tokens_used = tokens
@@ -458,8 +457,7 @@ def test_unknown_subcommand_shows_help(tmp_path):
     lines = asyncio.run(run_cmd(plugin, "/living 跳舞"))[0]
     assert any("未知子命令" in line for line in lines)
     assert any("可用子命令" in line for line in lines)
-
-
+    _close_plugin(plugin)  # M8-补丁1：连接收尾
 # ---------------------------------------------------------------------------
 # 部分 A 差量：睡前回顾带 topics
 # ---------------------------------------------------------------------------
@@ -508,19 +506,25 @@ def test_bedtime_review_metadata_has_topics(tmp_path):
     }
     gate = InWindowGate()
     mood = MoodState(db_path=str(tmp_path / "mood.db"))
-    asyncio.run(mood.load())
-    mood.energy = 0.05
-    manager = SleepManager(config_getter=lambda: config, gate=gate,
-                           mood=mood, rng=lambda: 0.5)
-    loop = LivingLoop(
-        gate=gate,
-        memory_getter=lambda: asyncio.sleep(0, result=memory),
-        config_getter=lambda: config,
-        activities=[],
-        mood=mood,
-        sleep_manager=manager,
-    )
-    asyncio.run(loop._autonomous_sleep_tick(T0))
+
+    async def flow():
+        # M8-补丁1：mood 连接跨不得 loop——load 与 tick 收拢进单次 run
+        await mood.load()
+        mood.energy = 0.05
+        manager = SleepManager(config_getter=lambda: config, gate=gate,
+                               mood=mood, rng=lambda: 0.5)
+        loop = LivingLoop(
+            gate=gate,
+            memory_getter=lambda: asyncio.sleep(0, result=memory),
+            config_getter=lambda: config,
+            activities=[],
+            mood=mood,
+            sleep_manager=manager,
+        )
+        await loop._autonomous_sleep_tick(T0)
+        await mood.close()
+
+    asyncio.run(flow())
     assert memory.added, "长睡入睡应写睡前回顾"
     # 补丁 III：回顾记忆的 metadata 携带 topics=["睡前回顾"]
     reviews = [

@@ -305,7 +305,13 @@ def test_natural_wake_after_sleep_sets_pending_dream():
         assert dreams == []
         # until 到期：tick 结算（自然醒）→ pending_dream → 掷梦
         gate.allow = True
-        return await loop.heartbeat_once_detailed(NOW + timedelta(hours=8, minutes=1))
+        result = await loop.heartbeat_once_detailed(
+            NOW + timedelta(hours=8, minutes=1)
+        )
+        # M8-补丁1：连接在所属 loop 关闭前 close（aiosqlite 后台线程
+        # 跨 loop 存活会向已关 loop 投递 → Event loop is closed）
+        await mood.close()
+        return result
 
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:
@@ -358,18 +364,25 @@ def test_bedtime_review_written_on_sleep_onset(tmp_path):
         "sleep": {**BASE_CONFIG["sleep"], "sleepiness_threshold": 0.0},
     }
     mood = MoodState(db_path=str(tmp_path / "mood.db"))
-    asyncio.run(mood.load())
-    mood.energy = 0.05
-    manager = SleepManager(config_getter=lambda: config, gate=gate,
-                           mood=mood, rng=lambda: 0.5)
-    loop = make_loop(gate=gate, memory=memory, config=config,
-                     sleep_manager=manager, mood=mood)
 
-    asyncio.run(loop._autonomous_sleep_tick(NOW))
+    async def flow():
+        # M8-补丁1：mood 连接跨不得 loop——两次 tick 收拢进单次
+        # asyncio.run（时间流逝用不同的 now 参数表达），run 内 close
+        await mood.load()
+        mood.energy = 0.05
+        manager = SleepManager(config_getter=lambda: config, gate=gate,
+                               mood=mood, rng=lambda: 0.5)
+        loop = make_loop(gate=gate, memory=memory, config=config,
+                         sleep_manager=manager, mood=mood)
+
+        await loop._autonomous_sleep_tick(NOW)
+        # 二次 tick（在睡）不重复写回顾
+        await loop._autonomous_sleep_tick(NOW + timedelta(minutes=5))
+        await mood.close()
+
+    asyncio.run(flow())
     # M5-补丁2 B3：正文不再以日期开头，改"今天想了想：…"句式
     reviews = [c for c, _ in memory.added if "想了想" in c]
     assert reviews and "9月8日" in reviews[0]  # 活动内容保留（含其日期）
     assert reviews[0].startswith("今天想了想：")
-    # 二次 tick（在睡）不重复写回顾
-    asyncio.run(loop._autonomous_sleep_tick(NOW + timedelta(minutes=5)))
     assert len([c for c, _ in memory.added if "想了想" in c]) == 1

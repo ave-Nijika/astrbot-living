@@ -113,6 +113,8 @@ def test_sleepiness_components_and_determinism(tmp_path):
     # 手算：e=0.35*0.8=0.28, d=0.35*0.4=0.14, c=0.30*1.0=0.30, jitter=0
     assert value == pytest.approx(0.28 + 0.14 + 0.30)
     assert detail["energy"] == 0.2
+    asyncio.run(gate.close())  # M8-补丁1：连接收尾
+    asyncio.run(mood.close())
 
 
 def test_should_fall_asleep_respects_min_awake(tmp_path):
@@ -136,6 +138,8 @@ def test_should_fall_asleep_respects_min_awake(tmp_path):
         manager.should_fall_asleep(mood, datetime(2026, 9, 18, 4, 0))
     )
     assert asleep2 is True
+    asyncio.run(gate.close())  # M8-补丁1：连接收尾
+    asyncio.run(mood.close())
 
 
 def test_sleep_duration_scales_with_debt(tmp_path):
@@ -151,6 +155,8 @@ def test_sleep_duration_scales_with_debt(tmp_path):
     assert 4.5 <= low <= 6.0
     assert 10.5 <= high <= 11.5
     assert high > low
+    asyncio.run(gate.close())  # M8-补丁1：连接收尾
+    asyncio.run(mood.close())
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +177,8 @@ def test_begin_autonomous_sleep_enters_gate(tmp_path):
     assert gate.asleep_in_autonomous(now + timedelta(hours=1))
     assert not gate.asleep_in_autonomous(now + timedelta(hours=12))
     assert gate.is_asleep_now(now + timedelta(hours=1)) is True  # is_asleep_now 融合判定
+    asyncio.run(gate.close())  # M8-补丁1：连接收尾
+    asyncio.run(mood.close())
 
 
 def test_nap_requires_low_energy_and_cooldown(tmp_path):
@@ -188,6 +196,8 @@ def test_nap_requires_low_energy_and_cooldown(tmp_path):
     assert manager.should_nap(mood, datetime(2026, 9, 17, 14, 0))[0] is False
     # 醒来 5 小时后 → 小睡
     assert manager.should_nap(mood, datetime(2026, 9, 17, 17, 30))[0] is True
+    asyncio.run(gate.close())  # M8-补丁1：连接收尾
+    asyncio.run(mood.close())
 
 
 def test_woken_from_autonomous_debt_scales(tmp_path):
@@ -210,6 +220,8 @@ def test_woken_from_autonomous_debt_scales(tmp_path):
                                             datetime(2026, 9, 17, 14, 0))
     )
     assert result2["debt_added"] == pytest.approx(0.0)
+    asyncio.run(gate.close())  # M8-补丁1：连接收尾
+    asyncio.run(mood.close())
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +301,8 @@ def test_seven_day_autonomous_schedule_simulation(tmp_path):
     lines = [f"{row[0]} {row[1]:>6} dur/h={row[2]} energy={row[3]}"
              for row in schedule]
     (tmp_path / "schedule.txt").write_text("\n".join(lines), encoding="utf-8")
+    asyncio.run(gate.close())  # M8-补丁1：连接收尾
+    asyncio.run(mood.close())
 
 
 # ---------------------------------------------------------------------------

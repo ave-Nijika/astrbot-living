@@ -548,6 +548,7 @@ def test_on_any_message_standby_refreshes_and_never_mutes(tmp_path):
         before = gate._awake_until
         event = FakeEvent(message_str="醒着聊天")
         await plugin.on_any_message(event)
+        await gate.close()  # M8-补丁1：连接收尾
         return event, before, gate
 
     event, before, gate = asyncio.run(flow())
@@ -566,6 +567,7 @@ def test_on_any_message_standby_refresh(tmp_path):
         await gate.refresh_awake_until(10)
         first = gate._awake_until
         await plugin.on_any_message(FakeEvent(message_str="hi"))
+        await gate.close()  # M8-补丁1：连接收尾
         return first, gate._awake_until
 
     first, after = asyncio.run(flow())

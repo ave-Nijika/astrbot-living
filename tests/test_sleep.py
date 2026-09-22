@@ -91,9 +91,11 @@ class FakeMood:
 # ---------------------------------------------------------------------------
 def test_wake_after_threshold_messages():
     """在睡 3 条消息（默认阈值）→ 第 3 条触发吵醒。"""
-    manager = make_manager(gate=asleep_gate(hours=8.0))
+    gate = asleep_gate(hours=8.0)
+    manager = make_manager(gate=gate)
     times = [datetime(2026, 9, 8, 4, 0, i) for i in (0, 1, 2)]
     results = [manager.register_message(t) for t in times]
+    asyncio.run(gate.close())  # M8-补丁1：enter 开的连接必须显式关闭
     assert [r[0] for r in results] == [False, False, True]
 
 
@@ -107,18 +109,21 @@ def test_wake_only_counts_while_asleep():
 
 def test_sliding_window_prunes_old_messages():
     """滑动窗：超过窗口时长的旧消息不再计数。"""
-    manager = make_manager(gate=asleep_gate(hours=8.0))
+    gate = asleep_gate(hours=8.0)
+    manager = make_manager(gate=gate)
     # 第 1、2 条在 04:00/04:01；第 3 条在 04:15（超出 10 分钟窗，前两条已过期）
     manager.register_message(datetime(2026, 9, 8, 4, 0, 0))
     manager.register_message(datetime(2026, 9, 8, 4, 1, 0))
     wake, count = manager.register_message(datetime(2026, 9, 8, 4, 15, 0))
+    asyncio.run(gate.close())
     assert wake is False
     assert count == 1  # 只剩自己
 
 
 def test_wake_triggers_once_per_burst():
     """同一波消息只吵醒一次：触发后冷却一个窗口时长。"""
-    manager = make_manager(gate=asleep_gate(hours=8.0))
+    gate = asleep_gate(hours=8.0)
+    manager = make_manager(gate=gate)
     manager.register_message(datetime(2026, 9, 8, 4, 0, 0))
     manager.register_message(datetime(2026, 9, 8, 4, 0, 30))
     wake1, _ = manager.register_message(datetime(2026, 9, 8, 4, 1, 0))
@@ -126,6 +131,7 @@ def test_wake_triggers_once_per_burst():
     manager.register_message(datetime(2026, 9, 8, 4, 2, 0))
     manager.register_message(datetime(2026, 9, 8, 4, 2, 30))
     wake2, _ = manager.register_message(datetime(2026, 9, 8, 4, 3, 0))
+    asyncio.run(gate.close())
     assert wake1 is True
     assert wake2 is False
 
@@ -137,7 +143,8 @@ def test_wake_source_owner_only_filters_strangers():
         "sleep": {**CONFIG["sleep"], "wake_source": "owner_only",
                   "owner_id": "master001"},
     }
-    manager = make_manager(config=config, gate=asleep_gate(hours=8.0))
+    gate = asleep_gate(hours=8.0)
+    manager = make_manager(config=config, gate=gate)
     manager.register_message(datetime(2026, 9, 8, 4, 0, 0), "stranger")
     manager.register_message(datetime(2026, 9, 8, 4, 0, 30), "stranger2")
     wake_stranger, _ = manager.register_message(datetime(2026, 9, 8, 4, 1, 0), "stranger3")
@@ -147,6 +154,7 @@ def test_wake_source_owner_only_filters_strangers():
     manager.register_message(datetime(2026, 9, 8, 4, 2, 0), "master001")
     manager.register_message(datetime(2026, 9, 8, 4, 3, 0), "master001")
     wake_owner, _ = manager.register_message(datetime(2026, 9, 8, 4, 4, 0), "master001")
+    asyncio.run(gate.close())
     # 注意：陌生消息也在窗内（counts_toward_wake 只影响触发判定，不删除计数）——
     # 此时窗内总数 >= 3，但陌生人消息不参与触发判定，主人 3 条已达标
     assert wake_owner is True
@@ -192,8 +200,11 @@ def test_grouchiness_roll_hit_and_miss():
 # 静默拦截判定（B4）
 # ---------------------------------------------------------------------------
 def test_mute_blocks_when_asleep():
-    manager = make_manager(gate=asleep_gate())
-    assert manager.should_mute_message(IN_WINDOW, "有人说话") is True
+    gate = asleep_gate()
+    manager = make_manager(gate=gate)
+    result = manager.should_mute_message(IN_WINDOW, "有人说话")
+    asyncio.run(gate.close())
+    assert result is True
 
 
 def test_mute_disabled_by_config():
@@ -222,8 +233,17 @@ def test_mute_ignores_when_awake():
 # ---------------------------------------------------------------------------
 def test_gate_force_while_asleep_returns_woken():
     """force + 在睡 → (True, woken_from_sleep)，交给调用方做吵醒结算。"""
-    gate = asleep_gate()
-    allow, reason = asyncio.run(gate.should_wake(IN_WINDOW, force=True))
+    gate = make_gate()
+
+    async def flow():
+        # M8-补丁1：enter 与判定收拢进单次 run（连接不跨 loop）
+        start = IN_WINDOW - timedelta(hours=4)
+        await gate.enter_autonomous_sleep(IN_WINDOW + timedelta(hours=4), "long", start)
+        result = await gate.should_wake(IN_WINDOW, force=True)
+        await gate.close()
+        return result
+
+    allow, reason = asyncio.run(flow())
     assert allow is True
     assert reason == "woken_from_sleep"
 
@@ -233,10 +253,17 @@ def test_gate_force_bypasses_probability():
     gate = LivingGate(
         config_getter=lambda: CONFIG, db_path=":memory:", rng=lambda: 0.99
     )
-    allow_normal, reason_normal = asyncio.run(gate.should_wake(OUT_WINDOW))
-    allow_force, reason_force = asyncio.run(gate.should_wake(OUT_WINDOW, force=True))
-    assert (allow_normal, reason_normal) == (False, "rolled_off")
-    assert (allow_force, reason_force) == (True, "ok")
+
+    async def flow():
+        # M8-补丁1：两次判定收拢进单次 run（连接不跨 loop）
+        allow_normal = await gate.should_wake(OUT_WINDOW)
+        allow_force = await gate.should_wake(OUT_WINDOW, force=True)
+        await gate.close()
+        return allow_normal, allow_force
+
+    allow_normal, allow_force = asyncio.run(flow())
+    assert (allow_normal[0], allow_normal[1]) == (False, "rolled_off")
+    assert (allow_force[0], allow_force[1]) == (True, "ok")
 
 
 def test_gate_force_still_respects_daily_limit():
@@ -248,7 +275,9 @@ def test_gate_force_still_respects_daily_limit():
             await gate.note_activity_started(
                 datetime(2026, 9, 8, 1, 0, 0)  # 窗外时间记账，避免混入睡眠逻辑
             )
-        return await gate.should_wake(OUT_WINDOW, force=True)
+        result = await gate.should_wake(OUT_WINDOW, force=True)
+        await gate.close()
+        return result
 
     allow, reason = asyncio.run(fill())
     assert allow is False and reason == "daily_limit"
@@ -257,7 +286,8 @@ def test_gate_force_still_respects_daily_limit():
 def test_gate_is_asleep_now_helper():
     """is_asleep_now（原 in_sleep_window）：在睡 True / 醒着 False。"""
     gate = asleep_gate()
-    assert gate.is_asleep_now(IN_WINDOW) is True
-    assert gate.is_asleep_now(OUT_WINDOW) is False
-    awake_gate = make_gate()
+    asleep_result = (gate.is_asleep_now(IN_WINDOW), gate.is_asleep_now(OUT_WINDOW))
+    asyncio.run(gate.close())
+    awake_gate = make_gate()  # 仅构造，未开连接
+    assert asleep_result == (True, False)
     assert awake_gate.is_asleep_now(IN_WINDOW) is False

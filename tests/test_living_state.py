@@ -45,12 +45,16 @@ def test_asleep_blocks(tmp_path):
     """在睡（until 未到）→ (False, sleeping)（M6-补丁1：autonomous 语义）。"""
     gate = make_gate(tmp_path)
 
-    async def _prep():
+    async def flow():
+        # M8-补丁1：gate 连接跨不得 loop——prep 与判定收拢进单次 run
         await gate.enter_autonomous_sleep(
             datetime(2026, 9, 7, 11, 0, 0), "long", datetime(2026, 9, 7, 3, 0, 0)
         )
-    asyncio.run(_prep())
-    allow, reason = asyncio.run(gate.should_wake(datetime(2026, 9, 7, 8, 0, 0)))
+        result = await gate.should_wake(datetime(2026, 9, 7, 8, 0, 0))
+        await gate.close()
+        return result
+
+    allow, reason = asyncio.run(flow())
     assert allow is False
     assert reason == "sleeping"
 
@@ -63,7 +67,9 @@ def test_daily_limit_blocks(tmp_path):
         # 手动记 3 次活动（默认上限 3）
         for _ in range(3):
             await gate.note_activity_started(NOON)
-        return await gate.should_wake(datetime(2026, 9, 7, 18, 0, 0))
+        result = await gate.should_wake(datetime(2026, 9, 7, 18, 0, 0))
+        await gate.close()
+        return result
 
     allow, reason = asyncio.run(flow())
     assert allow is False
@@ -81,7 +87,9 @@ def test_daily_limit_zero_means_unlimited(tmp_path):
     async def flow():
         for _ in range(10):
             await gate.note_activity_started(NOON)
-        return await gate.should_wake(datetime(2026, 9, 7, 23, 0, 0))
+        result = await gate.should_wake(datetime(2026, 9, 7, 23, 0, 0))
+        await gate.close()
+        return result
 
     allow, reason = asyncio.run(flow())
     assert reason != "daily_limit"
@@ -94,7 +102,9 @@ def test_cooldown_blocks(tmp_path):
     async def flow():
         await gate.note_activity_finished(datetime(2026, 9, 7, 12, 0, 0))
         # 1.9h 后（冷却 2h 未到）
-        return await gate.should_wake(datetime(2026, 9, 7, 13, 54, 0))
+        result = await gate.should_wake(datetime(2026, 9, 7, 13, 54, 0))
+        await gate.close()
+        return result
 
     allow, reason = asyncio.run(flow())
     assert allow is False
@@ -107,7 +117,9 @@ def test_cooldown_elapses_allows(tmp_path):
 
     async def flow():
         await gate.note_activity_finished(datetime(2026, 9, 7, 12, 0, 0))
-        return await gate.should_wake(datetime(2026, 9, 7, 14, 1, 0))
+        result = await gate.should_wake(datetime(2026, 9, 7, 14, 1, 0))
+        await gate.close()
+        return result
 
     allow, reason = asyncio.run(flow())
     assert allow is True
@@ -121,7 +133,13 @@ def test_cooldown_elapses_allows(tmp_path):
 def test_probability_roll(tmp_path, rng_value, expect_allow, expect_reason):
     """概率边界：rng() < 0.8 通过，否则 rolled_off（mock random）。"""
     gate = make_gate(tmp_path, rng=lambda: rng_value)
-    allow, reason = asyncio.run(gate.should_wake(NOON))
+
+    async def flow():
+        result = await gate.should_wake(NOON)
+        await gate.close()
+        return result
+
+    allow, reason = asyncio.run(flow())
     assert allow is expect_allow
     assert reason == expect_reason
 
@@ -134,12 +152,14 @@ def test_cross_day_reset(tmp_path):
         for _ in range(3):
             await gate.note_activity_started(datetime(2026, 9, 7, 10, 0, 0))
         # 次日（冷却也过了）
-        return await gate.should_wake(datetime(2026, 9, 8, 12, 0, 0))
+        allow, reason = await gate.should_wake(datetime(2026, 9, 8, 12, 0, 0))
+        state = await gate.get_state(datetime(2026, 9, 8, 12, 0, 1))
+        await gate.close()
+        return allow, reason, state
 
-    allow, reason = asyncio.run(flow())
+    allow, reason, state = asyncio.run(flow())
     assert allow is True
     assert reason == "ok"
-    state = asyncio.run(gate.get_state(datetime(2026, 9, 8, 12, 0, 1)))
     assert state["activity_count"] == 0
 
 
@@ -154,7 +174,9 @@ def test_cross_day_keeps_cooldown_timestamp(tmp_path):
 
     async def flow():
         await gate.note_activity_started(datetime(2026, 9, 7, 23, 30, 0))
-        return await gate.should_wake(datetime(2026, 9, 8, 1, 0, 0))
+        result = await gate.should_wake(datetime(2026, 9, 8, 1, 0, 0))
+        await gate.close()
+        return result
 
     allow, reason = asyncio.run(flow())
     assert allow is False
@@ -172,7 +194,9 @@ def test_evaluation_order_sleep_beats_limit(tmp_path):
         await gate.enter_autonomous_sleep(
             datetime(2026, 9, 7, 15, 0, 0), "long", datetime(2026, 9, 7, 5, 0, 0)
         )
-        return await gate.should_wake(datetime(2026, 9, 7, 6, 0, 0))
+        result = await gate.should_wake(datetime(2026, 9, 7, 6, 0, 0))
+        await gate.close()
+        return result
 
     allow, reason = asyncio.run(flow())
     assert allow is False
@@ -184,7 +208,13 @@ def test_evaluation_order_sleep_beats_limit(tmp_path):
 # ---------------------------------------------------------------------------
 def test_message_gate_allows_by_default(tmp_path):
     gate = make_gate(tmp_path)
-    allow, reason = asyncio.run(gate.should_send_message(NOON))
+
+    async def flow():
+        result = await gate.should_send_message(NOON)
+        await gate.close()
+        return result
+
+    allow, reason = asyncio.run(flow())
     assert allow is True and reason == "ok"
 
 
@@ -194,7 +224,9 @@ def test_message_gate_daily_limit(tmp_path):
     async def flow():
         for _ in range(10):
             await gate.note_message_sent(NOON)
-        return await gate.should_send_message(datetime(2026, 9, 7, 18, 0))
+        result = await gate.should_send_message(datetime(2026, 9, 7, 18, 0))
+        await gate.close()
+        return result
 
     allow, reason = asyncio.run(flow())
     assert allow is False and reason == "msg_daily_limit"
@@ -205,7 +237,9 @@ def test_message_gate_interval(tmp_path):
 
     async def flow():
         await gate.note_message_sent(datetime(2026, 9, 7, 12, 0))
-        return await gate.should_send_message(datetime(2026, 9, 7, 12, 29))
+        result = await gate.should_send_message(datetime(2026, 9, 7, 12, 29))
+        await gate.close()
+        return result
 
     allow, reason = asyncio.run(flow())
     assert allow is False and reason == "msg_interval"
@@ -217,7 +251,13 @@ def test_message_gate_quiet_hours(tmp_path):
     config = copy.deepcopy(BASE_CONFIG)
     config["output_gate"]["quiet_hours"] = "12:00-14:00"
     gate = make_gate(tmp_path, config)
-    allow, reason = asyncio.run(gate.should_send_message(datetime(2026, 9, 7, 13, 0)))
+
+    async def flow():
+        result = await gate.should_send_message(datetime(2026, 9, 7, 13, 0))
+        await gate.close()
+        return result
+
+    allow, reason = asyncio.run(flow())
     assert allow is False and reason == "quiet_hours"
 
 
@@ -253,5 +293,11 @@ def test_bad_config_values_fall_back_to_defaults(tmp_path):
         },
         rng=lambda: 0.0,
     )
-    allow, reason = asyncio.run(gate.should_wake(NOON))
+
+    async def flow():
+        result = await gate.should_wake(NOON)
+        await gate.close()
+        return result
+
+    allow, reason = asyncio.run(flow())
     assert allow is True and reason == "ok"

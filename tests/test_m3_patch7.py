@@ -53,6 +53,7 @@ def test_bump_saturated_at_one_gains_zero(tmp_path):
     mood.bump_interest("memory palace techniques", 0.15)
     mood.interests["memory palace techniques"] = 1.0
     mood.bump_interest("memory palace techniques", 0.15)
+    asyncio.run(mood.close())  # M8-补丁1：连接收尾
     assert mood.interests["memory palace techniques"] == pytest.approx(1.0)
 
 
@@ -61,14 +62,18 @@ def test_bump_half_interest_gains_half(tmp_path):
     asyncio.run(mood.load())
     mood.interests["咖啡"] = 0.5
     mood.bump_interest("咖啡", 0.15)
-    assert mood.interests["咖啡"] == pytest.approx(0.575)  # 0.5 + 0.15*0.5
+    value = mood.interests["咖啡"]
+    asyncio.run(mood.close())  # M8-补丁1：连接收尾
+    assert value == pytest.approx(0.575)  # 0.5 + 0.15*0.5
 
 
 def test_bump_new_topic_gains_full(tmp_path):
     mood = make_mood(tmp_path)
     asyncio.run(mood.load())
     mood.bump_interest("深海生物", 0.15)
-    assert mood.interests["深海生物"] == pytest.approx(0.15)
+    value = mood.interests["深海生物"]
+    asyncio.run(mood.close())  # M8-补丁1：连接收尾
+    assert value == pytest.approx(0.15)
 
 
 def test_interest_daily_decay_configurable(tmp_path):
@@ -121,6 +126,7 @@ def test_interest_weight_repeat_penalty_table(tmp_path):
     assert mood.interest_weight("偏执主题", repeat_count=1) == pytest.approx(0.5)
     assert mood.interest_weight("偏执主题", repeat_count=2) == pytest.approx(0.3)
     assert mood.interest_weight("偏执主题", repeat_count=5) == pytest.approx(0.15)
+    asyncio.run(mood.close())  # M8-补丁1：连接收尾
 
 
 def test_recent_topics_persist(tmp_path):
@@ -131,8 +137,10 @@ def test_recent_topics_persist(tmp_path):
     asyncio.run(await_save)
     mood2 = make_mood(tmp_path)
     asyncio.run(mood2.load())
-    assert mood2.recent_topics_list() == ["冷知识", "咖啡"]
+    topics = mood2.recent_topics_list()
     asyncio.run(mood2.close())
+    asyncio.run(mood.close())  # M8-补丁1：连接收尾（mood 本体）
+    assert topics == ["冷知识", "咖啡"]
 
 
 # ---------------------------------------------------------------------------
