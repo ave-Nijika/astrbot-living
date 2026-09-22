@@ -155,6 +155,35 @@ main { padding: 18px 20px 60px; max-width: 1080px; margin: 0 auto; }
 }
 .danger-zone input, .danger-zone textarea { border-color: var(--danger) !important; }
 
+/* ---------- 心境与兴趣（M9-补丁1 B5：专家视图专属） ---------- */
+#mood-section { margin-top: 10px; }
+.mood-drawer .drawer-body { padding: 10px 16px 14px; }
+.mood-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.mood-stat { background: var(--panel-2); border-radius: 8px; padding: 8px 12px; }
+.mood-stat .stat-label { color: var(--muted); font-size: 12px; }
+.mood-stat .stat-value { font-size: 15px; font-weight: 600; margin-top: 2px; }
+.mood-interest-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 0; border-bottom: 1px solid var(--border);
+}
+.mood-interest-row:last-of-type { border-bottom: none; }
+.mood-topic { flex: 1; font-size: 13px; word-break: break-all; min-width: 0; }
+.mood-weight {
+  width: 90px; flex-shrink: 0; padding: 6px 8px; border-radius: 7px;
+  border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
+  font-family: inherit; font-size: 13px;
+}
+.mood-del { padding: 5px 10px; font-size: 12px; flex-shrink: 0; }
+.btn.danger.armed { background: var(--danger); border-color: var(--danger); color: #fff; }
+.mood-clear { margin-top: 10px; }
+.mood-empty { color: var(--muted); font-size: 13px; margin: 4px 0; }
+.mood-error { color: var(--danger); font-size: 13px; }
+
 /* ---------- 弹层与 toast ---------- */
 .modal {
   position: fixed; inset: 0; background: rgba(0,0,0,0.55);

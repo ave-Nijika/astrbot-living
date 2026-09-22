@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -30,16 +31,52 @@ sys.path.insert(0, str(ASTRBOT_ROOT))
 os.environ.setdefault("ASTRBOT_ROOT", str(ASTRBOT_ROOT))
 
 from core.panel_api import (  # noqa: E402
+    PanelApiError,
+    apply_mood_interests,
     apply_panel_reset,
     apply_panel_save,
     build_config_payload,
+    build_mood_snapshot,
     default_tree,
     load_schema,
 )
+from core.mood import MoodState  # noqa: E402
 
 PAGE_DIR = WORKDIR / "pages" / "config"
 SCHEMA = load_schema(WORKDIR)
 CONFIG = default_tree(SCHEMA)  # {"preset": {...}, "advanced": {...}}
+
+# M9-补丁1：mock mood 实例（临时 db，进程退出即删）——浏览器实测心境区块。
+# 预置几条示例兴趣，重现"旧权重垄断"的可治理场景。
+import asyncio  # noqa: E402
+import atexit  # noqa: E402
+
+_MOOD_DB_FD, _MOOD_DB_PATH = tempfile.mkstemp(
+    prefix="living_panel_mood_", suffix=".db"
+)
+os.close(_MOOD_DB_FD)
+atexit.register(lambda: os.path.exists(_MOOD_DB_PATH) and os.unlink(_MOOD_DB_PATH))
+MOOD = MoodState(db_path=_MOOD_DB_PATH)
+
+
+def _bootstrap_mood() -> None:
+    async def flow():
+        await MOOD.load()
+        if not MOOD.interests:
+            MOOD.interests = {
+                "咖啡萃取": 0.5,
+                "合成器音乐": 0.4,
+                "记忆宫殿": 0.3,
+            }
+            await MOOD.save()
+        # M8-补丁1 纪律：连接在所属 loop 关闭前 close（bootstrap 的 loop
+        # 用完即关，连接不留给下一个请求的 loop）
+        await MOOD.close()
+
+    asyncio.run(flow())
+
+
+_bootstrap_mood()
 
 MOCK_BRIDGE_JS = """
 window.AstrBotPluginPage = {
@@ -99,6 +136,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, MOCK_BRIDGE_JS.encode("utf-8"), CONTENT_TYPES[".js"])
         elif path == "/mock/api/config":
             self._send_json({"status": "ok", "data": build_config_payload(CONFIG, SCHEMA)})
+        elif path == "/mock/api/mood":
+            self._send_json({"status": "ok", "data": build_mood_snapshot(MOOD)})
         else:
             self._send(404, b"not found", "text/plain")
 
@@ -128,6 +167,30 @@ class Handler(BaseHTTPRequestHandler):
                 "message": "已恢复默认值",
                 "data": summary,
             })
+            return
+        if path == "/mock/api/mood/interests":
+            # M9-补丁1：校验失败回真 HTTP 400（生产 Pages bridge 恒 200、
+            # 错误走 body.status，mock 侧更能还原语义）
+            async def mood_flow():
+                # M8-补丁1 纪律：ThreadingHTTPServer 每请求一个线程一
+                # 个 loop，上一请求遗留的连接必须先关（幂等），本请求
+                # 结束前同样闭环——否则 aiosqlite 线程向已关 loop 投递
+                await MOOD.close()
+                data = await apply_mood_interests(MOOD, payload)
+                await MOOD.close()
+                return data
+
+            try:
+                data = asyncio.run(mood_flow())
+                self._send_json({
+                    "status": "ok",
+                    "message": "已更新兴趣",
+                    "data": data,
+                })
+            except PanelApiError as e:
+                self._send_json({"status": "error", "message": str(e)}, code=400)
+            except Exception as e:
+                self._send_json({"status": "error", "message": str(e)}, code=500)
             return
         self._send(404, b"not found", "text/plain")
 

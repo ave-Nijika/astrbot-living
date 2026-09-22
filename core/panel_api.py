@@ -18,8 +18,16 @@ from typing import Any
 
 from .config_knobs import DIRECT_KNOB, KNOB_PRESETS, apply_knob_value
 from .conf_path import CONF_ADVANCED, CONF_PRESET
+from .mood import UNIT_MAX, UNIT_MIN
 
 SCHEMA_FILENAME = "_conf_schema.json"
+
+# M9-补丁1 B1：心境快照的五项只读状态（energy/fatigue/valence/arousal/
+# sleep_debt）——由活动和睡眠自然涨落，手改会破坏涌现，不做编辑入口；
+# interests 是唯一可管理项（改/删/清空）
+MOOD_SNAPSHOT_FIELDS = ("energy", "fatigue", "valence", "arousal", "sleep_debt")
+# M9-补丁1 B2：兴趣写操作的全部合法 action
+INTEREST_ACTIONS = ("set", "delete", "clear")
 
 
 class PanelApiError(Exception):
@@ -201,3 +209,58 @@ def apply_panel_reset(config: dict, schema: dict) -> dict:
             len(items) for items in defaults[CONF_ADVANCED].values()
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# 心境与兴趣（M9-补丁1 B 组）：读写统一走 MoodState 运行中实例——禁止绕过
+# 实例直接写 mood.db（绕过会与内存态脱节，热失效）。
+# ---------------------------------------------------------------------------
+def build_mood_snapshot(mood: Any) -> dict:
+    """GET 心境全量快照（B1）：五项只读状态 + interests 表。
+
+    只读函数：不修改实例任何字段，不触发落盘。"""
+    return {
+        "energy": float(mood.energy),
+        "fatigue": float(mood.fatigue),
+        "valence": float(mood.valence),
+        "arousal": float(mood.arousal),
+        "sleep_debt": float(mood.sleep_debt),
+        "interests": mood.get_interests(),
+    }
+
+
+async def apply_mood_interests(mood: Any, payload: Any) -> dict:
+    """POST 兴趣写操作（B2-B4）：set / delete / clear。
+
+    校验全部通过才动实例（不部分写入，B4）；写入内存后立即 mood.save()
+    持久化（B2 热生效 + 重启不丢）。返回 {"interests": 修改后的完整表}
+    （B3，前端无需二次拉取）。校验失败抛 PanelApiError（handler 层转
+    错误响应）。
+    """
+    if not isinstance(payload, dict):
+        raise PanelApiError("请求体必须是 JSON 对象")
+    action = payload.get("action")
+    if action not in INTEREST_ACTIONS:
+        raise PanelApiError(
+            f"未知 action {action!r}，允许：{list(INTEREST_ACTIONS)}"
+        )
+    topic = payload.get("topic")
+    if action in ("set", "delete"):
+        if not isinstance(topic, str) or not topic.strip():
+            raise PanelApiError("topic 必须是非空字符串")
+        topic = topic.strip()
+    if action == "set":
+        weight = payload.get("weight")
+        if isinstance(weight, bool) or not isinstance(weight, (int, float)):
+            raise PanelApiError(f"weight 需要数字，收到 {type(weight).__name__}")
+        weight = float(weight)
+        if not (UNIT_MIN <= weight <= UNIT_MAX):
+            raise PanelApiError(f"weight 需在 [0,1] 内，收到 {weight}")
+        mood.interests[topic] = weight  # 同名 topic 覆盖
+    elif action == "delete":
+        # 不存在的 topic 幂等删除：结果状态正确即成功（与 RESTful 语义一致）
+        mood.interests.pop(topic, None)
+    else:  # clear
+        mood.interests.clear()
+    await mood.save()
+    return {"interests": mood.get_interests()}

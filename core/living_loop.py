@@ -62,6 +62,32 @@ def _conf_group(config: Any, group: str) -> dict:
         return {}
 
 
+def derive_admin_identity(global_config: Any) -> dict:
+    """从 AstrBot 全局配置（context.astrbot_config，即 cmd_config.json）提取
+    管理员与平台信息（M9-补丁1 A2）——主人身份自动认领的数据源。
+
+    返回 {"admins_id": [去空白后的管理员列表], "platform_id": 第一个
+    enable=True 的适配器 id 或 None}；任何取不到的情形返回空列表/None，
+    调用方据此走三段优先级的第 ③ 段（现状回退）。纯函数：只读不改。
+    """
+    cfg = global_config if isinstance(global_config, dict) else {}
+    admins: list[str] = []
+    for aid in cfg.get("admins_id") or []:
+        text = str(aid).strip()
+        if text:
+            admins.append(text)
+    platform_id = None
+    for adapter in cfg.get("platform") or []:
+        if (
+            isinstance(adapter, dict)
+            and adapter.get("enable")
+            and str(adapter.get("id") or "").strip()
+        ):
+            platform_id = str(adapter["id"]).strip()
+            break
+    return {"admins_id": admins, "platform_id": platform_id}
+
+
 class LivingLoop:
     """自主生活主循环。start/stop 幂等，可安全应对插件热重载。"""
 
@@ -84,6 +110,7 @@ class LivingLoop:
         bot_identity_getter: Callable[..., Any] | None = None,
         share_rewriter: Any = None,
         schedule: Any = None,
+        global_config_getter: Callable[[], Any] | None = None,
     ) -> None:
         self._gate = gate
         self._get_memory = memory_getter
@@ -110,6 +137,10 @@ class LivingLoop:
         self._share_rewriter = share_rewriter
         # M5-补丁4：起床约定（ScheduleManager）——睡过头认知/催醒加重的数据源
         self._schedule = schedule
+        # M9-补丁1 A1：AstrBot 全局配置（context.astrbot_config）的动态读取——
+        # 主人身份自动认领（owner_id / target_sessions 派生）的数据源。
+        # None = 不派生，维持旧的手填语义（向后兼容）
+        self._global_config_getter = global_config_getter
         # M3 补丁 IV-B1：活动周期互斥锁——心跳与 /living do 可能并发进入
         # 周期，双周期同时写记忆/同时调 LLM 既浪费 token 又可能数据竞争
         self._cycle_lock = asyncio.Lock()
@@ -1138,12 +1169,19 @@ class LivingLoop:
     # ------------------------------------------------------------------
     # 分享（输出闸门链路，任务书 E）
     # ------------------------------------------------------------------
-    async def _maybe_share(self, text: str, now: datetime) -> None:
-        # M7-补丁1 A1：空产物防护——低于下限直接静默返回（不打分享日志、
-        # 不浪费闸门掷点，更不进改写流水线）
-        if len(str(text or "").strip()) < MIN_SHARE_TEXT_LEN:
-            return
-        sessions = [
+    def _resolve_target_sessions(self) -> tuple[list[str], str]:
+        """分享目标会话（M9-补丁1 A3 三段优先级）：手填 > 派生 > 空。
+
+        - ① 用户显式配置非空 → 用显式值（派生不覆盖）；
+        - ② 显式为空 + AstrBot 管理员非空 → 派生全部管理员的私聊会话；
+        - ③ 都为空 → 空（不主动发，现状语义）。
+
+        派生为读取时计算（A4）：每次现读全局配置，管理员改动热生效，
+        绝不把派生值写回配置文件。返回 (sessions, source)，source 用于
+        DEBUG 留底（"手填" / "派生" / "空"）。群聊派生不了（管理员配置
+        只有 QQ 号）——需要群聊请手动填 target_sessions。
+        """
+        explicit = [
             s.strip()
             for s in str(
                 _conf_group(self._config_getter(), "output_gate").get(
@@ -1152,10 +1190,39 @@ class LivingLoop:
             ).splitlines()
             if s.strip()
         ]
+        if explicit:
+            return explicit, "手填"
+        getter = self._global_config_getter
+        if getter is not None:
+            try:
+                info = derive_admin_identity(getter())
+            except Exception as e:
+                logger.debug(f"[LivingLoop] 管理员信息读取失败（按未派生处理）: {e}")
+                info = {"admins_id": [], "platform_id": None}
+            admins, platform_id = info["admins_id"], info["platform_id"]
+            if admins and platform_id:
+                sessions = [
+                    f"{platform_id}:FriendMessage:{aid}" for aid in admins
+                ]
+                return sessions, "派生"
+        return [], "空"
+
+    async def _maybe_share(self, text: str, now: datetime) -> None:
+        # M7-补丁1 A1：空产物防护——低于下限直接静默返回（不打分享日志、
+        # 不浪费闸门掷点，更不进改写流水线）。M9-补丁1 A5：本检查保持在
+        # sessions 计算之前，顺序不变。
+        if len(str(text or "").strip()) < MIN_SHARE_TEXT_LEN:
+            return
+        sessions, source = self._resolve_target_sessions()
         if not sessions:
             # 默认安静：内容只在 DEBUG 里留底，不打扰任何人
             logger.debug(f"[LivingLoop] 本可发送的内容（未配置 target_sessions）：{text}")
             return
+        if source == "派生":
+            logger.debug(
+                f"[LivingLoop] target_sessions 未手填，自动派生自管理员私聊"
+                f"（{len(sessions)} 个会话）"
+            )
         allow, reason = await self._gate.should_send_message(now)
         if not allow:
             logger.info(

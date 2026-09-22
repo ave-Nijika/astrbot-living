@@ -413,6 +413,217 @@ function renderExpert() {
   }
 }
 
+/* ---------------- 心境与兴趣（M9-补丁1 B5：专家视图专属） ----------------
+ * 运行时状态（mood.db），不是配置键——读写走独立端点，逐项即时提交
+ * （weight 改动/删除/清空都立刻生效，不进顶部"保存改动"的配置差量流）。
+ * 提交方式二选一里选了逐项即时：兴趣是诊断级运行状态，改一项立即生效
+ * 比攒着一起保存更直观，也不与配置保存的热重载互相干扰。 */
+
+const MOOD_STATS = [
+  // [字段, 标签, 格式化]；fatigue/sleep_debt 是 0-100，其余 0-1（valence -1~1）
+  ["energy", "精力", (v) => v.toFixed(2)],
+  ["fatigue", "疲惫", (v) => `${v.toFixed(1)}/100`],
+  ["valence", "心情", (v) => `${v >= 0 ? "+" : ""}${v.toFixed(2)}`],
+  ["arousal", "唤醒度", (v) => v.toFixed(2)],
+  ["sleep_debt", "睡眠债", (v) => `${v.toFixed(1)}/100`],
+];
+
+/* 清空按钮的内联确认态：第一次点变"确认清空？"，3 秒未点自动恢复
+ * （Pages 沙箱没有 confirm()）；期间再点才真正执行。 */
+function armInlineConfirm(btn, onConfirm) {
+  let armed = false;
+  let timer = null;
+  const disarm = () => {
+    armed = false;
+    clearTimeout(timer);
+    btn.textContent = "清空全部";
+    btn.classList.remove("armed");
+  };
+  btn.addEventListener("click", () => {
+    if (!armed) {
+      armed = true;
+      btn.textContent = "确认清空？";
+      btn.classList.add("armed");
+      timer = setTimeout(disarm, 3000);
+      return;
+    }
+    disarm();
+    onConfirm();
+  });
+}
+
+async function renderMoodSection() {
+  const host = $("#mood-section");
+  let snap;
+  try {
+    const resp = await bridge.apiGet("mood");
+    const body = resp && resp.data ? resp : { data: null, message: "读取失败" };
+    if (!body.data) throw new Error(body.message || "读取失败");
+    snap = body.data;
+  } catch (e) {
+    // 心境读取失败不影响上面的配置抽屉，只在区块内提示
+    host.innerHTML = "";
+    const err = document.createElement("p");
+    err.className = "mood-error";
+    err.textContent = `心境状态读取失败：${e && e.message ? e.message : e}`;
+    host.appendChild(err);
+    return;
+  }
+
+  const drawer = document.createElement("div");
+  drawer.className = "drawer mood-drawer";
+
+  const interests = Object.entries(snap.interests || {}).sort(
+    (a, b) => b[1] - a[1]
+  );
+  const head = document.createElement("button");
+  head.type = "button";
+  const expanded = !!state.expanded.__mood;
+  head.className = "drawer-head" + (expanded ? " open" : "");
+  head.innerHTML = `<span class="arrow">${expanded ? "▾" : "▸"}</span> ` +
+    `心境与兴趣 <span class="group-name">mood</span>` +
+    `<span class="count">${interests.length} 项兴趣</span>`;
+  const body_el = document.createElement("div");
+  body_el.className = "drawer-body" + (expanded ? "" : " hidden");
+  head.addEventListener("click", () => {
+    const next = !state.expanded.__mood;
+    state.expanded.__mood = next;
+    saveExpanded(state.expanded);
+    head.classList.toggle("open", next);
+    head.querySelector(".arrow").textContent = next ? "▾" : "▸";
+    body_el.classList.toggle("hidden", !next);
+  });
+
+  // 只读区：五项状态（该由活动和睡眠自然涨落，不做编辑入口）
+  const stats = document.createElement("div");
+  stats.className = "mood-stats";
+  for (const [key, label, fmt] of MOOD_STATS) {
+    const item = document.createElement("div");
+    item.className = "mood-stat";
+    const lab = document.createElement("div");
+    lab.className = "stat-label";
+    lab.textContent = label;
+    const val = document.createElement("div");
+    val.className = "stat-value";
+    val.textContent = fmt(Number(snap[key]) || 0);
+    item.append(lab, val);
+    stats.appendChild(item);
+  }
+  body_el.appendChild(stats);
+
+  const moodHint = document.createElement("p");
+  moodHint.className = "hint";
+  moodHint.textContent =
+    "兴趣权重影响他自主选话题的倾向。改动立即生效（无需保存）；清空后" +
+    "会随活动和时间重新自然积累。";
+  body_el.appendChild(moodHint);
+
+  // 兴趣权重表：topic 只读 + weight 可编辑 + 删除；逐项即时提交
+  const list = document.createElement("div");
+  list.className = "mood-interests";
+  if (!interests.length) {
+    const empty = document.createElement("p");
+    empty.className = "mood-empty";
+    empty.textContent = "暂无兴趣记录。";
+    list.appendChild(empty);
+  }
+  for (const [topic, weight] of interests) {
+    const row = document.createElement("div");
+    row.className = "mood-interest-row";
+
+    const name = document.createElement("span");
+    name.className = "mood-topic";
+    name.textContent = topic;
+    name.title = topic;
+
+    const input = document.createElement("input");
+    input.type = "number";
+    input.className = "mood-weight";
+    input.min = "0";
+    input.max = "1";
+    input.step = "0.01";
+    input.value = String(weight);
+    input.addEventListener("change", async () => {
+      const num = Number(input.value);
+      if (input.value === "" || Number.isNaN(num) || num < 0 || num > 1) {
+        toast(`权重需在 0~1 之间（${topic}）`, true);
+        input.value = String(weight);
+        return;
+      }
+      try {
+        const resp = await bridge.apiPost(
+          "mood/interests",
+          { action: "set", topic, weight: num }
+        );
+        if (resp && resp.status === "error") {
+          toast(resp.message || "保存失败", true);
+          input.value = String(weight);
+          return;
+        }
+        toast(`已保存：${topic}`);
+        input.value = String(num);
+      } catch (e) {
+        toast(`保存失败：${e && e.message ? e.message : e}`, true);
+        input.value = String(weight);
+      }
+    });
+
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "btn mood-del";
+    del.textContent = "删除";
+    del.addEventListener("click", async () => {
+      try {
+        const resp = await bridge.apiPost(
+          "mood/interests",
+          { action: "delete", topic }
+        );
+        if (resp && resp.status === "error") {
+          toast(resp.message || "删除失败", true);
+          return;
+        }
+        toast(`已删除：${topic}`);
+        renderMoodSection(); // 重拉：计数/空态/排序一并刷新
+      } catch (e) {
+        toast(`删除失败：${e && e.message ? e.message : e}`, true);
+      }
+    });
+
+    row.append(name, input, del);
+    list.appendChild(row);
+  }
+  body_el.appendChild(list);
+
+  // 底部清空（有内容才出现；内联二次确认）
+  if (interests.length) {
+    const clearBtn = document.createElement("button");
+    clearBtn.type = "button";
+    clearBtn.className = "btn danger mood-clear";
+    clearBtn.textContent = "清空全部";
+    armInlineConfirm(clearBtn, async () => {
+      try {
+        const resp = await bridge.apiPost(
+          "mood/interests",
+          { action: "clear" }
+        );
+        if (resp && resp.status === "error") {
+          toast(resp.message || "清空失败", true);
+          return;
+        }
+        toast("已清空全部兴趣");
+        renderMoodSection();
+      } catch (e) {
+        toast(`清空失败：${e && e.message ? e.message : e}`, true);
+      }
+    });
+    body_el.appendChild(clearBtn);
+  }
+
+  drawer.append(head, body_el);
+  host.innerHTML = "";
+  host.appendChild(drawer);
+}
+
 /* ---------------- 保存 / 重置 / 切换 ---------------- */
 
 async function save() {
@@ -472,6 +683,8 @@ function switchView(view) {
   $("#view-expert").classList.toggle("hidden", view !== "expert");
   $("#tab-novice").classList.toggle("active", view === "novice");
   $("#tab-expert").classList.toggle("active", view === "expert");
+  // M9-补丁1 B5：心境是运行时状态，每次进专家视图都重拉最新快照
+  if (view === "expert") renderMoodSection();
 }
 
 /* ---------------- 入口 ---------------- */

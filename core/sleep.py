@@ -17,6 +17,8 @@ from typing import Any, Callable
 
 from astrbot.api import logger
 
+from .living_loop import derive_admin_identity
+
 # 本插件的命令前缀：这些消息永远不拦（任务书 B4 例外）
 # 本插件命令与紧急命令：休眠期拦截永远豁免（任务书 M3 补丁 IX 需求 2-5）
 OWN_COMMAND_KEYWORDS = ("living_wake", "/stop")
@@ -384,6 +386,7 @@ class SleepManager(SleepManagerAutonomous):
         rng: Callable[[], float] | None = None,
         now_provider: Callable[[], datetime] | None = None,
         schedule: Any = None,
+        global_config_getter: Callable[[], Any] | None = None,
     ) -> None:
         self._config_getter = config_getter
         self._gate = gate  # 用它的 is_asleep_now（在睡判定，吵醒计数/静默共用）
@@ -391,6 +394,9 @@ class SleepManager(SleepManagerAutonomous):
         # M5-补丁4：起床约定（ScheduleManager）——压力项/锚定的数据源。
         # None = 无约定链路，睡意公式与现状完全一致
         self._schedule = schedule
+        # M9-补丁1：AstrBot 全局配置动态读取——owner_id 未手填时自动认主
+        # （取管理员第一位）。None = 不派生，维持旧手填语义（向后兼容）
+        self._global_config_getter = global_config_getter
         # rng 统一包装：无论注入 Random 实例、bound method 还是简单
         # callable（lambda: 0.5 等），sleepiness/duration/nap 统一通过
         # self._rng_float() 取 [0,1) 随机值
@@ -444,16 +450,35 @@ class SleepManager(SleepManagerAutonomous):
     # 吵醒计数（任务书 B3）
     # ------------------------------------------------------------------
     def counts_toward_wake(self, sender_id: str | None) -> bool:
-        """这条消息是否计入吵醒（wake_source 配置：all / owner_only）。"""
+        """这条消息是否计入吵醒（wake_source 配置：all / owner_only）。
+
+        M9-补丁1：wake_source=owner_only 且 owner_id 未手填时，自动认主——
+        派生值取 AstrBot 管理员第一位（读取时计算，管理员改动热生效，
+        不写回配置）。手填优先，派生只在显式为空时介入；wake_source=all
+        的行为与派生引入前逐位一致。
+        """
         source = str(self._group("sleep").get("wake_source", "all") or "all")
         if source != "owner_only":
             return True
         owner_id = str(self._group("sleep").get("owner_id", "") or "").strip()
+        derived = False
+        if not owner_id and self._global_config_getter is not None:
+            try:
+                admins = derive_admin_identity(self._global_config_getter())[
+                    "admins_id"
+                ]
+            except Exception:
+                admins = []
+            if admins:
+                owner_id = admins[0]
+                derived = True
         if not owner_id:
-            # 配置了 owner_only 却没填 owner_id：退回 all 并记一次警告
-            # （安静与否比"谁说的"更重要，配置残缺不该让吵醒失灵）
+            # 配置了 owner_only 却没有 owner_id（手填/派生均空）：退回 all
+            # 并记一次警告（安静与否比"谁说的"更重要，配置残缺不该让吵醒失灵）
             logger.warning("[Sleep] wake_source=owner_only 但未配置 owner_id，按 all 计数")
             return True
+        if derived:
+            logger.debug(f"[Sleep] owner_id 未手填，自动认主管理员 {owner_id}")
         return str(sender_id or "").strip() == owner_id
 
     def register_message(

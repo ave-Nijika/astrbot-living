@@ -561,6 +561,8 @@ class LivingPlugin(Star):
             gate=self.gate,
             mood=self.mood,
             schedule=self._schedule,
+            # M9-补丁1：主人身份自动认领——owner_id 未手填时派生自管理员
+            global_config_getter=lambda: self.context.astrbot_config,
         )
         agent_loop = LivingAgentLoop(
             context=self.context,
@@ -615,6 +617,9 @@ class LivingPlugin(Star):
                 mood=self.mood,
             ),
             bot_identity_getter=self._bot_identity,
+            # M9-补丁1：主人身份自动认领——target_sessions 未手填时派生
+            # 全部管理员的私聊会话（与 _bot_identity_getter 同款注入先例）
+            global_config_getter=lambda: self.context.astrbot_config,
         )
         await self.loop.start()
 
@@ -669,6 +674,8 @@ class LivingPlugin(Star):
             (f"{prefix}/config", self._api_config_get, ["GET"], "面板配置读取"),
             (f"{prefix}/config", self._api_config_post, ["POST"], "面板配置保存"),
             (f"{prefix}/config/reset", self._api_config_reset, ["POST"], "恢复默认值"),
+            (f"{prefix}/mood", self._api_mood_get, ["GET"], "心境快照读取"),
+            (f"{prefix}/mood/interests", self._api_mood_interests_post, ["POST"], "兴趣权重编辑"),
         ]
         for route, handler, methods, desc in routes:
             register(route, handler, methods, desc)
@@ -760,6 +767,43 @@ class LivingPlugin(Star):
             return {"status": "error", "message": str(e)}
         except Exception:
             logger.exception(f"[{PLUGIN_NAME}] 恢复默认值失败")
+            return {"status": "error", "message": "内部错误"}
+
+    async def _api_mood_get(self):
+        """心境快照读取（M9-补丁1 B1）：五项只读状态 + interests。"""
+        from .core.panel_api import PanelApiError, build_mood_snapshot
+
+        try:
+            if self.mood is None:
+                return {"status": "error", "message": "心境模块未初始化"}
+            return {"status": "ok", "data": build_mood_snapshot(self.mood)}
+        except PanelApiError as e:
+            return {"status": "error", "message": str(e)}
+        except Exception:
+            logger.exception(f"[{PLUGIN_NAME}] 心境读取失败")
+            return {"status": "error", "message": "内部错误"}
+
+    async def _api_mood_interests_post(self):
+        """兴趣权重编辑（M9-补丁1 B2-B4）：set/delete/clear，写后立即
+        持久化（运行中实例热生效）。校验失败走 error 响应（Pages bridge
+        的响应体恒 200，400 语义以 body.status=error 表达，与 config
+        端点一致）。"""
+        from astrbot.api.web import request as web_request
+
+        from .core.panel_api import PanelApiError, apply_mood_interests
+
+        try:
+            payload = await web_request.json(default={})
+            data = await apply_mood_interests(self.mood, payload)
+            logger.info(
+                f"[{PLUGIN_NAME}] 面板兴趣写入: {payload.get('action')} "
+                f"{payload.get('topic', '')}"
+            )
+            return {"status": "ok", "message": "已更新兴趣", "data": data}
+        except PanelApiError as e:
+            return {"status": "error", "message": str(e)}
+        except Exception:
+            logger.exception(f"[{PLUGIN_NAME}] 兴趣写入失败")
             return {"status": "error", "message": "内部错误"}
 
     async def _run_knob_loop(self) -> None:
