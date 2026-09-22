@@ -170,7 +170,7 @@ def test_begin_autonomous_sleep_enters_gate(tmp_path):
     assert result["asleep"] is True
     assert gate.asleep_in_autonomous(now + timedelta(hours=1))
     assert not gate.asleep_in_autonomous(now + timedelta(hours=12))
-    assert gate.in_sleep_window(now + timedelta(hours=1)) is True  # in_sleep_window 融合
+    assert gate.is_asleep_now(now + timedelta(hours=1)) is True  # is_asleep_now 融合判定
 
 
 def test_nap_requires_low_energy_and_cooldown(tmp_path):
@@ -210,28 +210,6 @@ def test_woken_from_autonomous_debt_scales(tmp_path):
                                             datetime(2026, 9, 17, 14, 0))
     )
     assert result2["debt_added"] == pytest.approx(0.0)
-
-
-# ---------------------------------------------------------------------------
-# fixed 模式零变化（红线 1 的回归证明）
-# ---------------------------------------------------------------------------
-def test_fixed_mode_ignores_autonomous_state(tmp_path):
-    """fixed 模式下：即使 gate 里有残留的自主睡眠状态，也不影响窗口判定。"""
-    gate = make_gate(FIXED_CONFIG)
-    now = datetime(2026, 9, 17, 23, 30)  # 不在 fixed 窗（02:00-06:00）
-    asyncio.run(gate.enter_autonomous_sleep(
-        now + timedelta(hours=8), "long", now))
-    assert gate.in_sleep_window(now) is False
-    asyncio.run(gate.exit_autonomous_sleep(now))
-
-
-def test_autonomous_mode_ignores_fixed_window(tmp_path):
-    """autonomous 模式下：固定窗外/窗内都不影响——在睡只看动力学状态。"""
-    gate = make_gate(AUTONOMOUS_CONFIG)
-    now = datetime(2026, 9, 17, 14, 0)  # 白天，固定窗外
-    asyncio.run(gate.enter_autonomous_sleep(
-        now + timedelta(hours=3), "nap", now))
-    assert gate.in_sleep_window(now) is True  # 在自主睡眠中 → 视为在睡
 
 
 # ---------------------------------------------------------------------------

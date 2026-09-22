@@ -494,26 +494,3 @@ def test_panel_exposes_new_sleep_keys():
 # ---------------------------------------------------------------------------
 # 红线：fixed 模式行为零变化（autonomous tick 在 fixed 下短路）
 # ---------------------------------------------------------------------------
-def test_fixed_mode_tick_is_noop(tmp_path):
-    async def flow():
-        config = _config()
-        config["sleep"]["sleep_mode"] = "fixed"
-        gate = RecordingGate(config_getter=lambda: config,
-                             db_path=str(tmp_path / "gate.db"), rng=lambda: 0.5)
-        manager = SleepManager(config_getter=lambda: config, gate=gate,
-                               rng=lambda: 0.5)
-        mood = MoodState(db_path=str(tmp_path / "mood.db"))
-        await mood.load()
-        mood.energy = 0.05
-        loop = LivingLoop(
-            gate=gate, memory_getter=lambda: None,
-            config_getter=lambda: config, sleep_manager=manager, mood=mood,
-        )
-        await loop._autonomous_sleep_tick(NOW)
-        state = gate.sleep_state(NOW)
-        await mood.close()
-        await gate.close()
-        return gate.entered_kinds, state["asleep"]
-
-    kinds, asleep = asyncio.run(flow())
-    assert kinds == [] and asleep is False  # fixed 下零动作

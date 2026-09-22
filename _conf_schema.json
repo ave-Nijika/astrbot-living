@@ -3,17 +3,6 @@
         "description": "新手设置（常用旋钮，改这里就够了；改动几秒内生效）",
         "type": "object",
         "items": {
-            "preset_sleep_style": {
-                "description": "它的作息",
-                "hint": "规律作息=到点睡到点起（默认 02:00-06:00，时段可在高级调参里改）；想睡就睡=不设固定时段，困了自己睡，睡多久看它欠了多少觉。",
-                "type": "string",
-                "options": [
-                    "fixed",
-                    "autonomous"
-                ],
-                "default": "fixed",
-                "invisible": true
-            },
             "preset_activity_level": {
                 "description": "它独处时折腾的频率",
                 "hint": "安静=一天最多忙 1 次；正常=闲着才找点事做（每天两三次）；活跃=经常自己找乐子（不设上限）。改的是它心血来潮的频率，不影响聊天回复。",
@@ -260,7 +249,8 @@
                         "description": "单循环最大工具轮数",
                         "type": "int",
                         "default": 8,
-                        "invisible": true
+                        "invisible": true,
+                        "hint": "单次活动允许的最大工具轮数。0 或负数 = 不限制轮数（由 token 预算 single_run_token_budget 兜底，预算耗尽即中断）。"
                     },
                     "max_run_seconds": {
                         "description": "单循环最长时长（秒）",
@@ -348,24 +338,6 @@
                 "description": "休眠（M3 生效，M0 先占位）",
                 "type": "object",
                 "items": {
-                    "sleep_window": {
-                        "description": "作息窗口",
-                        "hint": "格式 'HH:MM-HH:MM'。仅 fixed（规律作息）模式生效；autonomous（想睡就睡）模式下入睡时机由睡意动力学决定，本窗口不参与判定。",
-                        "type": "string",
-                        "default": "00:30-08:00",
-                        "invisible": true
-                    },
-                    "sleep_mode": {
-                        "description": "睡眠模式",
-                        "hint": "fixed=固定窗口（默认）；autonomous=自主作息——由睡意动力学（精力/睡眠债/昼夜节律+抖动）决定何时睡、睡多久，熬夜/睡懒觉/白天补觉自然涌现。切换热生效。",
-                        "type": "string",
-                        "options": [
-                            "fixed",
-                            "autonomous"
-                        ],
-                        "default": "fixed",
-                        "invisible": true
-                    },
                     "min_sleep_hours": {
                         "description": "自主模式：最短睡眠（小时）",
                         "type": "float",

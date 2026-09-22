@@ -24,10 +24,8 @@ DIRECT_KNOB = "preset_model"
 
 # 旋钮 → 选项 → 底层键写入（组名 → {键: 值}）。任务书 2.2 映射表定稿。
 KNOB_PRESETS: dict[str, dict[str, dict[str, dict[str, Any]]]] = {
-    "preset_sleep_style": {
-        "fixed": {"sleep": {"sleep_mode": "fixed"}},
-        "autonomous": {"sleep": {"sleep_mode": "autonomous"}},
-    },
+    # M6-补丁1：作息旋钮随 fixed 机制移除——autonomous 是唯一睡眠行为，
+    # 作息旋钮无映射目标
     "preset_activity_level": {
         "quiet": {"decision": {
             "impulse_check_interval_minutes": 90,

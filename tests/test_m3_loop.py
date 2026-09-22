@@ -1,10 +1,13 @@
 """M3-A/B 主循环测试：双事件打断睡眠、force 语义、睡前回顾、梦。"""
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from core import living_loop as living_loop_module
+from core.mood import MoodState
+from core.sleep import SleepManager
 from core.living_loop import LivingLoop
 
 NOW = datetime(2026, 9, 8, 14, 0, 0)
@@ -28,13 +31,46 @@ BASE_CONFIG = {
 
 class FakeGate:
     def autonomous_mode(self):
-        return False
+        return True  # M6-补丁1：autonomous 是唯一睡眠行为
     def __init__(self, allow=True, reason="ok", in_sleep=False):
         self.allow = allow
         self.reason = reason
         self.in_sleep = in_sleep
         self.standby = False
         self.calls = []  # (now, force)
+        self._sleep_until = None
+        self._fell_asleep_at = None
+        self._sleep_kind = None
+
+    def asleep_in_autonomous(self, now=None):
+        return self.in_sleep and self._sleep_until is not None
+
+    def sleep_state(self, now=None):
+        now = now or datetime.now()
+        expired = (
+            self._sleep_until is not None
+            and self._fell_asleep_at is not None
+            and now >= self._sleep_until
+        )
+        asleep = self.in_sleep and not expired
+        return {"asleep": asleep, "until": self._sleep_until,
+                "kind": self._sleep_kind, "fell_asleep_at": self._fell_asleep_at,
+                "last_wakeup_at": None}
+
+    async def enter_autonomous_sleep(self, until, kind, now=None):
+        self.in_sleep = True
+        self._sleep_until = until
+        self._fell_asleep_at = now or datetime.now()
+        self._sleep_kind = kind
+
+    async def exit_autonomous_sleep(self, now=None):
+        self.in_sleep = False
+        self._sleep_until = None
+        self._fell_asleep_at = None
+        self._sleep_kind = None
+
+    def is_asleep_now(self, now=None):
+        return self.in_sleep
 
     async def should_wake(self, now=None, force=False):
         self.calls.append((now, force))
@@ -103,20 +139,22 @@ class FakeSleepManager:
     def __init__(self):
         self.woken = 0
 
-    async def apply_woken_in_sleep(self, now=None):
+    async def apply_woken_from_autonomous(self, mood, actual_h, planned_h,
+                                          now=None, kind="long",
+                                          grouchy_boost=False):
         self.woken += 1
-        return {"grouchy": False, "debt_added": 0.0, "remaining_minutes": 30.0}
+        return {"grouchy": False, "debt_added": 0.0}
 
 
 def make_loop(gate=None, memory=None, activities=None, config=None,
-              sleep_manager=None, dream_llm=None, agent_loop=None):
+              sleep_manager=None, dream_llm=None, agent_loop=None, mood=None):
     memory = memory if memory is not None else FakeMemory()
     return LivingLoop(
         gate=gate or FakeGate(),
         memory_getter=lambda: asyncio.sleep(0, result=memory),
         config_getter=lambda: BASE_CONFIG if config is None else config,
         activities=activities if activities is not None else [ScriptedActivity()],
-        mood=None,
+        mood=mood,
         decider=None,
         sleep_manager=sleep_manager,
         agent_loop=agent_loop,
@@ -212,7 +250,7 @@ def test_config_watcher_detects_change(monkeypatch):
 # A2/B3：force 语义与吵醒结算
 # ---------------------------------------------------------------------------
 def test_force_wake_in_sleep_window_triggers_settlement():
-    """休眠窗内 force → 闸门给 woken_from_sleep → 吵醒结算被调用。"""
+    """在睡 force → 闸门给 woken_from_sleep → 吵醒结算被调用。"""
     gate = FakeGate(in_sleep=True)
     sleep_manager = FakeSleepManager()
     loop = make_loop(gate=gate, sleep_manager=sleep_manager)
@@ -233,8 +271,8 @@ def test_force_still_blocked_by_gate_without_sleep():
 
 
 def test_natural_wake_after_sleep_sets_pending_dream():
-    """自然醒（睡眠窗结束后的第一个心跳）→ 掷梦。"""
-    gate = FakeGate(in_sleep=True)
+    """自然醒（长睡 until 到期后的第一个心跳，M6-补丁1 起 expired 结算
+    触发）→ 掷梦。"""
     memory = FakeMemory(rows=[{"content": "9月7日我搜了系外行星", "score": 1}])
     dreams = []
 
@@ -242,8 +280,14 @@ def test_natural_wake_after_sleep_sets_pending_dream():
         dreams.append(prompt)
         return "梦见我在一片星海里烤咖啡豆。"
 
-    async def flow():
-        loop = make_loop(gate=gate, memory=memory, dream_llm=dream_llm)
+    async def flow(tmp_path):
+        gate = FakeGate(in_sleep=True)
+        mood = MoodState(db_path=str(tmp_path / "mood.db"))
+        await mood.load()
+        manager = SleepManager(config_getter=lambda: BASE_CONFIG, gate=gate,
+                               mood=mood, rng=lambda: 0.5)
+        loop = make_loop(gate=gate, memory=memory, dream_llm=dream_llm, mood=mood,
+                         sleep_manager=manager, config=BASE_CONFIG)
 
         class AlwaysHitRng:
             """random() 恒 0.0：闸门概率与梦概率全命中。"""
@@ -255,12 +299,17 @@ def test_natural_wake_after_sleep_sets_pending_dream():
                 return seq[0]
 
         loop._rng = AlwaysHitRng()
-        await loop.heartbeat_once_detailed(NOW, force=False)  # 睡眠窗内：入睡+回顾
-        gate.in_sleep = False  # 天亮了
+        # 长睡中（until 未到）：在睡 → 静默，不梦
+        await gate.enter_autonomous_sleep(NOW + timedelta(hours=8), "long", NOW)
+        await loop.heartbeat_once_detailed(NOW, force=False)
+        assert dreams == []
+        # until 到期：tick 结算（自然醒）→ pending_dream → 掷梦
         gate.allow = True
-        return await loop.heartbeat_once_detailed(NOW, force=False)
+        return await loop.heartbeat_once_detailed(NOW + timedelta(hours=8, minutes=1))
 
-    awake, _reason, _act = asyncio.run(flow())
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        awake, _reason, _act = asyncio.run(flow(Path(tmp)))
     assert awake is True
     assert dreams, "自然醒应掷梦（概率 mock 恒中）"
     assert any("梦" in c for c, _ in memory.added)
@@ -298,19 +347,29 @@ def test_dream_probability_miss_is_silent():
 
 
 def test_bedtime_review_written_on_sleep_onset():
-    """入睡（睡眠窗内第一个心跳）→ 写一条睡前回顾记忆（任务书 B2）。"""
-    gate = FakeGate(in_sleep=True)
+    """长睡 enter（M6-补丁1 起回顾的触发点）→ 写一条睡前回顾记忆。"""
+    gate = FakeGate(in_sleep=False)
     memory = FakeMemory(rows=[
         {"content": "9月8日我搜了「宇宙探索」", "score": 1},
         {"content": "9月8日我读了《三体》", "score": 1},
     ])
-    loop = make_loop(gate=gate, memory=memory)
+    config = {
+        **BASE_CONFIG,
+        "sleep": {**BASE_CONFIG["sleep"], "sleepiness_threshold": 0.0},
+    }
+    mood = MoodState(db_path=str(Path(__file__).parent / "_review_mood.db"))
+    asyncio.run(mood.load())
+    mood.energy = 0.05
+    manager = SleepManager(config_getter=lambda: config, gate=gate,
+                           mood=mood, rng=lambda: 0.5)
+    loop = make_loop(gate=gate, memory=memory, config=config,
+                     sleep_manager=manager, mood=mood)
 
-    asyncio.run(loop.heartbeat_once_detailed(NOW, force=False))
+    asyncio.run(loop._autonomous_sleep_tick(NOW))
     # M5-补丁2 B3：正文不再以日期开头，改"今天想了想：…"句式
     reviews = [c for c, _ in memory.added if "想了想" in c]
     assert reviews and "9月8日" in reviews[0]  # 活动内容保留（含其日期）
     assert reviews[0].startswith("今天想了想：")
-    # 二次心跳不重复写回顾
-    asyncio.run(loop.heartbeat_once_detailed(NOW, force=False))
+    # 二次 tick（在睡）不重复写回顾
+    asyncio.run(loop._autonomous_sleep_tick(NOW + timedelta(minutes=5)))
     assert len([c for c, _ in memory.added if "想了想" in c]) == 1

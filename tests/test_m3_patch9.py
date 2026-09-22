@@ -89,12 +89,18 @@ class RecordingLogger:
 # ---------------------------------------------------------------------------
 def test_describe_mute_contains_guidance(tmp_path):
     gate = make_gate()
+
+    async def _asleep():
+        await gate.enter_autonomous_sleep(
+            T_IN + timedelta(hours=4), "long", T_IN
+        )
+    asyncio.run(_asleep())
     manager = make_manager(gate)
     for i in range(1):
         manager.register_message(datetime(2026, 9, 17, 4, 0, i))
     text = manager.describe_mute(datetime(2026, 9, 17, 4, 0, 1), count=1)
-    assert "正在休眠（02:00-06:00）" in text
-    assert "窗内第 1 条" in text
+    assert "正在休眠（自主作息，睡意已达）" in text
+    assert "在睡期第 1 条" in text
     assert "再发 2 条可唤醒" in text
     assert "living_wake_now" in text
 
@@ -103,48 +109,42 @@ def test_describe_mute_contains_guidance(tmp_path):
 # 需求 2：紧急唤醒（force_awake 语义）
 # ---------------------------------------------------------------------------
 def test_force_awake_disables_sleeping_and_mute(tmp_path):
-    """休眠窗内紧急唤醒 → 窗内不再判 sleeping、不再拦截。"""
-    gate = make_gate()
-    manager = make_manager(gate)
-    # 窗内：先确认拦截与 sleeping 生效
-    assert manager.should_mute_message(T_IN, "有人说话") is True
-    allow, reason = asyncio.run(gate.should_wake(T_IN))
-    assert (allow, reason) == (False, "sleeping")
+    """强制清醒期（force_awake_until 生效）内不再判 sleeping、不再拦截。
 
-    until = asyncio.run(gate.force_awake_now(T_IN))
-    assert until is not None
+    M6-补丁1：force_awake_now（fixed 窗尾语义）随机制移除；本测试直接
+    设置 force_awake_until 验证豁免链仍有效（机制骨架保留）。"""
+    gate = make_gate()
+
+    async def _setup():
+        await gate.enter_autonomous_sleep(
+            T_IN + timedelta(hours=4), "long", T_IN
+        )
+        gate._force_awake_until = T_IN + timedelta(hours=1)  # 强醒期 1h
+    asyncio.run(_setup())
+    manager = make_manager(gate)
     # 强醒期内：不拦、不 sleeping
     assert manager.should_mute_message(T_IN, "又一条消息") is False
     allow2, reason2 = asyncio.run(gate.should_wake(T_IN))
     assert allow2 is True
     assert reason2 != "sleeping"
-    # 计数器也被重置
-    assert manager.last_window_count == 0
 
 
-def test_force_awake_expires_at_window_end(tmp_path):
-    """强醒期 = 当前窗尾：过期后（仍在同窗概念上的下一次窗）恢复拦截。
-
-    force_awake_until 设为窗尾 06:00；06:01 已出窗（本窗结束）；
-    下一次进入 02:00-06:00 窗（次日）时强醒已过期，恢复拦截。
-    """
+def test_force_awake_expires_restores_sleeping(tmp_path):
+    """强醒期过期 → 恢复在睡判定（sleeping/拦截回来）。"""
     gate = make_gate()
-    manager = make_manager(gate)
-    until = asyncio.run(gate.force_awake_now(T_IN))
-    assert until == datetime(2026, 9, 17, 6, 0, 0)
-    # 窗尾前：强醒生效
-    assert gate.force_awake_active(datetime(2026, 9, 17, 5, 59)) is True
-    assert manager.should_mute_message(datetime(2026, 9, 17, 5, 59), "x") is False
-    # 过期后（同一天窗尾之后 + 次日凌晨再进窗）：恢复
-    next_day_pre_dawn = datetime(2026, 9, 18, 3, 0, 0)
-    assert gate.force_awake_active(next_day_pre_dawn) is False
-    assert manager.should_mute_message(next_day_pre_dawn, "x") is True
 
-
-def test_force_awake_outside_window_is_noop(tmp_path):
-    gate = make_gate()
+    async def _setup():
+        await gate.enter_autonomous_sleep(
+            T_IN + timedelta(hours=4), "long", T_IN
+        )
+        gate._force_awake_until = T_IN + timedelta(minutes=30)  # 4:30 过期
+    asyncio.run(_setup())
     manager = make_manager(gate)
-    assert asyncio.run(gate.force_awake_now(T_OUT)) is None
+    # 强醒期内：豁免
+    assert manager.should_mute_message(T_IN + timedelta(minutes=10), "x") is False
+    # 过期后：恢复在睡判定
+    assert gate.force_awake_active(T_IN + timedelta(minutes=31)) is False
+    assert manager.should_mute_message(T_IN + timedelta(minutes=31), "x") is True
 
 
 def test_wake_now_resets_wake_state():
@@ -181,12 +181,12 @@ def _recording_logger():
 
 
 class FakeGate:
-    """带可配置休眠窗的假 gate（in_sleep_window 按当前时刻返回 True）。"""
+    """带可配置在睡状态的假 gate（is_asleep_now 按当前时刻返回 True）。"""
 
     def __init__(self):
         self.in_window = True
 
-    def in_sleep_window(self, now=None):
+    def is_asleep_now(self, now=None):
         return self.in_window
 
     def awake_standby_active(self, now=None):
@@ -285,7 +285,7 @@ def test_mute_log_is_info_with_context(tmp_path, monkeypatch):
 
     mute_logs = [m for m in rl.infos if "睡眠期消息已拦截" in m]
     assert mute_logs, "拦截动作必须 INFO 可见（否则主人会误判插件故障）"
-    assert "窗内第" in mute_logs[0]
+    assert "在睡期第" in mute_logs[0]
     assert "再发" in mute_logs[0]
     assert "living_wake_now" in mute_logs[0]
     assert event.stopped is True

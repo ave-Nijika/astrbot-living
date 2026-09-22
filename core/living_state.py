@@ -133,7 +133,7 @@ class LivingGate:
         # 不能每次都 await 数据库
         self._awake_until: datetime | None = None
         # 紧急唤醒（任务书 M3 补丁 IX 需求 2）：强制清醒至当前休眠窗尾部。
-        # 为什么放 gate 而不是 manager：in_sleep_window / should_wake /
+        # 为什么放 gate 而不是 manager：is_asleep_now / should_wake /
         # should_mute_message 的判定都以"是否在休眠窗"为根，强制清醒的
         # 语义就是"本次窗内视作不在窗内"——放源头一处生效，全链一致；
         # 窗尾自然过期，无需清理
@@ -151,24 +151,9 @@ class LivingGate:
         self._nap_count_date: str | None = None
 
     # ------------------------------------------------------------------
-    # 自主作息（任务书 M3 补丁 X）
+    # 自主作息（任务书 M3 补丁 X；M6-补丁1 起 fixed 机制移除，
+    # 自主作息是唯一的睡眠行为）
     # ------------------------------------------------------------------
-    def sleep_mode(self) -> str:
-        """睡眠模式：fixed（默认固定窗口，现状行为）| autonomous（自主作息）。"""
-        try:
-            mode = str(
-                _conf_group(self._config_getter() or {}, "sleep").get(
-                    "sleep_mode", "fixed"
-                )
-                or "fixed"
-            )
-        except Exception:
-            return "fixed"
-        return mode if mode in ("fixed", "autonomous") else "fixed"
-
-    def autonomous_mode(self) -> bool:
-        return self.sleep_mode() == "autonomous"
-
     def asleep_in_autonomous(self, now: datetime | None = None) -> bool:
         """自主模式下当前是否处于睡眠中（长睡或小睡，未到预计醒来时刻）。"""
         now = now or datetime.now()
@@ -313,32 +298,6 @@ class LivingGate:
         """强制清醒期是否生效（本次休眠窗尾部之前）。"""
         now = now or datetime.now()
         return self._force_awake_until is not None and now < self._force_awake_until
-
-    async def force_awake_now(self, now: datetime | None = None) -> datetime | None:
-        """立即终止本次休眠：强制清醒至当前休眠窗尾部。
-
-        Returns:
-            强制清醒截止时间；不在休眠窗内时返回 None（无休眠可终止）。
-        """
-        now = now or datetime.now()
-        span = self.sleep_window_span(now)
-        if span is None:
-            return None
-        _total, remaining_minutes = span
-        self._force_awake_until = now + timedelta(minutes=remaining_minutes)
-        return self._force_awake_until
-
-    def next_sleep_window_text(self) -> str:
-        """下一次休眠窗的文案（紧急唤醒回复用）。
-
-        autonomous 模式下没有固定窗（任务书 M3 补丁 XI-A.3：回复文案
-        按模式区分，不应出现"下次休眠窗"字样）。"""
-        if self.autonomous_mode():
-            return "自主作息（无固定窗）"
-        return str(
-            _conf_group(self._config_getter() or {}, "sleep").get("sleep_window", "")
-            or "未配置"
-        )
 
     # ------------------------------------------------------------------
     # 清醒待机（任务书 M3 补丁 II 一）
@@ -529,30 +488,13 @@ class LivingGate:
             # 明确要求结束本次休眠）
             pass
         else:
-            # 1. 睡眠判定——按 sleep_mode 互斥（M5-补丁3 A1-A3）：
-            #    autonomous 由"是否在自主睡眠中"决定，fixed 窗口不参与；
-            #    fixed 沿用固定窗口判定（行为与 M5-补丁3 前完全一致）。
-            mode = str(
-                _conf_group(config, "sleep").get("sleep_mode") or "fixed"
-            )
-            if mode == "autonomous":
-                if self.asleep_in_autonomous(now):
-                    # 在自主睡眠中：force 进吵醒结算（沿用既有 reason 名，
-                    # heartbeat 的 woken 分支已按 autonomous_mode 内部分流）
-                    if force:
-                        return True, "woken_from_sleep"
-                    return False, "sleeping"
-                # 醒着：跳过窗口判定，直接走第 2-4 关——即使真实时间落在
-                # fixed 的 sleep_window 里也不得拦截（双轨冲突修复点）
-            else:
-                # fixed：固定窗口（M3：force 触发吵醒流程而非拒绝）
-                window = parse_time_window(
-                    _conf_group(config, "sleep").get("sleep_window")
-                )
-                if window and in_time_window(now, window):
-                    if force:
-                        return True, "woken_from_sleep"
-                    return False, "sleeping"
+            # 1. 睡眠判定（M6-补丁1：fixed 机制移除，autonomous 是唯一
+            #    睡眠行为）——在睡：force 进吵醒结算（沿用既有 reason 名），
+            #    非 force 静默；醒着：直接走第 2-4 关。
+            if self.asleep_in_autonomous(now):
+                if force:
+                    return True, "woken_from_sleep"
+                return False, "sleeping"
 
         # 2. 今日活动上限（0 = 不限制）
         limit = _to_int(decision.get("daily_impulse_limit"), 3)
@@ -588,47 +530,17 @@ class LivingGate:
             return True, "ok"
         return False, "rolled_off"
 
-    def in_sleep_window(self, now: datetime | None = None) -> bool:
-        """此刻是否在休眠窗内（供吵醒计数/静默拦截等调用方判断）。
+    def is_asleep_now(self, now: datetime | None = None) -> bool:
+        """此刻是否在睡（M6-补丁1：fixed 窗口分支移除，判定收拢为
+        asleep_in_autonomous；供吵醒计数/静默拦截等调用方使用）。
 
-        强制清醒期（紧急唤醒）内视作不在窗内——吵醒计数、静默拦截、
-        入睡检测全链一致地"本次休眠已结束"。
+        强制清醒期内视作不在睡——吵醒计数、静默拦截全链一致地
+        "本次休眠已结束"。
         """
         now = now or datetime.now()
         if self.force_awake_active(now):
             return False
-        # 自主作息（补丁 X）：睡眠由动力学决定，固定时间窗不参与判定
-        if self.autonomous_mode():
-            return self.asleep_in_autonomous(now)
-        window = parse_time_window(
-            _conf_group(self._config_getter() or {}, "sleep").get("sleep_window")
-        )
-        return bool(window and in_time_window(now, window))
-
-    def sleep_window_span(self, now: datetime | None = None) -> tuple[float, float] | None:
-        """休眠窗信息：(总时长分钟, 距自然醒点的剩余分钟)。
-
-        窗内返回数值；不在窗内或未配置窗口返回 None。跨午夜窗口
-        （如 23:00-07:00）的剩余时间按"先到窗尾"方向计算。
-        """
-        now = now or datetime.now()
-        window = parse_time_window(
-            _conf_group(self._config_getter() or {}, "sleep").get("sleep_window")
-        )
-        if not window or not in_time_window(now, window):
-            return None
-        start, end = window
-        start_dt = datetime.combine(now.date(), start)
-        end_dt = datetime.combine(now.date(), end)
-        if end <= start:
-            # 跨午夜：窗尾在"明天"（如 23:00-07:00，23:30 时窗尾是明早 07:00）
-            if now.time() >= start:
-                end_dt = datetime.combine(now.date(), end) + timedelta(days=1)
-            else:  # 凌晨段：窗头在"昨天"
-                start_dt = datetime.combine(now.date(), start) - timedelta(days=1)
-        total_minutes = (end_dt - start_dt).total_seconds() / 60.0
-        remaining_minutes = max((end_dt - now).total_seconds() / 60.0, 0.0)
-        return total_minutes, remaining_minutes
+        return self.asleep_in_autonomous(now)
 
     async def should_send_message(self, now: datetime | None = None) -> tuple[bool, str]:
         """此刻是否允许主动发消息（输出闸门，任务书 M1-E）。"""
@@ -701,22 +613,12 @@ class LivingGate:
         else:
             steps.append(("清醒待机", "未生效"))
 
-        # 1. 休眠窗口
-        window = parse_time_window(sleep_cfg.get("sleep_window"))
-        raw_window = str(sleep_cfg.get("sleep_window", "") or "")
-        if not window:
-            in_window = False
-            steps.append(("休眠窗口", f"未配置（{raw_window or '空'}）→ 跳过"))
-        else:
-            in_window = in_time_window(now, window)
-            steps.append((
-                "休眠窗口",
-                f"窗口 {raw_window}，当前{'在内' if in_window else '在外'}"
-                + ("→ sleeping" if in_window else ""),
-            ))
-        if in_window:
-            steps.append(("判定结果", "sleeping（休眠窗内，后续步骤不评估）"))
+        # 1. 睡眠判定（M6-补丁1：fixed 移除，= 自主睡眠状态）
+        if self.asleep_in_autonomous(now):
+            steps.append(("自主睡眠", "在睡（until 未到）→ sleeping（后续步骤不评估）"))
+            steps.append(("判定结果", "sleeping"))
             return steps
+        steps.append(("自主睡眠", "醒着 → 继续评估"))
 
         # 2. 每日活动上限
         limit = _to_int(decision.get("daily_impulse_limit"), 3)

@@ -4,7 +4,8 @@
  * 注意：Pages 沙箱忽略 window.confirm/alert/prompt——确认动作用页内弹层。 */
 
 const KNOB_ORDER = [
-  "preset_sleep_style", "preset_activity_level", "preset_talk_frequency",
+  // M6-补丁1：preset_sleep_style 随 sleep_mode 配置键移除
+  "preset_activity_level", "preset_talk_frequency",
   "preset_capability_tier", "preset_write_level", "preset_topic_taste",
   "preset_free_activity", "preset_decision_mode", "preset_model",
 ];

@@ -136,33 +136,6 @@ def test_autonomous_awake_inside_window_not_blocked(tmp_path):
 # ---------------------------------------------------------------------------
 # 验收 5：fixed 行为零变化（窗口内拦 / 窗口外放行）
 # ---------------------------------------------------------------------------
-def test_fixed_mode_unchanged(tmp_path):
-    async def flow():
-        config = _config("fixed")
-        gate = _gate(config, tmp_path)
-        inside = await gate.should_wake(NOW + timedelta(minutes=20))  # 06:10 窗内
-        outside = await gate.should_wake(NOW + timedelta(hours=3))  # 08:50 窗外
-        await gate.close()
-        return inside, outside
-
-    inside, outside = asyncio.run(flow())
-    assert (inside[0], inside[1]) == (False, "sleeping")
-    assert outside[0] is True  # 窗外走 2-4 关放行（概率 1.0）
-
-
-# ---------------------------------------------------------------------------
-# 验收 6：回顾触发源——autonomous 长睡 enter 触发；小睡不触发；fixed 翻转触发
-# ---------------------------------------------------------------------------
-class FakeMemory:
-    def __init__(self):
-        self.added = []
-
-    async def search(self, query, k=5, **kwargs):
-        return []
-
-    async def add(self, content, importance=0.5, metadata=None, **kwargs):
-        self.added.append((content, metadata))
-        return len(self.added)
 
 
 def _loop_with_mocks(config, gate, manager, mood, memory):
@@ -177,6 +150,22 @@ def _loop_with_mocks(config, gate, manager, mood, memory):
     loop._persona_id = _none
     loop._session_id = lambda event: "living_test"
     return loop
+
+
+
+
+class FakeMemory:
+    """可记录写入的最小记忆替身（多测试共用）。"""
+
+    def __init__(self):
+        self.added = []
+
+    async def search(self, query, k=5, **kwargs):
+        return []
+
+    async def add(self, content, importance=0.5, metadata=None, **kwargs):
+        self.added.append((content, metadata))
+        return len(self.added)
 
 
 def test_review_triggered_by_long_sleep_enter_only(tmp_path):
@@ -228,78 +217,8 @@ class RecordingGate3(LivingGate):
         await super().enter_autonomous_sleep(until, kind, now)
 
 
-def test_review_still_triggered_by_fixed_flip(tmp_path):
-    """B3：fixed 模式下回顾仍由窗口翻转触发（现状保持）。"""
-    from core.living_state import parse_time_window, in_time_window
-
-    class InWindowGate(LivingGate):
-        def in_sleep_window(self, now=None):
-            return True
-
-        def awake_standby_active(self, now=None):
-            return False
-
-        async def consume_standby_expiry(self, now=None):
-            return False
-
-        async def should_wake(self, now=None, force=False):
-            return False, "sleeping"
-
-        async def should_send_message(self, now=None):
-            return False, "blocked"
-
-        async def note_activity_started(self, now=None):
-            pass
-
-        async def note_activity_finished(self, now=None):
-            pass
-
-    async def flow():
-        config = _config("fixed")
-        gate = InWindowGate(config_getter=lambda: config,
-                            db_path=str(tmp_path / "gate.db"), rng=lambda: 0.5)
-        memory = FakeMemory()
-        loop = _loop_with_mocks(config, gate, None, None, memory)
-        await loop.heartbeat_once_detailed(NOW + timedelta(minutes=20))
-        await gate.close()
-        return len(memory.added)
-
-    assert asyncio.run(flow()) == 1  # fixed 翻转触发一次
 
 
-def test_log_sleep_entry_fixed_only(tmp_path):
-    """B4：『进入休眠（窗口 …）』日志（_log_sleep_entry）仅 fixed 出现。"""
-    calls = []
-
-    async def flow():
-        # autonomous：翻转段整体跳过 → _log_sleep_entry 不被调用
-        config = _config("autonomous")
-        gate = _gate(config, tmp_path)
-        manager = _manager(config, gate)
-        mood = MoodState(db_path=str(tmp_path / "mood.db"))
-        await mood.load()
-        mood.energy = 0.05
-        mood.sleep_debt = 80.0
-        loop = _loop_with_mocks(config, gate, manager, mood, FakeMemory())
-        loop._log_sleep_entry = lambda now: calls.append(("autonomous", now))
-        await loop.heartbeat_once_detailed(NOW + timedelta(minutes=20))
-
-        # fixed + 窗口内：翻转段工作 → 调用一次
-        fixed_config = _config("fixed")
-        fixed_gate = _InWindowRealGate(config_getter=lambda: fixed_config,
-                                       db_path=str(tmp_path / "g2.db"),
-                                       rng=lambda: 0.5)
-        fixed_loop = _loop_with_mocks(fixed_config, fixed_gate, None, None,
-                                      FakeMemory())
-        fixed_loop._log_sleep_entry = lambda now: calls.append(("fixed", now))
-        await fixed_loop.heartbeat_once_detailed(NOW + timedelta(minutes=20))
-        await mood.close()
-        await gate.close()
-        await fixed_gate.close()
-        return calls
-
-    calls = asyncio.run(flow())
-    assert [c[0] for c in calls] == ["fixed"]  # 仅 fixed 一条
 
 
 class _InWindowRealGate(LivingGate):
@@ -376,22 +295,4 @@ def test_sequential_no_silent_to_open_flip_across_window_end(tmp_path):
 # ---------------------------------------------------------------------------
 # 红线：fixed 模式 tick 全链路零变化（autonomous 分支不参与）
 # ---------------------------------------------------------------------------
-def test_fixed_full_heartbeat_no_autonomous_side_effects(tmp_path):
-    async def flow():
-        config = _config("fixed")
-        gate = _gate(config, tmp_path)
-        manager = SleepManager(config_getter=lambda: config, gate=gate,
-                               rng=lambda: 0.5)
-        mood = MoodState(db_path=str(tmp_path / "mood.db"))
-        await mood.load()
-        mood.energy = 0.05
-        loop = _loop_with_mocks(config, gate, manager, mood, FakeMemory())
-        await loop.heartbeat_once_detailed(NOW + timedelta(minutes=20))
-        state = gate.sleep_state()
-        await mood.close()
-        await gate.close()
-        return state["asleep"], loop._asleep
 
-    auto_asleep, asleep_flag = asyncio.run(flow())
-    assert auto_asleep is False  # 无任何自主睡眠进入
-    assert asleep_flag is True  # fixed 窗口翻转正常工作（_asleep 是 fixed 专属标志）

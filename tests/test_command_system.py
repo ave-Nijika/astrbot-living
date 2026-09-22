@@ -217,7 +217,7 @@ def test_status_shows_details(tmp_path):
     assert "valence=" in text
     assert "睡眠债" in text
     assert "清醒待机：生效中" in text
-    assert "休眠窗" in text
+    assert "自主作息" in text  # M6-补丁1：休眠窗文案随 fixed 移除
 
 
 def test_mood_shows_dimensions_and_interests(tmp_path):
@@ -468,14 +468,24 @@ def test_bedtime_review_metadata_has_topics(tmp_path):
     memory = RecordingMemory()
 
     class InWindowGate:
-        def in_sleep_window(self, now=None):
-            return True
+        def asleep_in_autonomous(self, now=None):
+            return False  # 醒着：入睡评估可走（长睡 enter 后写回顾）
 
         def awake_standby_active(self, now=None):
-            return False  # 不在待机：首次心跳判"入睡"并写回顾
+            return False
 
         async def consume_standby_expiry(self, now=None):
             return False
+
+        def sleep_state(self, now=None):
+            return {"asleep": False, "until": None, "kind": None,
+                    "fell_asleep_at": None, "last_wakeup_at": None}
+
+        async def exit_autonomous_sleep(self, now=None):
+            pass
+
+        async def enter_autonomous_sleep(self, until, kind, now=None):
+            pass
 
         async def should_wake(self, now=None, force=False):
             return False, "sleeping"
@@ -492,15 +502,26 @@ def test_bedtime_review_metadata_has_topics(tmp_path):
         async def close(self):
             pass
 
+    config = {
+        **BASE_CONFIG,
+        "sleep": {**BASE_CONFIG["sleep"], "sleepiness_threshold": 0.0},
+    }
     gate = InWindowGate()
+    mood = MoodState(db_path=str(tmp_path / "mood.db"))
+    asyncio.run(mood.load())
+    mood.energy = 0.05
+    manager = SleepManager(config_getter=lambda: config, gate=gate,
+                           mood=mood, rng=lambda: 0.5)
     loop = LivingLoop(
         gate=gate,
         memory_getter=lambda: asyncio.sleep(0, result=memory),
-        config_getter=lambda: BASE_CONFIG,
+        config_getter=lambda: config,
         activities=[],
+        mood=mood,
+        sleep_manager=manager,
     )
-    asyncio.run(loop.heartbeat_once_detailed(T0))
-    assert memory.added, "入睡应写睡前回顾"
+    asyncio.run(loop._autonomous_sleep_tick(T0))
+    assert memory.added, "长睡入睡应写睡前回顾"
     # 补丁 III：回顾记忆的 metadata 携带 topics=["睡前回顾"]
     reviews = [
         c for c in memory.added

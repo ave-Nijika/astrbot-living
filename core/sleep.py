@@ -82,7 +82,7 @@ class SleepManagerAutonomous:
     """自主作息动力学（任务书 M3 补丁 X）——挂到 SleepManager 上的混入。
 
     职责：睡意评估 → 入睡决策 → 睡眠时长 → 醒来/被吵醒结算 → 白天小睡。
-    状态（在睡/到点）由 LivingGate 持有（in_sleep_window 已融合自主睡眠），
+    状态（在睡/到点）由 LivingGate 持有（is_asleep_now = asleep_in_autonomous），
     静默拦截、唤醒计数、起床气、待机等既有机制零改动自动生效。
     """
 
@@ -349,7 +349,6 @@ class SleepManagerAutonomous:
         grouchy_boost: bool = False,
     ) -> dict:
         """自主长睡被吵醒的结算：起床气照常 + 睡眠债按实睡/预计比例保留
-        （替代 fixed 窗口的 apply_woken_in_sleep——自主模式没有固定窗）。
         kind="nap" 时债按 0 处理（任务书 M3 补丁 XI-A.1：小睡无"睡眠债"概念）。
         \"被叫醒了就不睡了\"：gate.exit_autonomous_sleep 由调用方负责。
 
@@ -387,7 +386,7 @@ class SleepManager(SleepManagerAutonomous):
         schedule: Any = None,
     ) -> None:
         self._config_getter = config_getter
-        self._gate = gate  # 用它的 in_sleep_window / sleep_window_span
+        self._gate = gate  # 用它的 is_asleep_now（在睡判定，吵醒计数/静默共用）
         self._mood = mood
         # M5-补丁4：起床约定（ScheduleManager）——压力项/锚定的数据源。
         # None = 无约定链路，睡意公式与现状完全一致
@@ -475,7 +474,7 @@ class SleepManager(SleepManagerAutonomous):
         )
         threshold = max(self._i(self._group("sleep").get("wake_n_messages"), 3), 1)
 
-        if not self._gate.in_sleep_window(now):
+        if not self._gate.is_asleep_now(now):
             return False, len(self._stamps)
         if not self.counts_toward_wake(sender_id):
             return False, len(self._stamps)
@@ -548,43 +547,6 @@ class SleepManager(SleepManagerAutonomous):
     # ------------------------------------------------------------------
     # 吵醒结算（任务书 B3：起床气 + 睡眠债）
     # ------------------------------------------------------------------
-    async def apply_woken_in_sleep(self, now: datetime | None = None) -> dict:
-        """主循环在休眠窗内被强制唤醒后的结算。
-
-        - 起床气：按 grouchiness_percent 概率给 valence/energy 双降；
-        - 睡眠债：按"距自然醒点的剩余时长占整个睡眠窗的比例"累积。
-        """
-        now = now or self._now()
-        result = {"grouchy": False, "debt_added": 0.0, "remaining_minutes": 0.0}
-        span = self._gate.sleep_window_span(now)
-        if span is None:
-            return result
-        total_minutes, remaining_minutes = span
-        result["remaining_minutes"] = round(remaining_minutes, 1)
-
-        percent = max(self._f(self._group("sleep").get("grouchiness_percent"), 20), 0.0)
-        grouchy = self._rng_float() < percent / 100.0
-        if self._mood is not None:
-            self._mood.apply_grouchiness(grouchy)
-        result["grouchy"] = grouchy
-
-        if total_minutes > 0:
-            debt = 100.0 * (remaining_minutes / total_minutes)
-            if self._mood is not None:
-                self._mood.add_sleep_debt(debt)
-            result["debt_added"] = round(debt, 1)
-
-        if self._mood is not None:
-            try:
-                await self._mood.save()
-            except Exception as e:
-                logger.warning(f"[Sleep] 睡眠结算保存失败（不影响本次唤醒）: {e}")
-        logger.debug(
-            f"[Sleep] 吵醒结算 起床气={result['grouchy']} "
-            f"睡眠债+{result['debt_added']}（剩余睡眠 {result['remaining_minutes']} 分钟）"
-        )
-        return result
-
     # ------------------------------------------------------------------
     # 静默拦截判定（任务书 B4）
     # ------------------------------------------------------------------
@@ -596,9 +558,6 @@ class SleepManager(SleepManagerAutonomous):
         （10 分钟窗口内）；紧急联系可发 living_wake_now
         """
         now = now or self._now()
-        window_raw = str(
-            self._group("sleep").get("sleep_window", "") or "未配置"
-        )
         window_minutes = max(
             self._f(self._group("sleep").get("wake_window_minutes"), 10), 1.0
         )
@@ -606,7 +565,7 @@ class SleepManager(SleepManagerAutonomous):
         count = self.last_window_count if count is None else count
         remaining = max(threshold - count, 0)
         return (
-            f"正在休眠（{window_raw}），窗内第 {count} 条；"
+            f"正在休眠（自主作息，睡意已达），在睡期第 {count} 条；"
             f"再发 {remaining} 条可唤醒（{window_minutes:.0f} 分钟窗口内）；"
             f"紧急联系可发 living_wake_now"
         )
@@ -626,7 +585,7 @@ class SleepManager(SleepManagerAutonomous):
             return False
         if self._gate.force_awake_active(now):
             return False  # 紧急唤醒后的强醒期：不拦（本次休眠已结束）
-        if not self._gate.in_sleep_window(now):
+        if not self._gate.is_asleep_now(now):
             return False
         text = str(message_str or "")
         if any(keyword in text for keyword in OWN_COMMAND_KEYWORDS):

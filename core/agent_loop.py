@@ -144,8 +144,18 @@ class LivingAgentLoop:
         """
         decision_cfg = self._group("decision")
         budget = self._number(decision_cfg.get("single_run_token_budget"), 20000)
+        # M6-补丁1 A1-A3：去掉 1~30 硬钳。
+        # max_steps <= 0 → 不限轮数（兜底是 token 预算闸，drive_agent_steps
+        # 每步检查 budget）。"不限"向 runner 的表达方式：传大数 10**9——
+        # AstrBot ToolLoopAgentRunner.step_until_done 的循环条件是
+        # `while not done() and step_count < max_step`（tool_loop_agent_runner.py
+        # :1060-1068），大数安全，终止由 done()（任务完成）或预算闸
+        # request_stop() 触发；0/负数直接传会导致零步退出，故必须映射。
         max_steps = int(self._number(decision_cfg.get("max_tool_rounds"), 8))
-        max_steps = max(1, min(max_steps, 30))
+        if max_steps <= 0:
+            max_steps = 10**9
+        else:
+            max_steps = max(1, max_steps)
 
         chain = await build_provider_chain(self._context, self._config_getter)
         if not chain:

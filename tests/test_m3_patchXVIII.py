@@ -16,8 +16,8 @@ from core.config_knobs import DIRECT_KNOB, KNOB_PRESETS, ConfigKnobs
 WORKDIR = Path(__file__).resolve().parents[1]
 SCHEMA = json.loads((WORKDIR / "_conf_schema.json").read_text(encoding="utf-8"))
 
-KNOB_NAMES = [
-    "preset_sleep_style", "preset_activity_level", "preset_talk_frequency",
+KNOB_NAMES = [  # M6-补丁1：preset_sleep_style 随 sleep_mode 配置键移除
+    "preset_activity_level", "preset_talk_frequency",
     "preset_capability_tier", "preset_write_level", "preset_topic_taste",
     "preset_free_activity", "preset_decision_mode", "preset_model",
 ]
@@ -41,6 +41,7 @@ BASELINE_KEYS = {
         "target_sessions",
     },
     "sleep": {
+        # M6-补丁1：sleep_mode / sleep_window 随 fixed 机制移除
         "awake_standby_minutes", "circadian_hint", "dream_probability",
         "fatigue_rate_per_hour", "grouchiness_percent", "max_sleep_hours",
         "min_awake_minutes", "min_sleep_hours", "nap_enabled",
@@ -48,8 +49,8 @@ BASELINE_KEYS = {
         "nap_max_minutes", "nap_min_minutes", "owner_id",
         "schedule_discipline", "schedule_extract_strictness",
         "schedule_reminder_enabled", "schedule_trigger_words",
-        "sleep_debt_decay_per_day", "sleep_farewell_message", "sleep_mode",
-        "sleep_mute_replies", "sleep_window", "sleepiness_jitter",
+        "sleep_debt_decay_per_day", "sleep_farewell_message",
+        "sleep_mute_replies", "sleepiness_jitter",
         "sleepiness_threshold", "wake_ack_message", "wake_n_messages",
         "wake_source", "wake_window_minutes", "weights",
     },
@@ -121,10 +122,6 @@ def test_knob_every_option_writes_mapped_keys(knob):
 
 def test_knob_mapping_matches_task_book_values():
     """硬编码抽查：映射表数值必须与任务书 2.2 一致（防数据源自身写错）。"""
-    assert KNOB_PRESETS["preset_sleep_style"] == {
-        "fixed": {"sleep": {"sleep_mode": "fixed"}},
-        "autonomous": {"sleep": {"sleep_mode": "autonomous"}},
-    }
     assert KNOB_PRESETS["preset_activity_level"]["quiet"]["decision"] == {
         "impulse_check_interval_minutes": 90,
         "activity_probability": 0.4,
@@ -214,11 +211,11 @@ def test_knobs_do_not_override_expert_edits():
 def test_knobs_survive_bad_values_without_blocking():
     """旋钮值不在预设表 / config 异常 → WARNING 跳过，不抛不阻塞。"""
     config = _nested_config()
-    config["preset"]["preset_sleep_style"] = "猜的值"
+    config["preset"]["preset_write_level"] = "猜的值"
     knobs = ConfigKnobs(lambda: config, save_config=None)
     knobs.arm()
     applied = asyncio.run(knobs.apply_changes())  # 基线
-    config["preset"]["preset_sleep_style"] = "猜的值2"
+    config["preset"]["preset_write_level"] = "猜的值2"
     applied = asyncio.run(knobs.apply_changes())
     assert applied == []  # 无映射 → 不写入也不崩
 

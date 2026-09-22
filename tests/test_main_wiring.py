@@ -395,19 +395,17 @@ def test_initialize_pools_respect_free_switch(tmp_path):
 # M3：/living_wake 命令 与 消息监听（吵醒计数 / 静默拦截）
 # ---------------------------------------------------------------------------
 def _living_gate():
-    """一个"当前时刻在休眠窗内"的闸门：窗口按真实时间动态生成。"""
+    """一个"当前时刻在睡"的闸门（M6-补丁1：autonomous 语义——
+    enter_autonomous_sleep 触发在睡，睡到真实当前时刻 +30 分钟）。"""
     from datetime import datetime, timedelta
 
     from core.living_state import LivingGate
 
     now = datetime.now()
-    start = (now - timedelta(minutes=30)).strftime("%H:%M")
-    end = (now + timedelta(minutes=30)).strftime("%H:%M")
     config = {
         "decision": {"daily_impulse_limit": 3, "activity_probability": 0.8},
         "capabilities": {"cooldown_between_activities_hours": 2.0},
         "sleep": {
-            "sleep_window": f"{start}-{end}",
             "wake_n_messages": 3,
             "wake_window_minutes": 10,
             "grouchiness_percent": 20,
@@ -416,7 +414,13 @@ def _living_gate():
         },
         "output_gate": {"daily_message_limit": 10, "message_min_interval_minutes": 30},
     }
-    return LivingGate(config_getter=lambda: config, db_path=":memory:", rng=lambda: 0.5)
+    gate = LivingGate(config_getter=lambda: config, db_path=":memory:", rng=lambda: 0.5)
+    # 同步注入"在睡"内存状态（与 enter_autonomous_sleep 的内存镜像一致；
+    # 不经 db/asyncio.run——本 helper 会在运行中的事件循环里被调用）
+    gate._sleep_until = now + timedelta(minutes=30)
+    gate._fell_asleep_at = now
+    gate._sleep_kind = "long"
+    return gate
 
 
 class FakeEvent:

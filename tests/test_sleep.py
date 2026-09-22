@@ -2,7 +2,7 @@
 
 import asyncio
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import pytest
@@ -12,11 +12,12 @@ from core.sleep import SleepManager
 
 # 用一个明确不在默认休眠窗（00:30-08:00）之外的窗口避免混淆：
 # 本文件统一用窗口 02:00-06:00，白天时间 12:00 = 窗外，04:00 = 窗内
+# M6-补丁1：fixed 机制移除——"在睡"由 enter_autonomous_sleep 触发
+# （autonomous 语义），IN_WINDOW/OUT_WINDOW 仅作为虚拟时钟使用
 CONFIG = {
     "decision": {"daily_impulse_limit": 3, "activity_probability": 0.8},
     "capabilities": {"cooldown_between_activities_hours": 2.0},
     "sleep": {
-        "sleep_window": "02:00-06:00",
         "wake_n_messages": 3,
         "wake_window_minutes": 10,
         "grouchiness_percent": 20,
@@ -38,6 +39,20 @@ OUT_WINDOW = datetime(2026, 9, 8, 12, 0, 0)  # 中午：窗外
 def make_gate():
     return LivingGate(config_getter=lambda: CONFIG, db_path=":memory:",
                       rng=lambda: 0.5)
+
+
+def asleep_gate(enter_at=None, hours=4.0):
+    """处于"在睡"状态的 gate（autonomous 语义：enter_autonomous_sleep 触发，
+    睡到 enter_at + hours）。吵醒计数/静默拦截的判定来源。"""
+    gate = make_gate()
+    start = enter_at or IN_WINDOW
+
+    async def _enter():
+        await gate.enter_autonomous_sleep(
+            start + timedelta(hours=hours), "long", start
+        )
+    asyncio.run(_enter())
+    return gate
 
 
 def make_manager(mood=None, rng=None, config=None, gate=None):
@@ -75,15 +90,15 @@ class FakeMood:
 # 吵醒计数（B3）
 # ---------------------------------------------------------------------------
 def test_wake_after_threshold_messages():
-    """窗内 3 条消息（默认阈值）→ 第 3 条触发吵醒。"""
-    manager = make_manager()
+    """在睡 3 条消息（默认阈值）→ 第 3 条触发吵醒。"""
+    manager = make_manager(gate=asleep_gate(hours=8.0))
     times = [datetime(2026, 9, 8, 4, 0, i) for i in (0, 1, 2)]
     results = [manager.register_message(t) for t in times]
     assert [r[0] for r in results] == [False, False, True]
 
 
-def test_wake_only_counts_inside_sleep_window():
-    """窗外的消息不参与吵醒计数。"""
+def test_wake_only_counts_while_asleep():
+    """醒着的消息不参与吵醒计数（M6-补丁1：原"窗外"语义 = 醒着）。"""
     manager = make_manager()
     for i in range(5):
         wake, _ = manager.register_message(datetime(2026, 9, 8, 12, 0, i))
@@ -92,7 +107,7 @@ def test_wake_only_counts_inside_sleep_window():
 
 def test_sliding_window_prunes_old_messages():
     """滑动窗：超过窗口时长的旧消息不再计数。"""
-    manager = make_manager()
+    manager = make_manager(gate=asleep_gate(hours=8.0))
     # 第 1、2 条在 04:00/04:01；第 3 条在 04:15（超出 10 分钟窗，前两条已过期）
     manager.register_message(datetime(2026, 9, 8, 4, 0, 0))
     manager.register_message(datetime(2026, 9, 8, 4, 1, 0))
@@ -103,7 +118,7 @@ def test_sliding_window_prunes_old_messages():
 
 def test_wake_triggers_once_per_burst():
     """同一波消息只吵醒一次：触发后冷却一个窗口时长。"""
-    manager = make_manager()
+    manager = make_manager(gate=asleep_gate(hours=8.0))
     manager.register_message(datetime(2026, 9, 8, 4, 0, 0))
     manager.register_message(datetime(2026, 9, 8, 4, 0, 30))
     wake1, _ = manager.register_message(datetime(2026, 9, 8, 4, 1, 0))
@@ -122,7 +137,7 @@ def test_wake_source_owner_only_filters_strangers():
         "sleep": {**CONFIG["sleep"], "wake_source": "owner_only",
                   "owner_id": "master001"},
     }
-    manager = make_manager(config=config)
+    manager = make_manager(config=config, gate=asleep_gate(hours=8.0))
     manager.register_message(datetime(2026, 9, 8, 4, 0, 0), "stranger")
     manager.register_message(datetime(2026, 9, 8, 4, 0, 30), "stranger2")
     wake_stranger, _ = manager.register_message(datetime(2026, 9, 8, 4, 1, 0), "stranger3")
@@ -151,10 +166,13 @@ def test_owner_only_without_owner_id_falls_back_to_all():
 # 吵醒结算：起床气 + 睡眠债（B3）
 # ---------------------------------------------------------------------------
 def test_grouchiness_roll_hit_and_miss():
-    """起床气按 grouchiness_percent 概率触发（mock rng）。"""
+    """起床气按 grouchiness_percent 概率触发（mock rng；M6-补丁1 起
+    走 autonomous 结算路径，实睡=预计时不欠债）。"""
     mood = FakeMood()
     manager = make_manager(mood=mood, rng=lambda: 0.01)  # 必中（< 0.2）
-    result = asyncio.run(manager.apply_woken_in_sleep(IN_WINDOW))
+    result = asyncio.run(
+        manager.apply_woken_from_autonomous(mood, 1.0, 8.0, kind="long")
+    )
     assert result["grouchy"] is True
     assert mood.grouchy_calls == [True]
     assert mood.valence == pytest.approx(0.2 - 0.15)
@@ -162,45 +180,19 @@ def test_grouchiness_roll_hit_and_miss():
 
     mood2 = FakeMood()
     manager2 = make_manager(mood=mood2, rng=lambda: 0.99)  # 必不中
-    result2 = asyncio.run(manager2.apply_woken_in_sleep(IN_WINDOW))
+    result2 = asyncio.run(
+        manager2.apply_woken_from_autonomous(mood2, 1.0, 8.0, kind="long")
+    )
     assert result2["grouchy"] is False
     assert mood2.grouchy_calls == [False]
     assert mood2.valence == pytest.approx(0.2)
 
 
-def test_sleep_debt_proportional_to_remaining_sleep():
-    """睡眠债按剩余睡眠占整个窗口的比例累积（任务书 B3）。"""
-    mood = FakeMood()
-    manager = make_manager(mood=mood)
-    # 04:00 醒，窗口 02:00-06:00：剩余 2h/总 4h = 50 债
-    result = asyncio.run(manager.apply_woken_in_sleep(IN_WINDOW))
-    assert result["debt_added"] == pytest.approx(50.0)
-    assert mood.sleep_debt == pytest.approx(50.0)
-    assert result["remaining_minutes"] == pytest.approx(120.0)
-
-
-def test_debt_zero_when_woken_at_window_end():
-    """快到自然醒点才醒：几乎不欠债。"""
-    mood = FakeMood()
-    manager = make_manager(mood=mood)
-    result = asyncio.run(
-        manager.apply_woken_in_sleep(datetime(2026, 9, 8, 5, 54, 0))
-    )
-    assert result["debt_added"] == pytest.approx(2.5)  # 剩 6 分钟 / 总 240 分钟 = 2.5%
-
-
-def test_debt_zero_outside_window():
-    mood = FakeMood()
-    manager = make_manager(mood=mood)
-    result = asyncio.run(manager.apply_woken_in_sleep(OUT_WINDOW))
-    assert result == {"grouchy": False, "debt_added": 0.0, "remaining_minutes": 0.0}
-
-
 # ---------------------------------------------------------------------------
 # 静默拦截判定（B4）
 # ---------------------------------------------------------------------------
-def test_mute_blocks_in_window_when_enabled():
-    manager = make_manager()
+def test_mute_blocks_when_asleep():
+    manager = make_manager(gate=asleep_gate())
     assert manager.should_mute_message(IN_WINDOW, "有人说话") is True
 
 
@@ -220,7 +212,7 @@ def test_mute_ignores_own_commands():
     assert manager.should_mute_message(IN_WINDOW, "/living_wake") is False
 
 
-def test_mute_ignores_outside_window():
+def test_mute_ignores_when_awake():
     manager = make_manager()
     assert manager.should_mute_message(OUT_WINDOW, "有人说话") is False
 
@@ -228,9 +220,9 @@ def test_mute_ignores_outside_window():
 # ---------------------------------------------------------------------------
 # LivingGate 的 force 语义与睡眠窗工具（A2/B3 支撑）
 # ---------------------------------------------------------------------------
-def test_gate_force_in_sleep_window_returns_woken():
-    """force + 休眠窗内 → (True, woken_from_sleep)，交给调用方做吵醒结算。"""
-    gate = make_gate()
+def test_gate_force_while_asleep_returns_woken():
+    """force + 在睡 → (True, woken_from_sleep)，交给调用方做吵醒结算。"""
+    gate = asleep_gate()
     allow, reason = asyncio.run(gate.should_wake(IN_WINDOW, force=True))
     assert allow is True
     assert reason == "woken_from_sleep"
@@ -262,21 +254,10 @@ def test_gate_force_still_respects_daily_limit():
     assert allow is False and reason == "daily_limit"
 
 
-def test_gate_sleep_window_span_cross_midnight():
-    """跨午夜窗口的总时长与剩余时间计算。"""
-    config = {
-        **CONFIG,
-        "sleep": {**CONFIG["sleep"], "sleep_window": "23:00-07:00"},
-    }
-    gate = LivingGate(config_getter=lambda: config, db_path=":memory:",
-                      rng=lambda: 0.5)
-    # 凌晨 3 点：窗头在昨天 23:00，窗尾今天 07:00 → 剩 4h，总 8h
-    span = gate.sleep_window_span(datetime(2026, 9, 8, 3, 0, 0))
-    assert span == pytest.approx((480.0, 240.0))
-    assert gate.sleep_window_span(OUT_WINDOW) is None
-
-
-def test_gate_in_sleep_window_helper():
-    gate = make_gate()
-    assert gate.in_sleep_window(IN_WINDOW) is True
-    assert gate.in_sleep_window(OUT_WINDOW) is False
+def test_gate_is_asleep_now_helper():
+    """is_asleep_now（原 in_sleep_window）：在睡 True / 醒着 False。"""
+    gate = asleep_gate()
+    assert gate.is_asleep_now(IN_WINDOW) is True
+    assert gate.is_asleep_now(OUT_WINDOW) is False
+    awake_gate = make_gate()
+    assert awake_gate.is_asleep_now(IN_WINDOW) is False

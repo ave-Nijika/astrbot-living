@@ -58,7 +58,7 @@ PLUGIN_NAME = "astrbot_plugin_living"
 
 # 闸门拦截原因 → 给主人看的一句话（/living_wake 反馈用）
 _WAKE_REASON_TEXT = {
-    "sleeping": "我在睡觉呢（休眠窗内），不忍心叫就别叫我啦",
+    "sleeping": "我在睡觉呢（自主作息），不忍心叫就别叫我啦",
     "daily_limit": "今天已经玩够了（每日活动上限）",
     "cooldown": "刚忙完，还在歇着（冷却中）",
     "rolled_off": "想了想暂时不想动（概率掷点落空，再叫一次就好）",
@@ -1036,10 +1036,9 @@ class LivingPlugin(Star):
                 f"上次活动：{last_act.strftime('%H:%M') if last_act else '无记录'}"
             )
             lines.append(f"今日主动消息：{state.get('message_count', 0)} 条")
-            window = str(self._cfg("sleep", "sleep_window", "") or "未配置")
             lines.append(
-                f"休眠窗：{window}"
-                f"（当前{'在内' if self.gate.in_sleep_window() else '在外'}）"
+                f"睡眠：{'在睡' if self.gate.is_asleep_now() else '醒着'}"
+                "（自主作息，入睡时机由睡意动力学决定）"
             )
             if self.gate.awake_standby_active():
                 gate_until = self.gate._awake_until
@@ -1117,10 +1116,10 @@ class LivingPlugin(Star):
         was_standby = self.gate.awake_standby_active()
         await self.gate.clear_awake_until()
         lines = ["已清除清醒待机。"]
-        if self.gate.in_sleep_window():
-            lines.append("现在在休眠窗内，下次心跳会回到睡眠。")
+        if self.gate.is_asleep_now():
+            lines.append("现在在睡，下次心跳会继续休息。")
         else:
-            lines.append("当前不在休眠窗内，照常待机。")
+            lines.append("当前不在睡，照常待机。")
         # 告别消息（如配置了）发到待机期最后活跃会话——主人让它睡，它道个晚安
         if was_standby and self.loop is not None:
             try:
@@ -1278,34 +1277,23 @@ class LivingPlugin(Star):
 
     @filter.command("living_wake_now")
     async def living_wake_now(self, event: AstrMessageEvent):
-        """紧急唤醒：立即终止本次休眠（强制清醒至窗尾），清空吵醒计数与
-        待机，立即触发一次 force 判定。下次休眠窗照常生效。"""
+        """紧急唤醒：立即终止本次休眠，清空吵醒计数与待机，立即触发一次
+        force 判定。下次入睡仍由睡意动力学决定。"""
         logger.info("[Living] 紧急唤醒：主人强制结束休眠")
         now = datetime.now()
         if self.gate is None or self.sleep_manager is None:
             yield event.plain_result("休眠组件未就绪，稍后再试")
             return
-        # M3 补丁 XI-A.3：autonomous 模式下先退出自主睡眠（本次中断不回睡）
-        if self.gate.autonomous_mode() and self.gate.asleep_in_autonomous(now):
+        # M3 补丁 XI-A.3：在自主睡眠中先退出（本次中断不回睡）
+        if self.gate.asleep_in_autonomous(now):
             await self.gate.exit_autonomous_sleep(now)
             logger.info("[Living] 紧急唤醒：自主睡眠已终止")
-        until = await self.gate.force_awake_now(now)
         # 清空吵醒计数与待机状态（从干净状态开始）
         self.sleep_manager.reset_wake_state()
         await self.gate.clear_awake_until()
-        window_text = self.gate.next_sleep_window_text()
-        if self.gate.autonomous_mode():
-            yield event.plain_result(
-                "已紧急唤醒，本次自主睡眠结束。下次入睡由睡意动力学决定。"
-            )
-        elif until is None:
-            yield event.plain_result(
-                f"当前不在休眠窗内。下次休眠窗：{window_text}"
-            )
-        else:
-            yield event.plain_result(
-                f"已紧急唤醒，本次休眠结束。下次休眠窗：{window_text}"
-            )
+        yield event.plain_result(
+            "已紧急唤醒，本次睡眠结束。下次入睡由睡意动力学决定。"
+        )
         # 立即触发一次 force 判定（复用既有链路，照常回复判定结果）
         if self.loop is not None:
             try:

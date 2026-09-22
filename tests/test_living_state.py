@@ -41,10 +41,16 @@ def make_gate(tmp_path, config=None, rng=lambda: 0.5):
 NOON = datetime(2026, 9, 7, 12, 0, 0)
 
 
-def test_sleep_window_blocks(tmp_path):
-    """休眠窗口内 → (False, sleeping)。用假时间注入 03:00。"""
+def test_asleep_blocks(tmp_path):
+    """在睡（until 未到）→ (False, sleeping)（M6-补丁1：autonomous 语义）。"""
     gate = make_gate(tmp_path)
-    allow, reason = asyncio.run(gate.should_wake(datetime(2026, 9, 7, 3, 0, 0)))
+
+    async def _prep():
+        await gate.enter_autonomous_sleep(
+            datetime(2026, 9, 7, 11, 0, 0), "long", datetime(2026, 9, 7, 3, 0, 0)
+        )
+    asyncio.run(_prep())
+    allow, reason = asyncio.run(gate.should_wake(datetime(2026, 9, 7, 8, 0, 0)))
     assert allow is False
     assert reason == "sleeping"
 
@@ -156,16 +162,20 @@ def test_cross_day_keeps_cooldown_timestamp(tmp_path):
 
 
 def test_evaluation_order_sleep_beats_limit(tmp_path):
-    """判定链顺序：达上限后进入休眠窗，报 sleeping 而不是 daily_limit。"""
+    """判定链顺序：达上限后在睡中，报 sleeping 而不是 daily_limit。"""
     gate = make_gate(tmp_path)
 
     async def flow():
-        # 00:00 记满 5 次活动（上限 3），05:00 已在休眠窗内（00:30-08:00）
+        # 记满 5 次活动（上限 3），再进入长睡（until 次日 15:00）
         for _ in range(5):
             await gate.note_activity_started(datetime(2026, 9, 7, 0, 0, 0))
-        return await gate.should_wake(datetime(2026, 9, 7, 5, 0, 0))
+        await gate.enter_autonomous_sleep(
+            datetime(2026, 9, 7, 15, 0, 0), "long", datetime(2026, 9, 7, 5, 0, 0)
+        )
+        return await gate.should_wake(datetime(2026, 9, 7, 6, 0, 0))
 
     allow, reason = asyncio.run(flow())
+    assert allow is False
     assert reason == "sleeping"
 
 

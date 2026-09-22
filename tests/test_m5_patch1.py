@@ -41,18 +41,18 @@ def test_get_payload_structure_and_key_counts():
     assert set(payload) == {"knobs", "advanced", "schema"}
 
     knobs = payload["schema"]["preset"]["items"]
-    assert sum(1 for k in knobs if k.startswith("preset_")) == 9
+    assert sum(1 for k in knobs if k.startswith("preset_")) == 8  # M6-补丁1：preset_sleep_style 随 sleep_mode 移除
     assert "life_extra" in knobs
     assert payload["schema"]["advanced"]["items"].keys() == \
         SCHEMA["advanced"]["items"].keys()
     advanced_count = sum(
         len(g["items"]) for g in payload["schema"]["advanced"]["items"].values()
     )
-    assert advanced_count == 63  # 57 + 补丁2 两键 + 补丁4 四键
+    assert advanced_count == 61  # 57 + 补丁2 两键 + 补丁4 四键 − M6-补丁1 删除的 sleep_mode/sleep_window
 
     # 当前值区：knobs 含全部旋钮默认、advanced 7 组 57 键
-    assert sum(1 for k in payload["knobs"] if k.startswith("preset_")) == 9
-    assert sum(len(v) for v in payload["advanced"].values()) == 63
+    assert sum(1 for k in payload["knobs"] if k.startswith("preset_")) == 8
+    assert sum(len(v) for v in payload["advanced"].values()) == 61
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +73,7 @@ def test_knob_save_uses_shared_mapping():
     assert summary["count"] == 1
 
 
-def test_knob_save_all_nine_knobs_via_shared_table():
+def test_knob_save_all_knobs_via_shared_table():
     """数据驱动：全部旋钮 × 全部选项经面板保存与映射表逐值一致。"""
     for knob, options in KNOB_PRESETS.items():
         for option, mapping in options.items():
@@ -149,7 +149,7 @@ def test_invalid_values_rejected_with_clear_message():
     with pytest.raises(PanelApiError, match="需要列表"):
         apply_panel_save(config, SCHEMA, {"advanced": {"decision": {"agent_activities": "surf"}}})
     with pytest.raises(PanelApiError, match="不在允许选项"):
-        apply_panel_save(config, SCHEMA, {"knobs": {"preset_sleep_style": "乱写"}})
+        apply_panel_save(config, SCHEMA, {"knobs": {"preset_topic_taste": "乱写"}})
     with pytest.raises(PanelApiError, match="未知旋钮"):
         apply_panel_save(config, SCHEMA, {"knobs": {"preset_hack": "x"}})
     with pytest.raises(PanelApiError, match="未知配置键"):

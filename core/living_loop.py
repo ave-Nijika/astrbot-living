@@ -119,7 +119,6 @@ class LivingLoop:
         self._config_event = asyncio.Event()
         self._wake_event = asyncio.Event()
         # 睡眠状态跟踪（任务书 B2/B5）：入睡写回顾，醒来掷梦
-        self._asleep: bool = False
         self._pending_dream: bool = False
 
     # ------------------------------------------------------------------
@@ -306,51 +305,17 @@ class LivingLoop:
         """带详情的心跳：/living_wake 命令用反馈给主人（唤醒/拦截原因）。"""
         now = now or datetime.now()
 
-        # 睡眠状态跟踪（任务书 B2/B5 + 补丁 II 三）：入睡写睡前回顾、
-        # 醒来掷梦、状态翻转打 INFO 日志（只在翻转时打，不是每次心跳）。
-        # "在睡" = 休眠窗内且不在清醒待机——被吵醒进待机后不算在睡。
-        # M5-补丁3 B1：本段是 **fixed 专属**——autonomous 模式的入睡/醒来
-        # 由 _autonomous_sleep_tick 驱动，窗口翻转不得参与（双轨冲突修复：
-        # 此前 autonomous 下窗口翻转照常发生，产生"进入休眠（窗口…）"
-        # 日志并错误触发睡前回顾）。
-        if self._sleep_mode() != "autonomous":
-            try:
-                in_window = self._gate.in_sleep_window(now)
-            except Exception:
-                in_window = False
-            standby_active = self._gate.awake_standby_active(now)
-            asleep_now = in_window and not standby_active
-
-            # 待机刚过期（补丁 II 三）：清除待机；仍在休眠窗内则发入睡告别
-            try:
-                standby_expired = await self._gate.consume_standby_expiry(now)
-            except Exception:
-                standby_expired = False
-            if standby_expired:
-                logger.info("[LivingLoop] 清醒待机结束")
-                if in_window:
-                    await self._send_sleep_farewell(now)
-
-            if asleep_now and not self._asleep:
-                self._asleep = True
-                self._log_sleep_entry(now)
-                await self._write_bedtime_review(now)
-            elif not in_window and self._asleep:
-                # 自然出窗：休眠结束（被吵醒导致的翻转在 woken 分支里消化）
-                self._asleep = False
-                self._pending_dream = True  # 自然醒，醒来也许有梦
-                logger.info("[LivingLoop] 休眠结束，恢复正常活动")
-            elif standby_active and self._asleep:
-                # 被吵醒进入待机：翻转在这里消化（"休眠结束"日志不出，
-                # 唤醒日志由 woken 分支负责）
-                self._asleep = False
-        else:
-            # autonomous：`self._asleep` 是 fixed 专属标志，恒保持 False
-            # （含 fixed → autonomous 热切换后的残留清理）
-            self._asleep = False
+        # 清醒待机（补丁 II 三）：刚过期则清除（M6-补丁1：fixed 翻转段
+        # 已随 fixed 机制移除，待机过期处理保留——待机是两模式共用机制）
+        try:
+            standby_expired = await self._gate.consume_standby_expiry(now)
+        except Exception:
+            standby_expired = False
+        if standby_expired:
+            logger.info("[LivingLoop] 清醒待机结束")
 
         # M3 补丁 X：自主作息——到点自然醒（结算恢复）与白天小睡。
-        # 只在 autonomous 模式激活；fixed 模式下以下方法全部短路返回。
+        # M6-补丁1：fixed 机制已移除，autonomous 是唯一睡眠行为。
         await self._autonomous_sleep_tick(now)
 
         allow, reason = await self._gate.should_wake(now, force=force)
@@ -361,45 +326,37 @@ class LivingLoop:
             # 吵醒结算（任务书 B3）：起床气 + 睡眠债，然后带着情绪醒来；
             # 随后进入清醒待机（补丁 II 一）并立刻回主人一句确认（补丁 II 二）
             if self._sleep_manager is not None:
-                # M3 补丁 XI-A.1：按模式分流——自主模式走专用结算
-                if self._gate.autonomous_mode():
-                    state = self._gate.sleep_state(now)
-                    fell = state.get("fell_asleep_at") or now
-                    actual_h = max((now - fell).total_seconds() / 3600.0, 0.0)
-                    planned_h = await self._planned_sleep_hours()
-                    kind = state.get("kind") or "long"
-                    # M5-补丁4 C2：存在已过期未兑现的起床约定（明知有约还
-                    # 睡过头被催醒）→ 起床气概率 ×2
-                    grouchy_boost = False
-                    if self._schedule is not None:
-                        try:
-                            grouchy_boost = (
-                                await self._schedule.overdue_unfulfilled(now)
-                            ) is not None
-                        except Exception:
-                            grouchy_boost = False
+                # M6-补丁1：fixed 结算已随机制移除，自主结算是唯一路径
+                state = self._gate.sleep_state(now)
+                fell = state.get("fell_asleep_at") or now
+                actual_h = max((now - fell).total_seconds() / 3600.0, 0.0)
+                planned_h = await self._planned_sleep_hours()
+                kind = state.get("kind") or "long"
+                # M5-补丁4 C2：存在已过期未兑现的起床约定（明知有约还
+                # 睡过头被催醒）→ 起床气概率 ×2
+                grouchy_boost = False
+                if self._schedule is not None:
                     try:
-                        settle = await self._sleep_manager.apply_woken_from_autonomous(
-                            self._mood, actual_h, planned_h, kind=kind,
-                            grouchy_boost=grouchy_boost,
-                        )
-                        logger.info(
-                            f"[LivingLoop] 自主睡眠被吵醒（实睡 {actual_h:.1f}h/"
-                            f"预计 {planned_h:.1f}h），起床气={settle['grouchy']} "
-                            f"债务+{settle['debt_added']}"
-                        )
-                    except Exception as e:
-                        logger.warning(f"[LivingLoop] 自主吵醒结算失败: {e}")
-                    # 立即退出自主睡眠状态——不退出的话 in_sleep_window 继续
-                    # 返回 True → 静默拦截持续生效（补丁 XI-A.1 根因）
-                    await self._gate.exit_autonomous_sleep(now)
-                else:
-                    try:
-                        await self._sleep_manager.apply_woken_in_sleep(now)
-                    except Exception as e:
-                        logger.warning(
-                            f"[LivingLoop] 吵醒结算失败（不影响唤醒）: {e}"
-                        )
+                        grouchy_boost = (
+                            await self._schedule.overdue_unfulfilled(now)
+                        ) is not None
+                    except Exception:
+                        grouchy_boost = False
+                try:
+                    settle = await self._sleep_manager.apply_woken_from_autonomous(
+                        self._mood, actual_h, planned_h, kind=kind,
+                        grouchy_boost=grouchy_boost,
+                    )
+                    logger.info(
+                        f"[LivingLoop] 自主睡眠被吵醒（实睡 {actual_h:.1f}h/"
+                        f"预计 {planned_h:.1f}h），起床气={settle['grouchy']} "
+                        f"债务+{settle['debt_added']}"
+                    )
+                except Exception as e:
+                    logger.warning(f"[LivingLoop] 自主吵醒结算失败: {e}")
+                # 立即退出自主睡眠状态——不退出的话 is_asleep_now 继续
+                # 返回 True → 静默拦截持续生效（补丁 XI-A.1 根因）
+                await self._gate.exit_autonomous_sleep(now)
                 try:
                     minutes = await self._sleep_manager.begin_standby(now)
                     logger.info(
@@ -417,18 +374,6 @@ class LivingLoop:
             self._pending_dream = False
             await self._maybe_dream(now)
         return True, reason, activity_name
-
-    def _log_sleep_entry(self, now: datetime) -> None:
-        """进入休眠的 INFO 日志（任务书附加：状态切换可观测）。"""
-        window_raw = str(
-            _conf_group(self._config_getter(), "sleep").get("sleep_window", "") or ""
-        )
-        quiet_until = (
-            window_raw.split("-")[-1].strip() if "-" in window_raw else "?"
-        )
-        logger.info(
-            f"[LivingLoop] 进入休眠（窗口 {window_raw or '?'}），静默至 {quiet_until}"
-        )
 
     async def _send_wake_ack(self) -> None:
         """唤醒确认消息（补丁 II 二）：零延迟回主人一句，纯 sender 零 token。
@@ -457,10 +402,11 @@ class LivingLoop:
             logger.warning(f"[LivingLoop] 唤醒确认消息发送失败: {e}")
 
     async def _send_sleep_farewell(self, now: datetime) -> None:
-        """入睡告别消息（补丁 II 三）：待机结束且仍在休眠窗内时告知主人。
+        """入睡告别消息（M6-补丁1 C1：触发源从 fixed 翻转迁移至 autonomous
+        长睡入睡；小睡不发送）。
 
-        默认配置为空 = 安静入睡（自然回落语义）；发往待机期最后活跃
-        会话；失败静默。纯 sender 零 token。
+        `sleep_farewell_message` 非空才发送；发往待机期最后活跃会话
+        （无会话/发送失败一律静默，不影响入睡）。纯 sender 零 token。
         """
         farewell = str(
             _conf_group(self._config_getter(), "sleep").get(
@@ -484,23 +430,14 @@ class LivingLoop:
         except Exception as e:
             logger.warning(f"[LivingLoop] 入睡告别消息发送失败: {e}")
 
-    def _sleep_mode(self) -> str:
-        try:
-            return str(
-                _conf_group(self._config_getter(), "sleep").get(
-                    "sleep_mode", "fixed"
-                )
-                or "fixed"
-            )
-        except Exception:
-            return "fixed"
-
     async def _autonomous_sleep_tick(self, now: datetime) -> None:
         """自主作息心跳（补丁 X）：到点自然醒结算 / 不在睡时评估入睡与小睡。
 
-        fixed 模式或 manager 未注入时全部短路——行为与现状零差别。
+        M6-补丁1：fixed 机制已移除，本 tick 是唯一的睡眠行为；
+        manager 或 mood 未注入（早期构造/局部替身）时短路返回——
+        入睡评估与结算都依赖心境。
         """
-        if self._sleep_mode() != "autonomous" or self._sleep_manager is None:
+        if self._sleep_manager is None or self._mood is None:
             return
         state = self._gate.sleep_state(now)
 
@@ -582,8 +519,10 @@ class LivingLoop:
                 f"{result['until'].strftime('%H:%M')} 自然醒"
             )
             # M5-补丁3 B2：autonomous 的睡前回顾由长睡入睡触发
-            #（fixed 由 heartbeat 翻转段触发；小睡不写回顾）
+            # M6-补丁1 C1：入睡告别同点触发（fixed 翻转段已随机制移除；
+            # 小睡两者都不触发）
             await self._write_bedtime_review(now)
+            await self._send_sleep_farewell(now)
             return
 
         nap = self._sleep_manager.should_nap(self._mood, now) if self._mood is not None else (False, 0.0)

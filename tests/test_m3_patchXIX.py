@@ -121,16 +121,16 @@ def test_save_state_failure_degrades_to_memory(tmp_path):
     state_dir = tmp_path / "blocker"
     state_dir.mkdir()  # state_path 指向目录 → write_text 必然抛 OSError
     config = _nested_config()
-    config["preset"]["preset_sleep_style"] = "fixed"
+    config["preset"]["preset_write_level"] = "read"
 
     knobs = ConfigKnobs(lambda: config, state_path=str(state_dir))
     knobs.arm()  # 落盘失败 → 降级内存基线，不抛
     assert knobs._last_knobs is not None
 
-    config["preset"]["preset_sleep_style"] = "autonomous"
+    config["preset"]["preset_write_level"] = "browse"
     applied = asyncio.run(knobs.apply_changes())  # 写入后落盘再失败，仍不抛
     assert applied
-    assert conf_group(config, "sleep")["sleep_mode"] == "autonomous"
+    assert conf_group(config, "autonomy")["write_level"] == 1
 
 
 def test_load_state_corrupt_falls_back(tmp_path):
@@ -170,28 +170,28 @@ def test_baseline_survives_restart(tmp_path):
 # ---------------------------------------------------------------------------
 def test_new_knob_key_filled_from_current_not_treated_as_change(tmp_path):
     state = tmp_path / "knobs_state.json"
-    _baseline_file(state, {"preset_sleep_style": "autonomous"})  # 只有旧旋钮
+    _baseline_file(state, {"preset_write_level": "read"})  # 只有旧旋钮
 
     config = _nested_config()
-    config["preset"]["preset_sleep_style"] = "autonomous"
-    config["preset"]["preset_write_level"] = "comment"  # 后加的旋钮
+    config["preset"]["preset_write_level"] = "read"
+    config["preset"]["preset_activity_level"] = "quiet"  # 后加的旋钮
 
     knobs = ConfigKnobs(lambda: config, state_path=state)
     knobs.arm()
-    assert knobs._last_knobs["preset_sleep_style"] == "autonomous"  # 盘上值
-    assert knobs._last_knobs["preset_write_level"] == "comment"  # 当前值补齐
+    assert knobs._last_knobs["preset_write_level"] == "read"  # 盘上值
+    assert knobs._last_knobs["preset_activity_level"] == "quiet"  # 当前值补齐
     assert asyncio.run(knobs.apply_changes()) == []  # 新键不算"刚改"，不写入
     # 补齐后的完整基线已同步回盘
-    assert _stored_baseline(state)["preset_write_level"] == "comment"
+    assert _stored_baseline(state)["preset_activity_level"] == "quiet"
 
 
 def test_arm_without_state_path_keeps_memory_semantics(tmp_path):
     """state_path=None（XVIII 既有用法）：纯内存基线，行为不变。"""
     config = _nested_config()
-    config["preset"]["preset_sleep_style"] = "fixed"
+    config["preset"]["preset_write_level"] = "read"
     knobs = ConfigKnobs(lambda: config, state_path=None)
     knobs.arm()
     assert asyncio.run(knobs.apply_changes()) == []
-    config["preset"]["preset_sleep_style"] = "autonomous"
+    config["preset"]["preset_write_level"] = "browse"
     assert asyncio.run(knobs.apply_changes())
-    assert conf_group(config, "sleep")["sleep_mode"] == "autonomous"
+    assert conf_group(config, "autonomy")["write_level"] == 1
