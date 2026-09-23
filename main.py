@@ -1360,10 +1360,17 @@ class LivingPlugin(Star):
                 yield event.plain_result(f"判定出了点岔子：{e}")
 
     @filter.event_message_type(filter.EventMessageType.ALL)
-    async def _extract_schedule_safe(self, schedule, text: str) -> None:
-        """约定提取的后台包装：任何异常只 debug，绝不影响消息主链路。"""
+    async def _extract_schedule_safe(self, event: AstrMessageEvent) -> None:
+        """约定提取的后台包装：任何异常只 debug，绝不影响消息主链路。
+
+        M9-补丁1 交付后线上实测发现原签名 (self, schedule, text) 不可用：
+        AstrBot 的 handler 参数注入只认 event 等内置名，schedule/text 不会被
+        注入，导致每条用户消息触发一次 TypeError、约定提取自上线起从未
+        工作（2026-09-23 凛核验定位）。现改为从 event 取文本、schedule 走
+        实例属性。"""
         try:
-            await schedule.maybe_extract(text, datetime.now())
+            text = str(getattr(event, "message_str", "") or "")
+            await self._schedule.maybe_extract(text, datetime.now())
         except Exception as e:
             logger.debug(f"[Schedule] 约定提取失败（忽略）: {e}")
 
