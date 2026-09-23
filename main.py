@@ -65,6 +65,22 @@ _WAKE_REASON_TEXT = {
 }
 
 
+def _merge_config_defaults(refer: dict, conf: dict) -> dict:
+    """按 default 树递归合并（M9-补丁2 A2）：磁盘值优先，缺键/None 补默认。
+
+    语义对齐 AstrBotConfig.check_config_integrity（缺键插入 schema default、
+    None 视同缺失）；磁盘上 schema 没有的键原样保留（对齐其 update(conf)
+    行为）。refer 分支深拷贝：default 树按实例缓存，防止调用方 mutate
+    合并结果时污染缓存。"""
+    out: dict = dict(conf)
+    for key, value in refer.items():
+        if key not in conf or conf[key] is None:
+            out[key] = json.loads(json.dumps(value))  # 深拷贝（纯 JSON 树）
+        elif isinstance(value, dict) and isinstance(conf[key], dict):
+            out[key] = _merge_config_defaults(value, conf[key])
+    return out
+
+
 class LivingPlugin(Star):
     """插件主类：五能力 + 状态闸门 + 主循环。"""
 
@@ -163,6 +179,54 @@ class LivingPlugin(Star):
         import os
 
         return os.path.join(self._plugin_data_dir(), "mood.db")
+
+    def _plugin_config_path(self) -> str:
+        """插件配置文件的磁盘路径（AstrBot 侧命名规则：插件目录名_config.json，
+        见 star_manager 的插件配置构造）。"""
+        import os
+
+        from astrbot.core.utils.astrbot_path import get_astrbot_config_path
+
+        return os.path.join(get_astrbot_config_path(), f"{PLUGIN_NAME}_config.json")
+
+    def _schema_defaults(self) -> dict:
+        """schema 默认树（preset/advanced 同构），按实例缓存。
+
+        schema 随插件部署不变（热重载重建实例即刷新）；缓存的是默认树
+        而非配置——配置本体在 _effective_config 里每次现读，无缓存。"""
+        cached = getattr(self, "_schema_defaults_cache", None)
+        if cached is None:
+            from .core.panel_api import default_tree, load_schema
+
+            cached = default_tree(load_schema(Path(__file__).resolve().parent))
+            self._schema_defaults_cache = cached
+        return cached
+
+    def _effective_config(self) -> dict:
+        """运行时配置的磁盘直读（M9-补丁2 A1）——装配处 config_getter 的实现。
+
+        为什么不直接用 self.config：面板保存插件配置时 AstrBot 只写磁盘并
+        更新 dashboard 侧实例，运行中插件持有的 self.config 不同步
+        （v4.28.0-beta.1 实测）→ 所有热读拿到的都是启动时旧值。改为每次
+        现读磁盘文件（json + schema 缺键补默认，A2），面板保存即热生效。
+
+        容错（A3）：文件不存在（AstrBot 尚未持久化过插件配置）/JSON 损坏/
+        结构异常 → 回落 self.config 并 WARNING，心跳不因读取失败而挂。
+        """
+        path = self._plugin_config_path()
+        try:
+            with open(path, encoding="utf-8-sig") as f:
+                conf = json.load(f)
+            if not isinstance(conf, dict):
+                raise ValueError("配置文件顶层不是 JSON 对象")
+        except FileNotFoundError:
+            return self.config
+        except Exception as e:
+            logger.warning(
+                f"[{PLUGIN_NAME}] 配置文件读取失败（回落运行时配置）: {e}"
+            )
+            return self.config
+        return _merge_config_defaults(self._schema_defaults(), conf)
 
     # ------------------------------------------------------------------
     # 记忆懒加载（需求 A，实现在 core/lazy_memory.py）
@@ -541,7 +605,7 @@ class LivingPlugin(Star):
             logger.warning(f"[{PLUGIN_NAME}] 心境加载失败（用默认心境继续）: {e}")
 
         self.gate = LivingGate(
-            config_getter=lambda: self.config,
+            config_getter=self._effective_config,
             db_path=self._gate_db_path(),
         )
         # 补丁 II：重启时若仍在清醒待机期内则延续待机状态（持久化恢复）
@@ -552,12 +616,12 @@ class LivingPlugin(Star):
         # M5-补丁4：起床约定（ScheduleManager）——提取/存储/压力查询，
         # 复用决策 LLM 装配（与 _dream_llm_call 同一注入模式）
         self._schedule = ScheduleManager(
-            config_getter=lambda: self.config,
+            config_getter=self._effective_config,
             gate=self.gate,
             llm_call=self._decision_llm_call,
         )
         self.sleep_manager = SleepManager(
-            config_getter=lambda: self.config,
+            config_getter=self._effective_config,
             gate=self.gate,
             mood=self.mood,
             schedule=self._schedule,
@@ -566,7 +630,7 @@ class LivingPlugin(Star):
         )
         agent_loop = LivingAgentLoop(
             context=self.context,
-            config_getter=lambda: self.config,
+            config_getter=self._effective_config,
             persona_getter=self._persona_prompt,
             life_extra_getter=lambda: str(self._preset("life_extra", "") or ""),
             mood=self.mood,
@@ -578,7 +642,7 @@ class LivingPlugin(Star):
             activities=default_activities(
                 enabled_free=self._free_activity_enabled()
             ),
-            config_getter=lambda: self.config,
+            config_getter=self._effective_config,
             llm_call=self._decision_llm_call,
             mood=self.mood,
             persona_getter=self._persona_prompt,
@@ -588,7 +652,7 @@ class LivingPlugin(Star):
         self.loop = LivingLoop(
             gate=self.gate,
             memory_getter=self._get_memory,
-            config_getter=lambda: self.config,
+            config_getter=self._effective_config,
             abilities={
                 "searcher": self.searcher,
                 "fetcher": self.fetcher,
@@ -609,7 +673,7 @@ class LivingPlugin(Star):
             schedule=self._schedule,
             share_rewriter=ShareRewriter(
                 llm_call=self._decision_llm_call,
-                config_getter=lambda: self.config,
+                config_getter=self._effective_config,
                 persona_getter=self._persona_prompt,
                 life_extra_getter=lambda: str(
                     self._preset("life_extra", "") or ""

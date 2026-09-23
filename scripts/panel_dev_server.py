@@ -46,6 +46,13 @@ PAGE_DIR = WORKDIR / "pages" / "config"
 SCHEMA = load_schema(WORKDIR)
 CONFIG = default_tree(SCHEMA)  # {"preset": {...}, "advanced": {...}}
 
+# M9-补丁2：生产 extensions 直连路径（与 dashboard 注册路由同形）——
+# 前端心境区块已绕过 bridge 直接同源 fetch 这两个路径
+EXT_MOOD_PATH = "/api/v1/plugins/extensions/astrbot_plugin_living/mood"
+EXT_MOOD_INTERESTS_PATH = (
+    "/api/v1/plugins/extensions/astrbot_plugin_living/mood/interests"
+)
+
 # M9-补丁1：mock mood 实例（临时 db，进程退出即删）——浏览器实测心境区块。
 # 预置几条示例兴趣，重现"旧权重垄断"的可治理场景。
 import asyncio  # noqa: E402
@@ -138,6 +145,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"status": "ok", "data": build_config_payload(CONFIG, SCHEMA)})
         elif path == "/mock/api/mood":
             self._send_json({"status": "ok", "data": build_mood_snapshot(MOOD)})
+        elif path == EXT_MOOD_PATH:
+            # M9-补丁2：直连路径 mock——复刻生产 extensions 路由的鉴权
+            # 语义（缺 Authorization 头 → 401），供浏览器实测 B1/B3
+            if not self.headers.get("Authorization"):
+                self._send_json({"message": "unauthorized"}, code=401)
+                return
+            self._send_json({"status": "ok", "data": build_mood_snapshot(MOOD)})
         else:
             self._send(404, b"not found", "text/plain")
 
@@ -168,9 +182,18 @@ class Handler(BaseHTTPRequestHandler):
                 "data": summary,
             })
             return
-        if path == "/mock/api/mood/interests":
-            # M9-补丁1：校验失败回真 HTTP 400（生产 Pages bridge 恒 200、
-            # 错误走 body.status，mock 侧更能还原语义）
+        if path in ("/mock/api/mood/interests", EXT_MOOD_INTERESTS_PATH):
+            # M9-补丁2 B2：直连写操作 mock；EXT 路径鉴权同 GET（缺头 → 401，
+            # 复刻生产 extensions 路由语义），旧 mock 路径无鉴权。
+            # 校验失败回真 HTTP 400（生产 Pages bridge 恒 200、错误走
+            # body.status；extensions 路由本身可回真实状态码）
+            if (
+                path == EXT_MOOD_INTERESTS_PATH
+                and not self.headers.get("Authorization")
+            ):
+                self._send_json({"message": "unauthorized"}, code=401)
+                return
+
             async def mood_flow():
                 # M8-补丁1 纪律：ThreadingHTTPServer 每请求一个线程一
                 # 个 loop，上一请求遗留的连接必须先关（幂等），本请求

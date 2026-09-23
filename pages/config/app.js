@@ -417,7 +417,50 @@ function renderExpert() {
  * 运行时状态（mood.db），不是配置键——读写走独立端点，逐项即时提交
  * （weight 改动/删除/清空都立刻生效，不进顶部"保存改动"的配置差量流）。
  * 提交方式二选一里选了逐项即时：兴趣是诊断级运行状态，改一项立即生效
- * 比攒着一起保存更直观，也不与配置保存的热重载互相干扰。 */
+ * 比攒着一起保存更直观，也不与配置保存的热重载互相干扰。
+ *
+ * M9-补丁2 B1/B2：绕过 bridge，直接同源 fetch——bridge（打包 dist）的
+ * 转发路径与端点注册失配（连 M5 的 config 旧端点也失配，实测"未找到该
+ * 路由"），而同源 /api/v1/plugins/extensions/<plugin>/<route> 始终正常。
+ * 鉴权与 dashboard 前端同款：localStorage['token'] + Authorization Bearer
+ * （dashboard/src/api/http.ts getToken 同款键）。沙箱防御：localStorage
+ * 与 fetch 全程 try/catch，取不到 token 就裸请求（401 时给出专用文案）。 */
+
+const PLUGIN_API_BASE = "/api/v1/plugins/extensions/astrbot_plugin_living";
+
+function authToken() {
+  try {
+    return localStorage.getItem("token") || "";
+  } catch (e) {
+    return ""; // 沙箱禁用 localStorage：裸请求，401 文案兜底
+  }
+}
+
+/* 心境端点统一请求：401 专用文案（B3），其余透传服务端 message。 */
+async function moodRequest(path, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  const token = authToken();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  let resp;
+  try {
+    resp = await fetch(`${PLUGIN_API_BASE}${path}`, { ...options, headers });
+  } catch (e) {
+    throw new Error("网络错误：无法连接 dashboard");
+  }
+  let body = null;
+  try {
+    body = await resp.json();
+  } catch (e) { /* 空响应体按 null 处理 */ }
+  if (resp.status === 401) {
+    throw new Error("登录已过期，请重新登录 dashboard");
+  }
+  if (!resp.ok || (body && body.status === "error")) {
+    throw new Error(
+      (body && body.message) || `请求失败（HTTP ${resp.status}）`
+    );
+  }
+  return body;
+}
 
 const MOOD_STATS = [
   // [字段, 标签, 格式化]；fatigue/sleep_debt 是 0-100，其余 0-1（valence -1~1）
@@ -456,10 +499,9 @@ async function renderMoodSection() {
   const host = $("#mood-section");
   let snap;
   try {
-    const resp = await bridge.apiGet("mood");
-    const body = resp && resp.data ? resp : { data: null, message: "读取失败" };
-    if (!body.data) throw new Error(body.message || "读取失败");
-    snap = body.data;
+    const body = await moodRequest("/mood");
+    snap = body && body.data ? body.data : null;
+    if (!snap) throw new Error("响应缺少 data");
   } catch (e) {
     // 心境读取失败不影响上面的配置抽屉，只在区块内提示
     host.innerHTML = "";
@@ -551,15 +593,11 @@ async function renderMoodSection() {
         return;
       }
       try {
-        const resp = await bridge.apiPost(
-          "mood/interests",
-          { action: "set", topic, weight: num }
-        );
-        if (resp && resp.status === "error") {
-          toast(resp.message || "保存失败", true);
-          input.value = String(weight);
-          return;
-        }
+        const resp = await moodRequest("/mood/interests", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "set", topic, weight: num }),
+        });
         toast(`已保存：${topic}`);
         input.value = String(num);
       } catch (e) {
@@ -574,14 +612,11 @@ async function renderMoodSection() {
     del.textContent = "删除";
     del.addEventListener("click", async () => {
       try {
-        const resp = await bridge.apiPost(
-          "mood/interests",
-          { action: "delete", topic }
-        );
-        if (resp && resp.status === "error") {
-          toast(resp.message || "删除失败", true);
-          return;
-        }
+        await moodRequest("/mood/interests", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "delete", topic }),
+        });
         toast(`已删除：${topic}`);
         renderMoodSection(); // 重拉：计数/空态/排序一并刷新
       } catch (e) {
@@ -602,14 +637,11 @@ async function renderMoodSection() {
     clearBtn.textContent = "清空全部";
     armInlineConfirm(clearBtn, async () => {
       try {
-        const resp = await bridge.apiPost(
-          "mood/interests",
-          { action: "clear" }
-        );
-        if (resp && resp.status === "error") {
-          toast(resp.message || "清空失败", true);
-          return;
-        }
+        await moodRequest("/mood/interests", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "clear" }),
+        });
         toast("已清空全部兴趣");
         renderMoodSection();
       } catch (e) {
