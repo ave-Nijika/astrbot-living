@@ -1,4 +1,4 @@
-"""历史污染数据自愈（任务书 M3 补丁 VI 需求 2）。
+"""历史污染数据自愈（任务书 M3 补丁 VI 需求 2）+ 存量身份回填（M9-补丁3）。
 
 背景：补丁 IV 时期的 _bot_identity 提取过 default:hash 污染身份并随活动
 记忆入库（凛 SQL 查实 2 个污染 person 节点、12 条记忆）。本模块在插件
@@ -20,6 +20,16 @@
   2. engine.graph_memory_manager.index_memory（以新 metadata 重建图谱条目）
   3. engine.delete_memory + add_memory（删除重写，最后手段）
 实际可用者记录在返回值与日志里。
+
+M9-补丁3 新增 run_ghost_identity_backfill：身份可用时扫描 living 直写
+（session_id 以 living_ghost 开头）但 participant_identities 为空的存量
+记忆并回填 bot 身份。与污染自愈的记账差异：回填**不用** state 文件按
+id 记账——主人清空记忆库后 documents id 从 1 重排，按 id 记账会把新
+记忆误判为已处理；"已有身份即跳过"的扫描条件本身天然幂等（2026-09-23
+对 LivingMemory 源码核实：engine.update_memory(id, updates) 的
+updates={"metadata": ...} 走三库同步，且 metadata 键触及
+participant_identities 时自动触发 graph_memory_manager.index_memory
+图谱重建——身份回填与图谱联动单次调用完成）。
 """
 
 from __future__ import annotations
@@ -230,6 +240,164 @@ def load_state(state_path: str | Path) -> dict:
         return state if isinstance(state, dict) else {"healed": {}}
     except (ValueError, OSError):
         return {"healed": {}}
+
+
+# ---------------------------------------------------------------------------
+# M9-补丁3：存量身份回填（living 直写且无参与者身份的记忆并回主图谱）
+# ---------------------------------------------------------------------------
+
+GHOST_SESSION_PREFIX = "living_ghost"
+"""living 直写记忆的会话前缀（幽灵 uwo 首段 = platform_meta.id）。"""
+
+
+def _parse_metadata(raw: Any) -> dict:
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+async def scan_ghost_memories_without_identity(engine: Any) -> list[dict]:
+    """扫描 living 直写但 participant_identities 为空的存量记忆。
+
+    扫描条件（任务书 B1/B4，三者同时满足才命中）：
+      - metadata.session_id 以 living_ghost 开头——living 自主活动直写的
+        会话（原生对话记忆是 aiocqhttp: 等真实平台会话，天然不命中）；
+      - participant_identities 为空（已有身份的记忆不动——这同时是幂等
+        机制：回填成功后下次扫描不再命中）；
+      - 正文非空（跳过占位/测试残留）。
+
+    实现说明：LivingMemory 无"按前缀列会话"的公开 API（get_session_memories
+    只接受精确 session_id），与它自身的会话查询同款走 documents 表的
+    json_extract（schema 依据 memory_engine_crud.get_session_memories 源码
+    核实）；SQL 或表结构变化时返回空列表并 WARNING，由调用方记录。
+    """
+    conn = getattr(engine, "db_connection", None)
+    if conn is None:
+        logger.warning(
+            "[SelfHeal] 存量回填：引擎无 db_connection（接口变化？），跳过扫描"
+        )
+        return []
+    try:
+        cursor = await conn.execute(
+            """
+            SELECT id, text, metadata
+            FROM documents
+            WHERE json_extract(metadata, '$.session_id') LIKE ?
+            ORDER BY id
+            """,
+            (GHOST_SESSION_PREFIX + "%",),
+        )
+        rows = await cursor.fetchall()
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning(f"[SelfHeal] 存量回填扫描失败（跳过）: {e}")
+        return []
+
+    found: list[dict] = []
+    for row in rows:
+        metadata = _parse_metadata(row["metadata"])
+        if metadata.get("participant_identities"):
+            continue  # 已有身份：幂等跳过
+        content = str(row["text"] or "")
+        if not content.strip():
+            continue  # 占位/测试残留
+        found.append(
+            {"id": int(row["id"]), "content": content, "metadata": metadata}
+        )
+    return found
+
+
+async def _backfill_one(engine: Any, item: dict, identity: dict) -> bool:
+    """单条回填：metadata 补丁式更新（其余键保留），返回是否成功。
+
+    调用对齐 2026-09-23 实测的 LivingMemory 签名
+    update_memory(memory_id, updates)（memory_engine_crud.py:612）：
+    updates={"metadata": {...}} 走 hybrid_retriever 三库同步，且键触及
+    participant_identities 时引擎自动 index_memory 重建图谱（bot 身份 →
+    fact 的 mentioned_in 边在这里产生，任务书 B3）。
+    """
+    updates = {"metadata": {"participant_identities": [dict(identity)]}}
+    method = getattr(engine, "update_memory", None)
+    if not callable(method):
+        logger.warning(
+            "[SelfHeal] 存量回填：engine.update_memory 不可用（接口变化？）"
+        )
+        return False
+    try:
+        ok = method(item["id"], updates)
+        if asyncio.iscoroutine(ok):
+            ok = await ok
+    except TypeError as e:
+        logger.warning(
+            f"[SelfHeal] 记忆 {item['id']} 回填签名失配（跳过）: {e}"
+        )
+        return False
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        # 单条失败只记日志不中断（任务书 B3：回填与后续机制解耦）
+        logger.warning(f"[SelfHeal] 记忆 {item['id']} 回填失败（跳过）: {e}")
+        return False
+    if not ok:
+        logger.warning(f"[SelfHeal] 记忆 {item['id']} 回填被引擎拒绝")
+    return bool(ok)
+
+
+async def run_ghost_identity_backfill(engine: Any, bot_identity: dict) -> dict:
+    """身份可用时的一次性存量回填：扫描 → 回填 → 图谱联动 → 统计。
+
+    Args:
+        engine: LivingMemory 引擎（backend.engine）。
+        bot_identity: main._bot_identity() 产物（identity_key/sender_id/
+            platform/display_name/aliases/is_bot——与正常写入规范同构）。
+
+    Returns:
+        {"scanned": SQL 命中 living_ghost 的行数, "backfilled": 成功回填数,
+         "skipped": 已有身份/空正文/失败跳过数}
+    """
+    rows = await scan_ghost_memories_without_identity(engine)
+    scanned = 0
+    try:
+        conn = getattr(engine, "db_connection", None)
+        if conn is not None:
+            cursor = await conn.execute(
+                """
+                SELECT COUNT(*) FROM documents
+                WHERE json_extract(metadata, '$.session_id') LIKE ?
+                """,
+                (GHOST_SESSION_PREFIX + "%",),
+            )
+            row = await cursor.fetchone()
+            scanned = int(row[0]) if row else 0
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        scanned = len(rows)  # 计数失败时退化为可回填集合大小
+
+    backfilled = 0
+    for item in rows:
+        if not isinstance(bot_identity, dict) or not bot_identity:
+            break  # 身份不可用：宁可全部不回填也不写空身份
+        if await _backfill_one(engine, item, bot_identity):
+            backfilled += 1
+
+    summary = {
+        "scanned": scanned,
+        "backfilled": backfilled,
+        "skipped": scanned - backfilled,
+    }
+    logger.info(
+        f"[SelfHeal] 存量身份回填完成：扫描 {summary['scanned']} 条，"
+        f"回填 {backfilled} 条，跳过 {summary['skipped']} 条"
+    )
+    return summary
 
 
 def save_state(state_path: str | Path, state: dict) -> None:

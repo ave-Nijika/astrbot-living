@@ -123,6 +123,8 @@ class LivingPlugin(Star):
         self._browser_session: Any = None
         # 补丁 XVI：bot 自身身份缓存（来自真实消息事件，与原生侧同源）
         self._self_identity: dict | None = None
+        # M9-补丁3：存量身份回填后台任务（引用存实例防 GC，并发去重）
+        self._backfill_task: asyncio.Task | None = None
 
         logger.info(f"[{PLUGIN_NAME}] M3 加载完成（心境+休眠+agent 循环）")
 
@@ -357,8 +359,59 @@ class LivingPlugin(Star):
                 "is_bot": True,
             }
             logger.info(f"[Living] bot 自身身份已记录（与原生同源）: {key}")
+            # M9-补丁3：身份首次可用 → 后台回填存量无身份的 living 记忆
+            # （幂等；绝不能阻塞消息链路，故 create_task 且不等待）
+            self._schedule_ghost_backfill()
         except Exception as e:
             logger.debug(f"[Living] 自身身份采集失败（忽略）: {e}")
+
+    def _schedule_ghost_backfill(self) -> None:
+        """存量身份回填的后台触发（M9-补丁3）。
+
+        同一时刻只允许一个回填任务在跑/排队（并发去重）；任务引用存实例
+        属性防止被垃圾回收（asyncio 官方建议）。触发本身绝不抛异常——
+        身份采集在消息链路上，回填只是它的副产品。
+        """
+        try:
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                return  # 非事件循环上下文（同步调用）：跳过，不留悬空协程
+            prev = getattr(self, "_backfill_task", None)
+            if prev is not None and not prev.done():
+                return
+            self._backfill_task = asyncio.create_task(
+                self._run_ghost_backfill_once()
+            )
+        except Exception as e:
+            logger.debug(f"[Living] 存量回填触发失败（忽略）: {e}")
+
+    async def _run_ghost_backfill_once(self) -> None:
+        """存量回填执行体：身份可用 + LivingMemory 就绪才动手（M9-补丁3）。
+
+        与 _run_identity_selfheal_with_retry 的差异：那个等引擎就绪（启动
+        期最多 10 分钟），这个由身份缓存成功事件触发（引擎通常已就绪），
+        探测一次不就绪就放弃——下一条真实消息会再次触发，不必在这里等。
+        """
+        try:
+            from .core.memory_backend import LivingMemoryBackend
+            from .core.selfheal import run_ghost_identity_backfill
+
+            identity = await self._bot_identity()
+            if not identity or self._identity_is_polluted(
+                identity.get("identity_key")
+            ):
+                return
+            backend = await self._get_memory()
+            if not isinstance(backend, LivingMemoryBackend):
+                return  # Simple 后端无 documents/图谱，无事可做
+            await run_ghost_identity_backfill(
+                getattr(backend, "engine", None), identity
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"[SelfHeal] 存量身份回填异常（不影响服务）: {e}")
 
     def _normalize_bot_identity(self, participant: dict) -> dict:
         """把采信的原生参与者条目规范成统一的 bot 身份结构（补 aliases）。"""
@@ -977,6 +1030,17 @@ class LivingPlugin(Star):
                 )
         except Exception as e:
             logger.warning(f"[SelfHeal] 自愈流程异常（不影响插件服务）: {e}")
+        # M9-补丁3 B1：身份可用（路径 0/1 任一命中）时顺路回填存量——
+        # 覆盖"重启期间没有新消息触发 _remember_self_identity"的场景；
+        # 幂等由扫描条件保证（已有身份即跳过），重复运行零副作用
+        try:
+            from .core.selfheal import run_ghost_identity_backfill
+
+            await run_ghost_identity_backfill(
+                getattr(backend, "engine", None), identity
+            )
+        except Exception as e:
+            logger.warning(f"[SelfHeal] 存量身份回填异常（不影响服务）: {e}")
 
     def _selfheal_state_path(self) -> str:
         import os
@@ -1438,8 +1502,17 @@ class LivingPlugin(Star):
         except Exception as e:
             logger.debug(f"[Schedule] 约定提取失败（忽略）: {e}")
 
+    @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_any_message(self, event: AstrMessageEvent):
-        """所有消息的旁路监听：待机刷新 / 吵醒计数 / 静默拦截（B3/B4 + 补丁 II）。
+        """所有消息的旁路监听：身份采集 / 待机刷新 / 吵醒计数 / 静默拦截
+        （B3/B4 + 补丁 II + 补丁 XVI）。
+
+        M9-补丁3 回归修复：M5-补丁4 在本方法上方插入 _extract_schedule_safe
+        时把这行装饰器"抢走"了——本方法自此失去注册，身份采集、待机刷新、
+        吵醒计数、静默拦截在线上整体失效（身份链断裂的直接根因）。
+        约定提取不在这里做：它由 _extract_schedule_safe 自己的装饰器路径
+        覆盖（本方法体内的 create_task 调用块随本补丁移除——其传参与凛
+        1ecef9c 修好的签名失配，恢复注册后每条消息都会 TypeError）。
 
         顺序敏感：
           1. 待机期内（awake_until 未过期）→ 刷新待机时长（滑动窗）→
@@ -1454,16 +1527,6 @@ class LivingPlugin(Star):
         remember_identity = getattr(self, "_remember_self_identity", None)
         if callable(remember_identity):
             remember_identity(event)
-        # M5-补丁4 A1/A2：起床约定提取——本地词表预筛（零 LLM 零开销），
-        # 命中才以后台任务走一次轻量 LLM 确认（不阻塞消息处理链、静默
-        # 不打扰对话）；总开关关闭时整条链路零生效
-        schedule = getattr(self, "_schedule", None)
-        if schedule is not None:
-            text = str(getattr(event, "message_str", "") or "")
-            if text.strip():
-                asyncio.create_task(
-                    self._extract_schedule_safe(schedule, text)
-                )
         if self.sleep_manager is None:
             return
         now = datetime.now()
@@ -1528,7 +1591,8 @@ class LivingPlugin(Star):
             await self.loop.stop()
             self.loop = None
         for stale_task_name in (
-            "_selfheal_task", "_interest_cooldown_task", "_knobs_task"
+            "_selfheal_task", "_interest_cooldown_task", "_knobs_task",
+            "_backfill_task",
         ):
             stale_task = getattr(self, stale_task_name, None)
             if stale_task is None or stale_task.done():
