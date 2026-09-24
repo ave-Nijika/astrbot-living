@@ -1234,21 +1234,31 @@ class LivingLoop:
             return
 
         # M3 补丁 VIII：角色化改写——把工作报告转成聊天口吻。闸门通过后
-        # 才改写（拦下就别浪费 token）；改写失败降级原文，不影响发送。
-        text_to_send = text
-        if self._share_rewriter is not None:
+        # 才改写（拦下就别浪费 token）。M9-补丁4（主人 2026-09-24 拍板）：
+        # 改写失败/未产出 → **整条分享静默跳过**（不再降级发送原文）——
+        # 原文是工作汇报体，发进聊天框就是 OOC；宁可这次不说也不说错话。
+        # 汇报内容不会丢：它已写入活动记忆（memory_content），主人翻记忆
+        # 随时能看到，只是不占聊天窗。改写器未注入（None）时保持直发原文
+        # （向后兼容 M3 补丁 VIII 的开关语义）。
+        if self._share_rewriter is None:
+            text_to_send = text  # 未注入：直发原文（向后兼容）
+        elif not self._share_rewriter.enabled():
+            text_to_send = text  # 用户主动关闭改写开关：直发原文（M3-补丁VIII 开关语义）
+        else:
             mood_digest = ""
             if self._mood is not None:
                 mood_digest = getattr(self._mood, "digest", lambda: "")()
             try:
                 rewritten = await self._share_rewriter.rewrite(text, mood_digest)
             except Exception as e:
-                logger.warning(f"[LivingLoop] 分享改写异常，降级原文: {e}")
-                rewritten = None
-            if rewritten:
-                text_to_send = rewritten
-            else:
-                logger.warning("[LivingLoop] 分享改写未产出，降级发送原文")
+                logger.warning(f"[LivingLoop] 分享改写异常，本次分享跳过: {e}")
+                return
+            if not rewritten:
+                logger.warning(
+                    f"[LivingLoop] 分享改写未产出（内容已留活动记忆），静默跳过发送: {text[:50]}"
+                )
+                return
+            text_to_send = rewritten
 
         for session in sessions:
             try:

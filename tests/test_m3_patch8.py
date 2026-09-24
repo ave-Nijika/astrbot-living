@@ -260,15 +260,19 @@ def test_loop_sends_rewritten_text():
                             "今天看了篇讲程序生成的文章，挺有意思！")]
 
 
-def test_loop_falls_back_to_original_on_rewrite_failure():
-    """改写失败 → 降级发送原始汇报（有内容总比没有强）。"""
+def test_loop_skips_share_on_rewrite_failure():
+    """M9-补丁4（主人 2026-09-24 拍板）：改写失败 → 整条分享静默跳过。
+
+    不再降级发送原文——原文是工作汇报体，发进聊天框就是 OOC；
+    完整内容已留在活动记忆里，主人翻记忆随时可见。"""
     sender = FakeSender()
     llm = FakeLLM(error=RuntimeError("down"))
     loop, sender2 = make_loop(sender=sender, llm=llm)
     loop._test_config["output_gate"]["target_sessions"] = "aiocqhttp:GroupMessage:123"
 
     asyncio.run(loop._maybe_share(REPORT, NOW))
-    assert sender.sent == [("aiocqhttp:GroupMessage:123", REPORT)]
+    assert sender.sent == []  # 改写失败 → 不发送
+    assert len(llm.calls) == 1  # 改写 LLM 被调过（失败发生在 LLM 侧）
 
 
 def test_loop_rewrite_disabled_sends_original_without_llm():

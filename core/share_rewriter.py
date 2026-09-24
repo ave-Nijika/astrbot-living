@@ -130,6 +130,12 @@ class ShareRewriter:
     def _enabled(self) -> bool:
         return bool(self._group("output_gate").get("share_rewrite_enabled", True))
 
+    def enabled(self) -> bool:
+        """公开开关状态（M9-补丁4）：调用方据此区分"用户主动关闭改写"
+        （直发原文，M3-补丁VIII 开关语义）与"改写失败/未产出"
+        （M9-补丁4：静默跳过，不降级发原文）。"""
+        return self._enabled()
+
     def _prompt_template(self) -> str:
         raw = self._group("output_gate").get("share_rewrite_prompt")
         return str(raw) if raw else DEFAULT_PROMPT_TEMPLATE

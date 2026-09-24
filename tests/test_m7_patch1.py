@@ -296,8 +296,9 @@ def test_rewrite_passes_normal_output():
     assert asyncio.run(rw.rewrite(REPORT, "心情不错")) == NORMAL_OUTPUT
 
 
-def test_loop_sends_original_report_when_output_filtered():
-    """验收5 降级链：产物被过滤 → 发送的是原始 report（非空、非被过滤文本）。"""
+def test_loop_skips_share_when_output_filtered():
+    """M9-补丁4（主人 2026-09-24 拍板）：产物被过滤 → 整条分享静默跳过，
+    不再降级发送原文——原文是工作汇报体，发进聊天框就是 OOC。"""
     llm = FakeLLM(text=RESPONSIVE_OUTPUT)
     sender = FakeSender()
     loop, _ = make_loop(sender=sender, llm=llm)
@@ -307,7 +308,7 @@ def test_loop_sends_original_report_when_output_filtered():
     )
 
     asyncio.run(loop._maybe_share(REPORT, NOW))
-    assert sender.sent == [("aiocqhttp:GroupMessage:123", REPORT)]
+    assert sender.sent == []  # 过滤触发 → 不发送（活动记忆里仍留有完整内容）
     assert len(llm.calls) == 1
 
 
