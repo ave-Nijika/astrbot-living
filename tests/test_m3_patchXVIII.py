@@ -30,6 +30,8 @@ BASELINE_KEYS = {
         "activity_probability_ramp_minutes", "agent_activities",
         "daily_impulse_limit", "decision_mode", "exploration_trigger",
         "exploration_window", "free_activity_enabled",
+        # M10-补丁1：自由局配额（选题兴趣牵引 50/50 硬保证）
+        "free_choice_ratio",
         "impulse_check_interval_minutes", "interest_cooldown_factor",
         "interest_cooldown_threshold", "interest_daily_decay",
         "max_run_seconds", "max_tool_rounds", "recent_topic_penalty",

@@ -217,6 +217,13 @@
                         "default": 3,
                         "invisible": true
                     },
+                    "free_choice_ratio": {
+                        "description": "自由局配额（0-1）",
+                        "hint": "每次 LLM 选题前掷骰：命中即撤除本轮 prompt 里的全部兴趣牵引（心境兴趣行不注入、近期话题改为\"想一个不同新方向\"的正向指令），让选题纯靠当下的好奇心。0=全靠兴趣驱动，1=全靠自由发挥，0.5=各半（主人定稿默认）。",
+                        "type": "float",
+                        "default": 0.5,
+                        "invisible": true
+                    },
                     "interest_cooldown_threshold": {
                         "description": "兴趣降温阈值（0-1）",
                         "hint": "启动自愈时检查：任一主题兴趣达到该值即触发一次性降温（历史偏执数据稀释）。",

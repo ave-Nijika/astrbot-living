@@ -407,12 +407,16 @@ class MoodState:
     # ------------------------------------------------------------------
     # 展示
     # ------------------------------------------------------------------
-    def digest(self) -> str:
+    def digest(self, with_interests: bool = True) -> str:
         """心境摘要：给决策 LLM 的一段短描述（人话，不是数字转储）。
 
         补丁 XVII L1-b：兴趣行弱化——只报 top2、去掉数值，措辞从"对这些
         有兴趣"降为"偶尔在琢磨"——原来的写法会被 LLM 当作"继续做这个"的
         指令，与近期话题惩罚机制对着干（兴趣回环放大器，补丁 XVII 根因 b）。
+
+        M10-补丁1 C1：with_interests=False 跳过兴趣 top2 行（自由局选题
+        用）——一半的局里 prompt 根本不出现兴趣名，把 50/50 从"LLM 自觉"
+        变成"代码保证"。默认 True，既有调用方零改动。
         """
         if self.valence >= 0.3:
             mood_word = "心情不错"
@@ -431,10 +435,11 @@ class MoodState:
             parts.append("身体有些疲惫")
         if self.sleep_debt >= 40:
             parts.append("最近没睡好，欠了点觉")
-        top = sorted(self.interests.items(), key=lambda kv: kv[1], reverse=True)[:2]
-        if top:
-            liked = "、".join(k for k, _ in top)
-            parts.append(f"最近偶尔在琢磨的方向：{liked}（浅尝过，未必延续）")
+        if with_interests:
+            top = sorted(self.interests.items(), key=lambda kv: kv[1], reverse=True)[:2]
+            if top:
+                liked = "、".join(k for k, _ in top)
+                parts.append(f"最近偶尔在琢磨的方向：{liked}（浅尝过，未必延续）")
         return "；".join(parts)
 
 

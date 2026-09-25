@@ -48,11 +48,11 @@ def test_get_payload_structure_and_key_counts():
     advanced_count = sum(
         len(g["items"]) for g in payload["schema"]["advanced"]["items"].values()
     )
-    assert advanced_count == 61  # 57 + 补丁2 两键 + 补丁4 四键 − M6-补丁1 删除的 sleep_mode/sleep_window
+    assert advanced_count == 62  # 61 + M10-补丁1 的 free_choice_ratio
 
     # 当前值区：knobs 含全部旋钮默认、advanced 7 组 57 键
     assert sum(1 for k in payload["knobs"] if k.startswith("preset_")) == 8
-    assert sum(len(v) for v in payload["advanced"].values()) == 61
+    assert sum(len(v) for v in payload["advanced"].values()) == 62
 
 
 # ---------------------------------------------------------------------------

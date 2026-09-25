@@ -276,6 +276,35 @@ class ActivityDecider:
         except (TypeError, ValueError):
             return default
 
+    def _free_choice_ratio(self) -> float:
+        """自由局配额（M10-补丁1）：0=全靠兴趣驱动，1=全靠自由发挥。
+
+        读取失败/非法值一律回落 0.5（任务书红线 5：默认各半，配置读取
+        失败不得中断决策）；越界值 clamp 进 [0,1]（主人面板手滑 1.2 按
+        全自由理解，比静默回 0.5 更贴近填写意图）。
+        """
+        try:
+            ratio = float(self._decision_group().get("free_choice_ratio"))
+        except (TypeError, ValueError):
+            return 0.5
+        except Exception:
+            return 0.5
+        if ratio != ratio:  # NaN
+            return 0.5
+        return min(max(ratio, 0.0), 1.0)
+
+    def _free_choice_roll(self) -> bool:
+        """自由局掷骰（M10-补丁1 A2）：rng() < free_choice_ratio → 自由局。
+
+        复用既有 self._rng（random.Random 实例，与 rules 档加权随机同一
+        注入点——测试用脚本化替身替换即可控，报告说明）；`rng()` 语义即
+        `.random()` ∈ [0,1)。同一轮只在 _llm_decide 开头掷一次（A3）。
+        """
+        try:
+            return self._rng.random() < self._free_choice_ratio()
+        except Exception:
+            return False  # 掷骰失败按兴趣局走（行为不劣于现状）
+
     def _exploration_trigger(self) -> tuple[int, int]:
         """探索配额配置：(窗口, 触发次数)，默认最近 4 次内同话题 >=3 次。"""
         decision = self._decision_group()
@@ -379,50 +408,104 @@ class ActivityDecider:
     async def _llm_decide(self) -> Decision | None:
         if self._llm_call is None:
             return None
+        # M10-补丁1 A3：选题 prompt 构造之前掷一次骰子，本轮只掷一次——
+        # 兴趣局 prompt 与历史逐字一致（对照基线），自由局撤除全部 prompt
+        # 层兴趣牵引（digest 切兴趣行 + recent 改"想一个不同的新方向"指令）
+        free_mode = self._free_choice_roll()
+        if free_mode:
+            logger.info(
+                "[Decider] 自由局：本轮选题撤除兴趣牵引"
+                f"（free_choice_ratio={self._free_choice_ratio():.2f} 掷中）"
+            )
         memories = await self._recent_memories()
         effective = self._effective_activities()
         activity_lines = "\n".join(
             f"- {a.name}: {a.description}" for a in effective
         )
         memory_block = "\n".join(f"- {m}" for m in memories) if memories else "（还没什么记忆）"
-        mood_block = self._mood.digest() if self._mood is not None else "心情平静，精力一般"
+        if free_mode and self._mood is not None:
+            # 自由局：digest 切兴趣行（M10-补丁1 B2/C1）
+            mood_block = self._mood.digest(with_interests=False)
+        else:
+            # 兴趣局：调用形态与 M10-补丁1 之前逐字一致（对照基线）
+            mood_block = self._mood.digest() if self._mood is not None else "心情平静，精力一般"
         # 补丁 XVII L2.5：方向缓存命中 → 方向级表述；未命中 → 原有字符串清单
         fingerprint = self._recent_topics_fingerprint()
-        direction_section = self._direction_section(fingerprint)
-        if direction_section:
-            recent_section = f"\n{direction_section}\n"
-        else:
-            recent_block = self._recent_topic_summary()
+        if free_mode:
+            # 自由局：正向指令取代字符串级"避开"——明确点名"想一个和它们
+            # 都不同的新方向"，不给"换个变体继续"留解读空间（M10-补丁1 B2）
+            recent_list = self._recent_topic_summary()
             recent_section = (
-                f"\n你最近已经折腾过这些话题（太多了会腻）：{recent_block}。\n"
-                if recent_block
+                f"\n这些方向最近都碰过了：{recent_list}。"
+                "这次想一个和它们都不同的新方向。\n"
+                if recent_list
                 else "\n"
             )
+        else:
+            direction_section = self._direction_section(fingerprint)
+            if direction_section:
+                recent_section = f"\n{direction_section}\n"
+            else:
+                recent_block = self._recent_topic_summary()
+                recent_section = (
+                    f"\n你最近已经折腾过这些话题（太多了会腻）：{recent_block}。\n"
+                    if recent_block
+                    else "\n"
+                )
         exploration_line = self._exploration_directive()
         if exploration_line:
             exploration_line = f"{exploration_line}\n"
-        prompt = (
-            "现在是你的独处时间，没有人在找你，可以自己决定干点什么。\n\n"
-            f"你现在的状态：{mood_block}\n\n"
-            f"最近记得的事：\n{memory_block}\n"
-            f"{recent_section}\n"
-            f"可以做的活动：\n{activity_lines}\n\n"
-            f"{exploration_line}"
-            "请选一个你现在最想做的活动，并给它合适参数（topic 为主题词，"
-            'style 为小游戏风格，peek 和 reminisce 不需要参数）。'
-            "如果上面列了你最近反复折腾的话题，这次避开它们。\n"
-            + (
-                "顺带把你最近折腾过的话题归并成不超过 4 个方向。\n"
-                if fingerprint
-                else ""
+        if free_mode:
+            # ---- M10-补丁1 B2：自由局 prompt（与兴趣局的全部差异 ----
+            # 1) mood_block 已切兴趣行（digest with_interests=False）；
+            # 2) recent 段改为正向指令"想一个和它们都不同的新方向"；
+            # 3) 结尾避开句换成自由发挥句。活动列表/归并/JSON 照旧。
+            prompt = (
+                "现在是你的独处时间，没有人在找你，可以自己决定干点什么。\n\n"
+                f"你现在的状态：{mood_block}\n\n"
+                f"最近记得的事：\n{memory_block}\n"
+                f"{recent_section}\n"
+                f"可以做的活动：\n{activity_lines}\n\n"
+                f"{exploration_line}"
+                "请选一个你现在最想做的活动，并给它合适参数（topic 为主题词，"
+                'style 为小游戏风格，peek 和 reminisce 不需要参数）。'
+                "这次凭当下的好奇心自由发挥，不用考虑平时的兴趣方向。\n"
+                + (
+                    "顺带把你最近折腾过的话题归并成不超过 4 个方向。\n"
+                    if fingerprint
+                    else ""
+                )
+                + (
+                    '只输出 JSON，格式：{"activity": "…", "params": {"topic": "…"}, '
+                    '"directions": ["方向×出现次数", "…"]}'
+                    if fingerprint
+                    else '只输出 JSON，格式：{"activity": "…", "params": {"topic": "…"}}'
+                )
             )
-            + (
-                '只输出 JSON，格式：{"activity": "…", "params": {"topic": "…"}, '
-                '"directions": ["方向×出现次数", "…"]}'
-                if fingerprint
-                else '只输出 JSON，格式：{"activity": "…", "params": {"topic": "…"}}'
+        else:
+            # ---- 兴趣局：M10-补丁1 起为对照基线，构造语句逐字保持原状 ----
+            prompt = (
+                "现在是你的独处时间，没有人在找你，可以自己决定干点什么。\n\n"
+                f"你现在的状态：{mood_block}\n\n"
+                f"最近记得的事：\n{memory_block}\n"
+                f"{recent_section}\n"
+                f"可以做的活动：\n{activity_lines}\n\n"
+                f"{exploration_line}"
+                "请选一个你现在最想做的活动，并给它合适参数（topic 为主题词，"
+                'style 为小游戏风格，peek 和 reminisce 不需要参数）。'
+                "如果上面列了你最近反复折腾的话题，这次避开它们。\n"
+                + (
+                    "顺带把你最近折腾过的话题归并成不超过 4 个方向。\n"
+                    if fingerprint
+                    else ""
+                )
+                + (
+                    '只输出 JSON，格式：{"activity": "…", "params": {"topic": "…"}, '
+                    '"directions": ["方向×出现次数", "…"]}'
+                    if fingerprint
+                    else '只输出 JSON，格式：{"activity": "…", "params": {"topic": "…"}}'
+                )
             )
-        )
         system_prompt = await self._system_prompt()
         raw = await self._safe_llm(prompt, system_prompt)
         data = extract_json_object(raw)

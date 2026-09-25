@@ -155,7 +155,8 @@ class FakeMood:
     def recent_topics_list(self):
         return list(self._recent)
 
-    def digest(self):
+    def digest(self, with_interests: bool = True):
+        # M10-补丁1：digest 参数化后替身同步签名（自由局掷中时带 False 调用）
         return "测试心境"
 
     def interest_weight(self, topic, repeat_count=0, penalty_table=(0.5, 0.3, 0.15)):
@@ -224,7 +225,10 @@ def test_llm_prompt_contains_recent_topics_and_avoidance(monkeypatch):
     decider = ActivityDecider(
         activities=default_activities(),
         config_getter=lambda: {**BASE_CONFIG, "decision": {
-            **BASE_CONFIG["decision"], "decision_mode": "llm"}},
+            **BASE_CONFIG["decision"], "decision_mode": "llm",
+            # M10-补丁1：本测试锁定的是兴趣局 prompt（避开机制）——
+            # 显式关掉自由局，与随机种子解耦
+            "free_choice_ratio": 0}},
         rng=random.Random(1),
         llm_call=llm,
         mood=mood,
