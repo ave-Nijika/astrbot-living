@@ -14,3 +14,6 @@ scripts/test_thinking_result.txt
 scripts/_vm_*.py
 
 tests/*.db
+
+# AstrBot 代码在以本仓库为 cwd 的进程里会把数据目录解析到 ./data（含敏感配置）——绝不入库
+data/
