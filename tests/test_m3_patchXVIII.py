@@ -35,7 +35,8 @@ BASELINE_KEYS = {
         "impulse_check_interval_minutes", "interest_cooldown_factor",
         "interest_cooldown_threshold", "interest_daily_decay",
         "max_run_seconds", "max_tool_rounds", "recent_topic_penalty",
-        "recent_topic_window", "single_run_token_budget",
+        "recent_topic_window", "share_context_messages",
+        "single_run_token_budget",
     },
     "output_gate": {
         "daily_message_limit", "message_min_interval_minutes", "quiet_hours",

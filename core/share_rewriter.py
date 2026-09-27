@@ -15,6 +15,11 @@ M7-补丁1（主动语态修复）：默认模板重构为"主动想起一件事
 （材料夹在分隔行里、注明主人看不到、禁止回应式措辞）；改写产物若仍带
 回应式姿态（"你倒是发过来"）由 _is_responsive_style 过滤，降级发送原始
 活动总结。只改默认模板——用户自定义 share_rewrite_prompt 不受影响。
+
+M12-补丁1（完整聊天上下文）：rewrite() 接受可选 contexts（主人的真实
+聊天历史 dict 列表，role/content 形态），非空时模板渲染上下文框定段、
+LLM 调用透传 contexts——分享"像正常聊天那样接得上话头"。contexts=None
+时模板退化为 M7 版逐字原文、调用形态不变（对照基线）。
 """
 
 from __future__ import annotations
@@ -31,13 +36,26 @@ _SENTENCE_ENDINGS = "。！？!？;；."
 MATERIAL_BEGIN = "--- 活动材料开始 ---"
 MATERIAL_END = "--- 结束 ---"
 
+# M12-补丁1 B3：上下文框定文案（任务书逐字）——有真实聊天记录后 LLM 极易
+# 把分享写成"回应主人最后一句话"，这段是第一道闸（第二道是 _is_responsive_style）
+CONTEXT_FRAME_TEXT = (
+    "下面是你和主人最近真实的聊天记录（按时间顺序，最后一条是最近的）。"
+    "你要分享的内容必须能接上这些记录里的话题，像正常聊天那样自然地提起来；"
+    "但这是你主动发起的分享，不是回应他刚才的话——"
+    '不要出现"你说""还记得吗"这类追问口气。\n'
+    "（这些聊天记录附在本次对话的开头部分；你的活动材料在下面。）\n"
+)
+
 # M7-补丁1 重构：主动语态框架。旧默认模板存在两处缺陷——
 # 1) 字面"今天的活动记录"被引号包着，形似主人发来的一条消息；
 # 2) 不含 {report} 占位符，默认链路下 prompt 里没有任何材料，
 #    LLM 面对空材料生成"你倒是发过来啊"式回应措辞（主人实测复现）。
+# M12-补丁1 B3：新增 {context_block} 占位符（材料段之前；非空时以空行
+# 结尾保证与材料段的边界，空时整体退化为 M7 版逐字原文）。
 DEFAULT_PROMPT_TEMPLATE = (
     "你刚完成了自己的活动，正准备随手跟主人聊一句。\n"
     "\n"
+    "{context_block}"
     "下面是你的活动材料，仅供你自己参考，主人看不到这些：\n"
     f"{MATERIAL_BEGIN}\n"
     "{report}\n"
@@ -174,11 +192,25 @@ class ShareRewriter:
         return "\n\n".join(parts) if parts else None
 
     # ------------------------------------------------------------------
-    async def rewrite(self, report: str, mood_digest: str = "") -> str | None:
+    async def rewrite(
+        self,
+        report: str,
+        mood_digest: str = "",
+        contexts: list | None = None,
+    ) -> str | None:
         """把活动汇报改写成聊天式分享。
 
+        Args:
+            report: 活动总结材料（{report} 占位符原料）。
+            mood_digest: 心境摘要（{mood} 与 system prompt 共用）。
+            contexts: 真实聊天历史 dict 列表（M12-补丁1，role/content
+                形态，由调用方从 ConversationManager 截取）——非空时
+                模板渲染上下文框定段并透传给 LLM 通路；None/空时行为
+                与 M7 版逐字一致。
+
         Returns:
-            改写后的文本；None = 不改写/改写失败（调用方降级发送原文）。
+            改写后的文本；None = 不改写/改写失败（M9-补丁4：调用方
+            静默跳过整条分享）。
         """
         report = str(report or "").strip()
         if not report:
@@ -187,12 +219,24 @@ class ShareRewriter:
             return None
 
         template = self._prompt_template()
-        prompt = template.replace("{report}", report).replace(
-            "{mood}", mood_digest or "心情平静"
+        # M12-补丁1 B3：上下文框定段（空 contexts 时占位符渲染为空串，
+        # 不残留空行——模板退化为现状逐字）
+        context_block = CONTEXT_FRAME_TEXT + "\n" if contexts else ""
+        prompt = (
+            template.replace("{context_block}", context_block)
+            .replace("{report}", report)
+            .replace("{mood}", mood_digest or "心情平静")
         )
         system_prompt = await self._system_prompt(mood_digest)
         try:
-            raw = await self._llm_call(prompt, system_prompt)
+            if contexts:
+                # B2：contexts 走 kwargs 透传（llm_call 是 main 装配的
+                # _decision_llm_call，最终到 context.llm_generate(contexts=…)
+                # ——与真实聊天链路 req.contexts 同源同形态）
+                raw = await self._llm_call(prompt, system_prompt, contexts=contexts)
+            else:
+                # 调用形态与 M12 之前逐字一致（既有替身/包装零适配）
+                raw = await self._llm_call(prompt, system_prompt)
         except Exception as e:
             logger.warning(f"[ShareRewrite] 改写调用失败，降级原文: {e}")
             return None

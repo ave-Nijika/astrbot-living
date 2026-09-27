@@ -242,12 +242,22 @@ class LivingPlugin(Star):
     # ------------------------------------------------------------------
     # 决策层支持（M2：LLM 调用 + persona 读取）
     # ------------------------------------------------------------------
-    async def _decision_llm_call(self, prompt: str, system_prompt: str | None):
-        """决策 LLM 调用（decider/梦共用），带模型故障转移链。
+    async def _decision_llm_call(
+        self,
+        prompt: str,
+        system_prompt: str | None,
+        contexts: list | None = None,
+    ):
+        """决策 LLM 调用（decider/梦/分享改写共用），带模型故障转移链。
 
         provider 选择（任务书 M3-补丁 问题 1）：fallback_chain 配置链在前，
         全部已启用 chat provider 兜底；只有 404/429/超时/连接类错误才切换，
         401 等换模型解决不了的直接放弃（返回 None，由决策层静默回退）。
+
+        M12-补丁1 B2：新增可选 contexts（分享改写的真实聊天历史，dict
+        列表 role/content 形态——与 AstrBot 真实聊天链路
+        `req.contexts = json.loads(conversation.history)` 同构）。decider/
+        梦的既有双参调用零变化。
         """
         chain = await build_provider_chain(self.context, lambda: self.config)
         if not chain:
@@ -258,6 +268,9 @@ class LivingPlugin(Star):
                     chat_provider_id=provider_id,
                     prompt=prompt,
                     system_prompt=system_prompt or None,
+                    # M12-补丁1 B2：分享改写的真实聊天上下文透传（None 时
+                    # 不改变请求形态——decider/梦的既有调用零变化）
+                    contexts=contexts or None,
                 )
             except Exception as e:
                 if is_retryable_llm_error(e):
@@ -737,6 +750,9 @@ class LivingPlugin(Star):
             # M9-补丁1：主人身份自动认领——target_sessions 未手填时派生
             # 全部管理员的私聊会话（与 _bot_identity_getter 同款注入先例）
             global_config_getter=lambda: self.context.astrbot_config,
+            # M12-补丁1：真实聊天历史（ConversationManager 公开 API）——
+            # 分享改写的完整上下文来源；取不到时 loop 内部静默按无上下文处理
+            conversation_manager=getattr(self.context, "conversation_manager", None),
         )
         await self.loop.start()
 

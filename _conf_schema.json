@@ -224,6 +224,13 @@
                         "default": 0.5,
                         "invisible": true
                     },
+                    "share_context_messages": {
+                        "description": "分享携带聊天上下文条数",
+                        "hint": "分享改写时携带的最近聊天消息条数（取自 AstrBot 会话的真实聊天记录，让分享能接上你们正在聊的话题，但仍是主动分享而不是回应）。0=关闭，改写行为回到就事论事。",
+                        "type": "int",
+                        "default": 12,
+                        "invisible": true
+                    },
                     "interest_cooldown_threshold": {
                         "description": "兴趣降温阈值（0-1）",
                         "hint": "启动自愈时检查：任一主题兴趣达到该值即触发一次性降温（历史偏执数据稀释）。",

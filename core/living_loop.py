@@ -111,6 +111,7 @@ class LivingLoop:
         share_rewriter: Any = None,
         schedule: Any = None,
         global_config_getter: Callable[[], Any] | None = None,
+        conversation_manager: Any = None,
     ) -> None:
         self._gate = gate
         self._get_memory = memory_getter
@@ -141,6 +142,9 @@ class LivingLoop:
         # 主人身份自动认领（owner_id / target_sessions 派生）的数据源。
         # None = 不派生，维持旧的手填语义（向后兼容）
         self._global_config_getter = global_config_getter
+        # M12-补丁1：AstrBot ConversationManager（真实聊天的 history 所在）——
+        # 分享改写的完整上下文来源。None = 不取上下文（向后兼容）
+        self._conversation_manager = conversation_manager
         # M3 补丁 IV-B1：活动周期互斥锁——心跳与 /living do 可能并发进入
         # 周期，双周期同时写记忆/同时调 LLM 既浪费 token 又可能数据竞争
         self._cycle_lock = asyncio.Lock()
@@ -1207,6 +1211,71 @@ class LivingLoop:
                 return sessions, "派生"
         return [], "空"
 
+    async def _load_chat_contexts(self, sessions: list[str]) -> list[dict] | None:
+        """分享改写的真实聊天上下文（M12-补丁1 A1-A4）。
+
+        主人诉求："分享的时候也是一个完整的、拥有记忆的"——取 Conversation
+        Manager 里**真实聊天**的历史（与聊天时 AstrBot 塞给 LLM 的同源，
+        `json.loads(conversation.history)`），末尾至多 N 条原样注入。
+
+        容错（A4）：开关关闭/未注入 mgr/无会话/cid 或 conv 为空/history
+        非法 JSON/条目结构异常——一律静默按无上下文处理，分享照常。
+        只取 content/role 两个字段（红线 7：其余元数据不带入 prompt 链）。
+        """
+        try:
+            decision = _conf_group(self._config_getter() or {}, "decision")
+            n = int(decision.get("share_context_messages", 12))
+        except Exception:
+            n = 12  # 配置读取失败回落默认（任务书 2.2：坏了不中断分享）
+        if n <= 0:
+            return None  # 显式关闭（0=关闭，负数同义）
+        if self._conversation_manager is None or not sessions:
+            return None
+        umo = sessions[0]  # A1：多会话以第一个为准（分享主会话）
+        try:
+            cid = await self._conversation_manager.get_curr_conversation_id(umo)
+            if not cid:
+                logger.debug(
+                    f"[LivingLoop] 分享上下文：{umo} 无当前对话（按无上下文处理）"
+                )
+                return None
+            conv = await self._conversation_manager.get_conversation(umo, cid)
+            raw_history = getattr(conv, "history", None) if conv else None
+            if not raw_history:
+                logger.debug(
+                    f"[LivingLoop] 分享上下文：{umo} 对话无历史（按无上下文处理）"
+                )
+                return None
+            history = json.loads(raw_history)
+            if not isinstance(history, list):
+                logger.debug(
+                    "[LivingLoop] 分享上下文：history 不是列表（按无上下文处理）"
+                )
+                return None
+            tail = history[-n:] if len(history) > n else history
+            contexts: list[dict] = []
+            for message in tail:
+                if not isinstance(message, dict) or not message.get("role"):
+                    continue  # 结构异常条目跳过，不影响其余
+                contexts.append(
+                    {
+                        "role": message.get("role"),
+                        "content": message.get("content"),
+                    }
+                )
+            if not contexts:
+                return None
+            logger.info(
+                f"[LivingLoop] 分享上下文：携带与主人的最近 {len(contexts)} 条"
+                "真实聊天记录"
+            )
+            return contexts
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug(f"[LivingLoop] 分享上下文读取失败（按无上下文处理）: {e}")
+            return None
+
     async def _maybe_share(self, text: str, now: datetime) -> None:
         # M7-补丁1 A1：空产物防护——低于下限直接静默返回（不打分享日志、
         # 不浪费闸门掷点，更不进改写流水线）。M9-补丁1 A5：本检查保持在
@@ -1248,8 +1317,13 @@ class LivingLoop:
             mood_digest = ""
             if self._mood is not None:
                 mood_digest = getattr(self._mood, "digest", lambda: "")()
+            # M12-补丁1 A1：上下文获取在闸门判定之后、改写调用之前——
+            # 闸门拦下就不浪费一次 mgr 读取；改写被关闭时同样不读
+            contexts = await self._load_chat_contexts(sessions)
             try:
-                rewritten = await self._share_rewriter.rewrite(text, mood_digest)
+                rewritten = await self._share_rewriter.rewrite(
+                    text, mood_digest, contexts=contexts
+                )
             except Exception as e:
                 logger.warning(f"[LivingLoop] 分享改写异常，本次分享跳过: {e}")
                 return
