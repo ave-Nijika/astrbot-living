@@ -233,45 +233,10 @@ class RecordingMemory:
         pass
 
 
-def test_write_memory_carries_participant_identities(tmp_path):
-    """B2：metadata 携带 bot 的 participant_identities（图谱桥接原料）。"""
-    identity = {
-        "identity_key": "aiocqhttp:12345",
-        "sender_id": "12345",
-        "platform": "aiocqhttp",
-        "display_name": "小凛",
-        "is_bot": True,
-    }
-    loop = LivingLoop(
-        gate=OkGate(),
-        memory_getter=lambda: asyncio.sleep(0, result=RecordingMemory()),
-        config_getter=lambda: BASE_CONFIG,
-        activities=[TracingActivity(order=None, delay=0)],
-        bot_identity_getter=lambda: asyncio.sleep(0, result=identity),
-    )
-    # 劫持记忆以捕获 metadata
-    memory = RecordingMemory()
-    loop._get_memory = lambda: asyncio.sleep(0, result=memory)
-
-    asyncio.run(loop.run_activity_cycle(T0))
-    metadata = memory.calls[0]["metadata"]
-    assert metadata["participant_identities"] == [identity]
-    assert metadata["participant_identities"][0]["is_bot"] is True
-
-
-def test_write_memory_without_identity_has_no_participants(tmp_path):
-    """未注入身份 getter：metadata 无 participant_identities（记忆照写）。"""
-    loop = LivingLoop(
-        gate=OkGate(),
-        memory_getter=lambda: asyncio.sleep(0, result=RecordingMemory()),
-        config_getter=lambda: BASE_CONFIG,
-        activities=[TracingActivity(order=None, delay=0)],
-    )
-    memory = RecordingMemory()
-    loop._get_memory = lambda: asyncio.sleep(0, result=memory)
-
-    asyncio.run(loop.run_activity_cycle(T0))
-    assert "participant_identities" not in memory.calls[0]["metadata"]
+# M13-补丁1 退役：test_write_memory_carries_participant_identities /
+# test_write_memory_without_identity_has_no_participants——metadata 传输层
+# 随直塞记忆移除而消失；bot 身份现走 livingmemory 会话写入的 sender 字段，
+# 由 test_m13_patch1 覆盖。
 
 
 # ---------------------------------------------------------------------------
@@ -325,8 +290,11 @@ def test_redact_secrets_patterns():
     assert redact_secrets("今天看了《三体》") == "今天看了《三体》"
 
 
-def test_failure_memory_redacts_secrets(tmp_path):
-    """失败详情写记忆前脱敏：异常串里的密钥形态不能进记忆库。"""
+def test_failure_narration_redacts_secrets():
+    """失败详情进对话上下文前脱敏：异常串里的密钥形态不能进任何落点。
+
+    M13-补丁1：观测点从 memory.add 平移到对话上下文自述，脱敏语义平移。
+    """
     from core.living_loop import LivingLoop as _  # noqa（确保同环境）
 
     class FailingActivity:
@@ -337,26 +305,55 @@ def test_failure_memory_redacts_secrets(tmp_path):
                 "request failed with api key sk-abcdef1234567890 at endpoint"
             )
 
-    class CapMemory(SilentMemory):
+    class CapMemory:
         def __init__(self):
             self.added = []
 
-        async def add(self, content, importance=0.5, metadata=None, **kwargs):
+        async def add(self, content, **kwargs):
             self.added.append(content)
             return 1
 
+        async def search(self, query, k=5):
+            return []
+
+        async def close(self):
+            pass
+
+    class CtxMgr:
+        def __init__(self):
+            self.pairs = []
+
+        async def get_curr_conversation_id(self, umo):
+            return "cid-1"
+
+        async def new_conversation(self, umo):
+            return "cid-1"
+
+        async def add_message_pair(self, cid, user_msg, assistant_msg):
+            self.pairs.append(assistant_msg["content"])
+
+    master_umo = "aiocqhttp:FriendMessage:10001"  # 假号（测试先例）
+    ctx_config = {
+        **BASE_CONFIG,
+        "output_gate": {"daily_message_limit": 10,
+                        "message_min_interval_minutes": 30,
+                        "target_sessions": master_umo, "quiet_hours": ""},
+    }
     memory = CapMemory()
+    mgr = CtxMgr()
     loop = LivingLoop(
         gate=OkGate(),
         memory_getter=lambda: asyncio.sleep(0, result=memory),
-        config_getter=lambda: BASE_CONFIG,
+        config_getter=lambda: ctx_config,
         activities=[FailingActivity()],
+        conversation_manager=mgr,
     )
     result = asyncio.run(loop.run_activity_cycle(T0))
     assert result["ok"] is False
-    assert memory.added, "失败记忆照写"
-    assert "sk-abcdef1234567890" not in memory.added[0]
-    assert "[REDACTED]" in memory.added[0]
+    assert mgr.pairs, "失败自述照写"
+    assert "sk-abcdef1234567890" not in mgr.pairs[0]
+    assert "[REDACTED]" in mgr.pairs[0]
+    assert memory.added == []  # 直塞已移除
 
 
 # ---------------------------------------------------------------------------

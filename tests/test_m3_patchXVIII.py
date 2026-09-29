@@ -26,6 +26,8 @@ KNOB_NAMES = [  # M6-补丁1：preset_sleep_style 随 sleep_mode 配置键移除
 BASELINE_KEYS = {
     "autonomy": {"tier", "workspace_dir", "write_level"},
     "decision": {
+        # M13-补丁1：活动经历写入对话上下文开关（双存储落点）
+        "activity_context_write",
         "activity_probability", "activity_probability_min",
         "activity_probability_ramp_minutes", "agent_activities",
         "daily_impulse_limit", "decision_mode", "exploration_trigger",

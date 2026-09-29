@@ -2,7 +2,8 @@
 
 安静纪律（任务书 M1 约束 6）：
   - 心跳间隔默认 45 分钟，且闸门不过就什么都不做；
-  - 活动产出默认只写记忆；只有配置了 output_gate.target_sessions 才可能
+  - 活动经历以第一人称自述写入对话上下文与 livingmemory 会话（M13-补丁1
+    双落点），不再直塞记忆图谱；只有配置了 output_gate.target_sessions 才可能
     真正发消息，且每条都过消息闸门（上限/间隔/静默时段）；
   - 日志：关键生命周期用 INFO，判定与"本可发送"一律 DEBUG。
 
@@ -33,8 +34,6 @@ from .secrets_redact import redact_secrets
 
 DEFAULT_CHECK_INTERVAL_MIN = 45.0
 DEFAULT_MAX_RUN_SECONDS = 300.0
-# 记忆写入单独限时：LivingMemory 引擎可能走嵌入 API，不能让它拖死活动周期
-MEMORY_WRITE_TIMEOUT = 30.0
 CONFIG_POLL_SECONDS = 5.0
 DEFAULT_AGENT_ACTIVITIES = ("surf", "read", "game")
 DREAM_MAX_CHARS = 120
@@ -112,6 +111,7 @@ class LivingLoop:
         schedule: Any = None,
         global_config_getter: Callable[[], Any] | None = None,
         conversation_manager: Any = None,
+        lm_conversation_manager_getter: Callable[[], Any] | None = None,
     ) -> None:
         self._gate = gate
         self._get_memory = memory_getter
@@ -145,6 +145,11 @@ class LivingLoop:
         # M12-补丁1：AstrBot ConversationManager（真实聊天的 history 所在）——
         # 分享改写的完整上下文来源。None = 不取上下文（向后兼容）
         self._conversation_manager = conversation_manager
+        # M13-补丁1 B1：livingmemory 插件的会话管理器动态探测（reflection
+        # 数据源的写入点，main 注入）。None = 不写该落点（向后兼容）
+        self._lm_conv_mgr_getter = lm_conversation_manager_getter
+        # M13-补丁1 A5：已写过经历的活动 id（时间戳序，有界防泄漏）
+        self._experience_written: set[str] = set()
         # M3 补丁 IV-B1：活动周期互斥锁——心跳与 /living do 可能并发进入
         # 周期，双周期同时写记忆/同时调 LLM 既浪费 token 又可能数据竞争
         self._cycle_lock = asyncio.Lock()
@@ -921,22 +926,18 @@ class LivingLoop:
             error_note = "LLM 错误信息，已拦截不入记忆"
             outcome = None  # 失败路径：心境记失败、不分享、用专属失败文案
 
-        # 心境演化与记忆重要度调节（M2-D；M3 起疲惫按活动耗时折算）
+        # 心境演化（M2-D；M3 起疲惫按活动耗时折算）。返回的重要度调节量随
+        # 直塞记忆移除暂无消费方（M13-补丁1，返回值语义保留见报告）
         duration_seconds = (datetime.now() - real_start).total_seconds()
-        importance_adjust = await self._update_mood(
-            activity, outcome, params, duration_seconds
+        await self._update_mood(activity, outcome, params, duration_seconds)
+        # M13-补丁1 A6：经历沉淀挂在"活动结束"，与是否分享无关——未被分享
+        # 的活动同样写（三层记忆：①上下文自述 ②reflection 攒轮总结进图谱
+        # ③分享=面向主人的表达，走闸门概率）。写在分享之前（A4：主人看到
+        # 分享时上下文已含自述）。直塞 LivingMemory 图谱的旧路径已移除（C1）
+        narration = self._activity_narration(
+            activity, outcome, error_note, model_failure, ctx
         )
-        # 记忆双路径：无论成败都写（任务书 D）
-        failure_text = (
-            f"{ctx.date_prefix()}我想做{activity.name}来着，"
-            "但脑子转不动（模型全挂了）。"
-            if model_failure
-            else None
-        )
-        await self._write_memory(
-            activity, outcome, error_note, ctx, importance_adjust,
-            failure_text=failure_text,
-        )
+        await self._write_activity_experience(activity, narration, activity_id)
         await self._gate.note_activity_finished()
         logger.info(f"[LivingLoop] 活动结束 name={activity.name}")
 
@@ -1034,6 +1035,10 @@ class LivingLoop:
         低谷时的小确幸记得更牢：valence < 0 时成功活动的记忆重要度 +0.1
         （任务书 M2-D）。M3 起疲惫按活动实际耗时折算（fatigue_rate_per_hour
         配置热读）。心境更新失败不影响活动记账。
+
+        M13-补丁1：直塞记忆移除后该调节量暂无消费方（活动经历改走对话
+        落点，重要度由 reflection 总结时自评）——返回值语义保留备将来
+        复用，见任务报告。
         """
         if self._mood is None:
             return 0.0
@@ -1070,66 +1075,170 @@ class LivingLoop:
             return 0.1
         return 0.0
 
-    async def _write_memory(
+    def _activity_narration(
         self,
         activity: Activity,
         outcome: Any,
         error_note: str | None,
+        model_failure: bool,
         ctx: ActivityContext,
-        importance_adjust: float = 0.0,
-        failure_text: str | None = None,
-    ) -> None:
+    ) -> str:
+        """活动经历的第一人称自述（M13-补丁1 A1）。
+
+        现有活动记录文本即自述——agent 产出与脚本记录本就是"日期+第一人称"
+        形态，不新增 LLM 调用；失败路径沿用原直塞记忆的两套文案（模型故障
+        专属 / 通用没成）。异常串可能携带密钥形态信息——独立审计项 4 的
+        脱敏原样保留（自述会进对话上下文与 reflection 语料，泄漏面只增不减）。
+        """
         if outcome is not None and outcome.memory_content:
-            content = outcome.memory_content
-            importance = outcome.importance
+            text = str(outcome.memory_content)
+        elif model_failure:
+            text = (
+                f"{ctx.date_prefix()}我想做{activity.name}来着，"
+                "但脑子转不动（模型全挂了）。"
+            )
         else:
-            # 失败也是生活的一部分；模型故障用专属文案（任务书问题 2 定稿）
             detail = f"（{error_note}）" if error_note else ""
-            content = failure_text or (
-                f"{ctx.date_prefix()}我想{activity.name}来着，没成{detail}。"
+            text = f"{ctx.date_prefix()}我想{activity.name}来着，没成{detail}。"
+        return redact_secrets(text).strip()
+
+    async def _write_activity_experience(
+        self, activity: Activity, narration: str, activity_id: str
+    ) -> None:
+        """活动经历双存储落点（M13-补丁1 A/B，主人 09-29 拍板）。
+
+        A：AstrBot 对话上下文（主人当前对话末尾追加一对消息）——主人追问时
+           LLM 直接看到自述原文（"是我先问的，我忘了问的是啥"的修复点）；
+        B：livingmemory 会话消息存储（主人真实 umo）——MemoryReflection
+           把活动当普通对话自然总结进图谱（单一事实来源，C1 移除直塞后
+           图谱改由它供给）。
+        两处写入任一失败都只 DEBUG，不影响分享主链路（A3/B4）；开关关闭
+        全部跳过（B5）。
+        """
+        if not self._experience_write_enabled():
+            return
+        text = str(narration or "").strip()
+        if not text:
+            return
+        # A5 幂等：同一活动只写一次（键 = 活动 id + 活动名——id 是秒级
+        # 时间戳，同秒两个不同活动是两次经历，不该互相顶掉）。先占位再
+        # 尝试——两处落点不追求原子，失败重试会重复写上下文，宁可丢一次
+        # 也不重
+        dedup_key = f"{activity_id}:{activity.name}"
+        if dedup_key in self._experience_written:
+            return
+        self._experience_written.add(dedup_key)
+        if len(self._experience_written) > 128:
+            # 有界防泄漏：activity_id 是时间戳序，保留最近 64 个
+            self._experience_written = set(
+                sorted(self._experience_written)[-64:]
             )
-            importance = 0.2
-        # 心境调节后的重要度仍要钳在合理区间
-        importance = max(0.0, min(1.0, importance + importance_adjust))
-        # 独立审计项 4：失败详情可能带密钥形态的敏感串（openai 异常携带的
-        # 请求信息等），写记忆前统一脱敏——记忆库会进决策 prompt，泄漏进去
-        # 就是长期隐患
-        content = redact_secrets(content)
-        # 任务书 M3 补丁 III：topics 随 metadata 进 LivingMemory——图谱提取
-        # 器（_extract_legacy）靠它生成 topic 节点与 describes 边；失败路径
-        # outcome 为 None → 无 topics → 裸 fact（失败记忆低价值，孤立可接受）
-        metadata: dict = {}
-        if outcome is not None and outcome.topics:
-            metadata["topics"] = outcome.topics
-        # M3 补丁 V 问题 4：key_facts 让图谱提取器生成独立的 fact 节点，
-        # topic 节点通过 describes 边连接到它——没有它就只有孤立的
-        # topic→content 关系对，成不了"主题-事实"完整结构
-        if outcome is not None and outcome.memory_content:
-            metadata["key_facts"] = [outcome.memory_content]
-        # M3 补丁 IV-B2：participant_identities——给记忆挂上 bot 的 person
-        # 节点原料，EntityResolver 会把它与原生对话记忆的同名身份映射到
-        # 同一节点，插件记忆集群由此桥接进主图谱（不再孤立）
-        identity = await self._bot_identity()
-        if identity:
-            metadata["participant_identities"] = [identity]
+        sessions, _source = self._resolve_target_sessions()
+        if not sessions:
+            logger.debug("[LivingLoop] 活动经历：无主人会话，跳过写入")
+            return
+        umo = sessions[0]  # 与分享主会话同源（M12-补丁1 先例：取第一个）
+        user_msg = f"(自主活动：{activity.name})"[:50]  # A2：占位有界
+        asst_msg = text[:400]  # A2：自述有界
+        await self._write_context_pair(umo, user_msg, asst_msg)
+        await self._write_lm_session_message(umo, asst_msg)
+
+    def _experience_write_enabled(self) -> bool:
+        """B5 开关：decision.activity_context_write（默认 true；读取失败
+        回落 true——写不出去顶多少份沉淀，不该因配置读取翻脸）。"""
         try:
-            memory = await self._get_memory()
-            await asyncio.wait_for(
-                memory.add(
-                    content,
-                    importance=importance,
-                    metadata=metadata,
-                    # 任务书问题 3：带上会话与人格上下文——LivingMemory 的
-                    # 图谱提取器靠它们生成参与者边，传 None 只会得到孤立节点。
-                    # 幽灵事件的 uwo 是自主活动记忆在图谱里的"家"
-                    session_id=self._session_id(ctx),
-                    persona_id=await self._persona_id(),
-                ),
-                timeout=MEMORY_WRITE_TIMEOUT,
+            raw = _conf_group(self._config_getter() or {}, "decision").get(
+                "activity_context_write", True
             )
+        except Exception:
+            return True
+        if isinstance(raw, bool):
+            return raw
+        return str(raw).strip().lower() not in ("false", "0", "off", "no")
+
+    async def _write_context_pair(
+        self, umo: str, user_msg: str, asst_msg: str
+    ) -> None:
+        """A：写入 AstrBot 对话上下文（主人当前对话末尾追加一对消息）。
+
+        add_message_pair 是本体公开 API（conversation_mgr.py，OpenAI 格式
+        dict 追加进 history）。A3：无当前对话则新建（new_conversation 会把
+        新对话设为当前对话）；全部失败只 DEBUG + 跳过。
+        """
+        mgr = self._conversation_manager
+        if mgr is None:
+            logger.debug(
+                "[LivingLoop] 活动经历：未注入会话管理器，跳过上下文写入"
+            )
+            return
+        try:
+            cid = await mgr.get_curr_conversation_id(umo)
+            if not cid:
+                cid = await mgr.new_conversation(umo)
+            if not cid:
+                logger.debug(
+                    "[LivingLoop] 活动经历：无法取得对话 id，跳过上下文写入"
+                )
+                return
+            await mgr.add_message_pair(
+                cid,
+                {"role": "user", "content": user_msg},
+                {"role": "assistant", "content": asst_msg},
+            )
+            logger.info(f"[LivingLoop] 活动经历已写入对话上下文（{umo}）")
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
-            # 记忆失败只记 WARN：活动本身已经完成，不能因为记账失败翻脸
-            logger.warning(f"[LivingLoop] 记忆写入失败（活动仍算完成）: {e}")
+            logger.debug(f"[LivingLoop] 活动经历写入上下文失败（不影响分享）: {e}")
+
+    async def _write_lm_session_message(self, umo: str, asst_msg: str) -> None:
+        """B：写入 livingmemory 会话消息存储（MemoryReflection 的数据源）。
+
+        走其会话管理器公开方法 add_message（不依赖 event 对象，B1 查证结论）：
+        session_id 用主人真实 umo——它的 session_id 本就按 unified_msg_origin
+        键控，ghost 会话对 reflection 永远不可见（B2）；role=assistant 且
+        is_bot_message=True，与其原生助手消息同形态。上限语义（B3）：
+        enforce_message_limit 在其事件处理器层于每次真实对话后例行执行、
+        只删已总结消息——本写入走正规 add 路径（sessions 表计数与缓存失效
+        自动生效），不重复实现清理逻辑。
+        """
+        getter = self._lm_conv_mgr_getter
+        if getter is None:
+            return
+        try:
+            mgr = getter()
+            if asyncio.iscoroutine(mgr):
+                mgr = await mgr
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug(
+                f"[LivingLoop] 活动经历：livingmemory 管理器探测失败（跳过）: {e}"
+            )
+            return
+        if mgr is None or not callable(getattr(mgr, "add_message", None)):
+            logger.debug(
+                "[LivingLoop] 活动经历：livingmemory 会话管理器不可用（跳过）"
+            )
+            return
+        identity = await self._bot_identity() or {}
+        try:
+            await mgr.add_message(
+                session_id=umo,  # B2：主人真实 umo，绝不写 ghost 会话
+                role="assistant",
+                content=asst_msg,
+                sender_id=identity.get("sender_id"),
+                sender_name=identity.get("display_name"),
+                platform=identity.get("platform") or umo.partition(":")[0],
+                is_bot_message=True,
+            )
+            logger.info(f"[LivingLoop] 活动经历已写入 livingmemory 会话（{umo}）")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug(
+                f"[LivingLoop] 活动经历写入 livingmemory 失败（不影响分享）: {e}"
+            )
 
     def _session_id(self, ctx: ActivityContext | None) -> str | None:
         """记忆归属会话：自主活动统一落在幽灵会话里（图谱上的自留地）。"""
@@ -1306,8 +1415,8 @@ class LivingLoop:
         # 才改写（拦下就别浪费 token）。M9-补丁4（主人 2026-09-24 拍板）：
         # 改写失败/未产出 → **整条分享静默跳过**（不再降级发送原文）——
         # 原文是工作汇报体，发进聊天框就是 OOC；宁可这次不说也不说错话。
-        # 汇报内容不会丢：它已写入活动记忆（memory_content），主人翻记忆
-        # 随时能看到，只是不占聊天窗。改写器未注入（None）时保持直发原文
+        # 汇报内容不会丢：它已作为自述写入对话上下文与 livingmemory 会话
+        # （M13-补丁1 双落点）。改写器未注入（None）时保持直发原文
         # （向后兼容 M3 补丁 VIII 的开关语义）。
         if self._share_rewriter is None:
             text_to_send = text  # 未注入：直发原文（向后兼容）

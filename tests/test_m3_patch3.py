@@ -169,55 +169,48 @@ class FakeGate2:
         pass
 
 
-def _loop_with(activity, memory):
-    return LivingLoop(
+def test_activity_topics_recorded_into_recent_topics():
+    """活动 topics 的存活消费方：心境近期话题记录。
+
+    M13-补丁1：metadata 传输层随直塞记忆移除而消失——topics 仍随
+    outcome 走到 record_recent_topics（重复惩罚/探索配额的数据源）。
+    """
+    from core.activities import ActivityOutcome
+
+    class TopicActivity:
+        name = "surf"
+
+        async def run(self, ctx):
+            return ActivityOutcome(name="surf", summary="s", memory_content="m",
+                                   topics=["冷知识"])
+
+    class RecordingMood:
+        def __init__(self):
+            self.recent = []
+            self.valence = 0.2
+            self.energy = 0.8
+
+        def record_recent_topics(self, topics, window=6):
+            self.recent.extend(topics)
+
+        def digest(self):
+            return ""
+
+    memory = RecordingMemory()
+    mood = RecordingMood()
+    loop = LivingLoop(
         gate=FakeGate2(),
         memory_getter=lambda: asyncio.sleep(0, result=memory),
         config_getter=lambda: BASE_CONFIG,
         abilities={"searcher": FakeSearcher(), "fetcher": FakeFetcher()},
-        activities=[activity],
+        activities=[TopicActivity()],
+        mood=mood,
     )
 
-
-class ParamsInjectingActivity:
-    """把决策 params 注入上下文后跑真实 surf（模拟 decider → params 链路）。"""
-
-    name = "surf"
-
-    def __init__(self, params):
-        self.params = params
-        self._surf = SurfActivity()
-
-    async def run(self, ctx):
-        ctx.params = dict(self.params)
-        return await self._surf.run(ctx)
-
-
-def test_write_memory_metadata_contains_topics():
-    """活动成功 → memory.add 的 metadata 带 topics 字段。"""
-    memory = RecordingMemory()
-    activity = ParamsInjectingActivity({"topic": "冷知识"})
-    loop = _loop_with(activity, memory)
-
     asyncio.run(loop.run_activity_cycle(NOW))
-    assert memory.calls, "记忆应被写入"
-    topics = memory.calls[0]["metadata"].get("topics")
-    assert topics == ["冷知识"]
+    assert mood.recent == ["冷知识"]
+    assert memory.calls == []  # 直塞已移除
 
 
-def test_failure_path_metadata_has_no_topics():
-    """失败路径：outcome 为 None → metadata 为空 dict（裸 fact 可接受）。"""
-    memory = RecordingMemory()
-
-    class FailingActivity:
-        name = "read"
-
-        async def run(self, ctx):
-            raise RuntimeError("搜索挂了")
-
-    loop = _loop_with(FailingActivity(), memory)
-    asyncio.run(loop.run_activity_cycle(NOW))
-    assert len(memory.calls) == 1
-    record = memory.calls[0]
-    assert "没成" in record["content"]  # 失败记忆照写
-    assert record["metadata"] == {}  # 无 topics 可挂
+# M13-补丁1 退役：test_failure_path_metadata_has_no_topics（metadata 传输层
+# 随直塞记忆移除而消失；失败自述文案由 test_m13_patch1 覆盖）

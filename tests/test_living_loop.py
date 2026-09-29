@@ -107,6 +107,36 @@ class FakeSender:
         return False
 
 
+# M13-补丁1：活动经历双落点的观测替身（假号 10001，测试先例）
+MASTER_UMO = "aiocqhttp:FriendMessage:10001"
+CTX_CONFIG = {
+    **BASE_CONFIG,
+    "output_gate": {
+        "daily_message_limit": 10,
+        "message_min_interval_minutes": 30,
+        "target_sessions": MASTER_UMO,
+        "quiet_hours": "",
+    },
+}
+
+
+class FakeCtxMgr:
+    """AstrBot ConversationManager 替身：记录 add_message_pair 写入对。"""
+
+    def __init__(self, cid="cid-1"):
+        self.cid = cid
+        self.pairs = []
+
+    async def get_curr_conversation_id(self, umo):
+        return self.cid
+
+    async def new_conversation(self, umo):
+        return self.cid
+
+    async def add_message_pair(self, cid, user_msg, assistant_msg):
+        self.pairs.append((cid, user_msg, assistant_msg))
+
+
 class ScriptedActivity:
     """可编排结果的活动替身。"""
 
@@ -148,7 +178,7 @@ class ScriptedRng:
 
 
 def make_loop(gate=None, memory=None, activities=None, config=None, sender=None,
-              picks=None, abilities=None, rng=None):
+              picks=None, abilities=None, rng=None, conversation_manager=None):
     memory = memory if memory is not None else FakeMemory()
     return LivingLoop(
         gate=gate or FakeGate(),
@@ -160,6 +190,7 @@ def make_loop(gate=None, memory=None, activities=None, config=None, sender=None,
         else [ScriptedActivity("a1"), ScriptedActivity("a2")],
         sender=sender,
         rng=rng if rng is not None else ScriptedRng(picks or []),
+        conversation_manager=conversation_manager,
     )
 
 
@@ -200,7 +231,7 @@ def test_heartbeat_gate_blocks_no_activity():
 
 
 def test_heartbeat_gate_passes_runs_cycle():
-    """闸门放行 → 活动、记忆、起止记账都发生。"""
+    """闸门放行 → 活动、起止记账都发生（直塞记忆已随 M13-补丁1 移除）。"""
     gate = FakeGate(allow=True)
     memory = FakeMemory()
     acts = [ScriptedActivity("a1", ("摘要", "9月7日我干了件事"))]
@@ -210,53 +241,48 @@ def test_heartbeat_gate_passes_runs_cycle():
     assert ran is True
     assert acts[0].runs == 1
     assert gate.started == 1 and gate.finished == 1
-    assert memory.added and memory.added[0][0] == "9月7日我干了件事"
+    assert memory.added == []  # M13-补丁1 C：直塞记忆从活动路径消失
 
 
-def test_activity_failure_still_writes_memory_and_loop_survives():
-    """活动抛异常 → 记失败记忆，且下一次心跳照常工作。"""
+def test_activity_failure_still_narrated_and_loop_survives():
+    """活动抛异常 → 失败自述照写（对话上下文），且下一次心跳照常工作。"""
     gate = FakeGate(allow=True)
     memory = FakeMemory()
     bad = ScriptedActivity("bad", fail=True)
     good = ScriptedActivity("good", ("没问题", "9月7日成功了"))
+    mgr = FakeCtxMgr()
     loop = make_loop(
-        gate=gate, memory=memory, activities=[bad, good], picks=["bad", "good"]
+        gate=gate, memory=memory, activities=[bad, good], picks=["bad", "good"],
+        conversation_manager=mgr, config=CTX_CONFIG,
     )
 
     result = asyncio.run(loop.run_activity_cycle(NOW))
     assert result["ok"] is False
     assert "故意失败" in result["error"]
-    assert len(memory.added) == 1  # 失败记忆也写了
-    assert "没成" in memory.added[0][0]
+    assert len(mgr.pairs) == 1  # 失败自述也写了
+    assert "没成" in mgr.pairs[0][2]["content"]
 
-    # 主循环没死：下一次心跳还能正常跑成功活动
+    # 主循环没死：下一次心跳还能正常跑成功活动（不同活动 → 各写一次）
     result2 = asyncio.run(loop.run_activity_cycle(NOW))
     assert result2["ok"] is True
     assert good.runs == 1
-    assert any("9月7日成功了" == c for c, _ in memory.added)
+    assert any("9月7日成功了" == p[2]["content"] for p in mgr.pairs)
 
 
-def test_activity_timeout_killed_and_memory_written():
-    """超时强杀：卡死的活动被 wait_for 掐掉，记忆照写。"""
+def test_activity_timeout_killed_and_narrated():
+    """超时强杀：卡死的活动被 wait_for 掐掉，失败自述照写。"""
     memory = FakeMemory()
     stuck = ScriptedActivity("stuck", sleep_time=30)
-    config = {**BASE_CONFIG, "decision": {**BASE_CONFIG["decision"], "max_run_seconds": 0.1}}
-    loop = make_loop(memory=memory, activities=[stuck], config=config, picks=["stuck"])
+    config = {**CTX_CONFIG, "decision": {**CTX_CONFIG["decision"], "max_run_seconds": 0.1}}
+    mgr = FakeCtxMgr()
+    loop = make_loop(memory=memory, activities=[stuck], config=config,
+                     picks=["stuck"], conversation_manager=mgr)
 
     result = asyncio.run(loop.run_activity_cycle(NOW))
     assert result["ok"] is False
     assert "超时" in result["error"]
-    assert len(memory.added) == 1
-
-
-def test_memory_write_failure_only_warns():
-    """记忆后端写挂了：活动仍算完成，不向上抛。"""
-    memory = FakeMemory(error=RuntimeError("db gone"))
-    acts = [ScriptedActivity("a1", ("摘要", "记忆内容"))]
-    loop = make_loop(memory=memory, activities=acts, picks=["a1"])
-    result = asyncio.run(loop.run_activity_cycle(NOW))
-    assert result["ok"] is True  # 活动本身成功
-    assert memory.added == []
+    assert len(mgr.pairs) == 1
+    assert "超时" in mgr.pairs[0][2]["content"]
 
 
 def test_memory_getter_failure_aborts_cycle_without_quota():

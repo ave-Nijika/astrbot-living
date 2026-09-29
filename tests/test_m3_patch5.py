@@ -257,71 +257,11 @@ class ScriptedActivity:
         )
 
 
-def test_metadata_has_all_three_fields(tmp_path):
-    """问题 4 验收：metadata 同时含 topics + key_facts + participant_identities。"""
-    from core.activities import ActivityOutcome
-
-    memory = RecordingMemory()
-    identity = {
-        "identity_key": "aiocqhttp:10001",
-        "sender_id": "10001",
-        "platform": "aiocqhttp",
-        "display_name": "aiocqhttp",
-        "aliases": ["aiocqhttp"],
-        "is_bot": True,
-    }
-    loop = LivingLoop(
-        gate=OkGate(),
-        memory_getter=lambda: asyncio.sleep(0, result=memory),
-        config_getter=lambda: BASE_CONFIG,
-        activities=[ScriptedActivity()],
-        bot_identity_getter=lambda: asyncio.sleep(0, result=identity),
-        persona_id_getter=lambda: asyncio.sleep(0, result="default"),
-    )
-    loop._get_memory = lambda: asyncio.sleep(0, result=memory)
-
-    asyncio.run(loop.run_activity_cycle(T0))
-    metadata = memory.calls[0]["metadata"]
-    assert metadata["topics"]  # 脚本模式随机主题
-    assert metadata["key_facts"] == ["m"]  # content 成为独立 fact 节点
-    assert (
-        metadata["participant_identities"][0]["identity_key"]
-        == "aiocqhttp:10001"
-    )
-
-
-def test_failure_metadata_keeps_identity_but_no_topics(tmp_path):
-    """失败路径：无 topics/key_facts（低价值孤立可接受），参与者身份仍在。"""
-    memory = RecordingMemory()
-    identity = {
-        "identity_key": "aiocqhttp:10001",
-        "sender_id": "10001",
-        "platform": "aiocqhttp",
-        "display_name": "aiocqhttp",
-        "aliases": ["aiocqhttp"],
-        "is_bot": True,
-    }
-
-    class Failing:
-        name = "surf"
-
-        async def run(self, ctx):
-            raise RuntimeError("挂了")
-
-    loop = LivingLoop(
-        gate=OkGate(),
-        memory_getter=lambda: asyncio.sleep(0, result=memory),
-        config_getter=lambda: BASE_CONFIG,
-        activities=[Failing()],
-        bot_identity_getter=lambda: asyncio.sleep(0, result=identity),
-    )
-    loop._get_memory = lambda: asyncio.sleep(0, result=memory)
-
-    asyncio.run(loop.run_activity_cycle(T0))
-    metadata = memory.calls[0]["metadata"]
-    assert "topics" not in metadata
-    assert "key_facts" not in metadata
-    assert metadata["participant_identities"][0]["is_bot"] is True
+# M13-补丁1 退役：test_metadata_has_all_three_fields /
+# test_failure_metadata_keeps_identity_but_no_topics——metadata 传输层
+# （topics/key_facts/participant_identities 直塞图谱）随直塞记忆移除而消失，
+# 图谱改由 livingmemory reflection 从对话总结（单一事实来源）。bot 身份
+# 现走 livingmemory 会话写入的 sender 字段，由 test_m13_patch1 覆盖。
 
 
 # ---------------------------------------------------------------------------

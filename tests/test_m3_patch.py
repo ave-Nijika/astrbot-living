@@ -391,76 +391,90 @@ def _outcome(summary, memory=None):
                            memory_content=memory or summary, importance=0.5)
 
 
-def _m3_loop(activity, memory):
+# M13-补丁1：活动经历写进对话上下文的观测替身（假号 10001，测试先例）
+MASTER_UMO = "aiocqhttp:FriendMessage:10001"
+CTX_CONFIG = {
+    **BASE_CONFIG,
+    "output_gate": {"daily_message_limit": 10, "message_min_interval_minutes": 30,
+                    "target_sessions": MASTER_UMO, "quiet_hours": ""},
+}
+
+
+class FakeCtxMgr:
+    """AstrBot ConversationManager 替身：记录 add_message_pair 写入对。"""
+
+    def __init__(self):
+        self.pairs = []
+
+    async def get_curr_conversation_id(self, umo):
+        return "cid-1"
+
+    async def new_conversation(self, umo):
+        return "cid-1"
+
+    async def add_message_pair(self, cid, user_msg, assistant_msg):
+        self.pairs.append((cid, user_msg, assistant_msg))
+
+
+def _m3_loop(activity, memory, mgr=None):
     loop = LivingLoop(
         gate=FakeGate2(),
         memory_getter=lambda: asyncio.sleep(0, result=memory),
-        config_getter=lambda: BASE_CONFIG,
+        config_getter=lambda: CTX_CONFIG if mgr is not None else BASE_CONFIG,
         activities=[activity],
+        conversation_manager=mgr,
     )
     return loop
 
 
-def test_llm_error_outcome_replaced_by_failure_memory():
-    """问题 2：产出是错误串 → 记忆替换为专属失败文案，原错误不落库。"""
+def test_llm_error_outcome_replaced_by_failure_narration():
+    """问题 2：产出是错误串 → 自述替换为专属失败文案，原错误不落任何落点。
+
+    M13-补丁1：直塞记忆移除，观测点从 memory.add 平移到对话上下文自述。
+    """
     memory = RecordingMemory()
     activity = ScriptedActivity(outcome=_outcome(
         "All chat models failed: NotFoundError"))
-    loop = _m3_loop(activity, memory)
+    mgr = FakeCtxMgr()
+    loop = _m3_loop(activity, memory, mgr=mgr)
 
     result = asyncio.run(loop.run_activity_cycle(NOW))
     assert result["ok"] is False
-    assert len(memory.added) == 1
-    record = memory.added[0]
-    assert "脑子转不动" in record["content"]
-    assert "模型全挂了" in record["content"]
-    assert "All chat models failed" not in record["content"]
-    assert record["importance"] == 0.2
+    assert len(mgr.pairs) == 1
+    narration = mgr.pairs[0][2]["content"]
+    assert "脑子转不动" in narration
+    assert "模型全挂了" in narration
+    assert "All chat models failed" not in narration
+    assert memory.added == []  # 直塞已移除
 
 
 def test_clean_outcome_still_written_normally():
-    """正常产出不受过滤器影响。"""
+    """正常产出不受过滤器影响：自述原样进入上下文。"""
     memory = RecordingMemory()
     activity = ScriptedActivity(outcome=_outcome("今天看了《三体》，很有意思"))
-    loop = _m3_loop(activity, memory)
+    mgr = FakeCtxMgr()
+    loop = _m3_loop(activity, memory, mgr=mgr)
 
     asyncio.run(loop.run_activity_cycle(NOW))
-    assert memory.added[0]["content"] == "今天看了《三体》，很有意思"
-    assert memory.added[0]["importance"] == 0.5
+    narration = mgr.pairs[0][2]["content"]
+    assert narration == "今天看了《三体》，很有意思"
+    assert memory.added == []
 
 
 # ---------------------------------------------------------------------------
-# 问题 3：记忆写入携带会话与人格上下文
+# 问题 3：记忆写入携带会话与人格上下文（M13-补丁1 后由睡前回顾/梦等
+# 直写路径消费，活动直塞已移除——persona 回落语义保留）
 # ---------------------------------------------------------------------------
-def test_memory_write_carries_ghost_session_and_persona():
-    """_write_memory 传幽灵事件 uwo 作 session_id + persona id（问题 3）。"""
-    memory = RecordingMemory()
-    activity = ScriptedActivity(outcome=_outcome("今天的产出"))
-    loop = _m3_loop(activity, memory)
-
-    async def persona_id():
-        return "凛"
-
-    loop._persona_id_getter = persona_id
-    result = asyncio.run(loop.run_activity_cycle(NOW))
-    assert result["ok"] is True
-    record = memory.added[0]
-    assert record["session_id"] and record["session_id"].startswith("living_ghost:")
-    assert record["persona_id"] == "凛"
-
-
 def test_persona_id_falls_back_to_default():
-    """persona 取不到 → "default"，写入不阻塞。"""
+    """persona 取不到 → "default"，读取不阻塞。"""
     memory = RecordingMemory()
-    activity = ScriptedActivity(outcome=_outcome("产出"))
-    loop = _m3_loop(activity, memory)
+    loop = _m3_loop(ScriptedActivity(), memory)
 
     async def broken():
         raise RuntimeError("persona gone")
 
     loop._persona_id_getter = broken
-    asyncio.run(loop.run_activity_cycle(NOW))
-    assert memory.added[0]["persona_id"] == "default"
+    assert asyncio.run(loop._persona_id()) == "default"
 
 
 def test_persona_id_none_returns_default():

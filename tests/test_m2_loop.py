@@ -156,58 +156,40 @@ def test_mood_records_failure_for_failed_activity():
 
 
 def test_low_valence_success_boosts_memory_importance():
-    """低谷时的小确幸记得更牢：valence<0 且活动成功 → 重要度 +0.1。"""
+    """低谷时的小确幸记得更牢：valence<0 且活动成功 → 调节量 +0.1。
+
+    M13-补丁1：直塞记忆移除后调节量暂无消费方，观测点平移到
+    _update_mood 的返回值（原断言 memory.added 的重要度）。
+    """
     act = ScriptedActivity("surf")
     mood = RecordingMood(valence=-0.5)
-    memory = FakeMemory()
-    loop = make_loop([act], memory=memory, mood=mood, decider=ScriptedDecider(act))
+    loop = make_loop([act], mood=mood, decider=ScriptedDecider(act))
+    outcome = ActivityOutcome(name="surf", summary="s", memory_content="m",
+                              importance=0.5)
 
-    asyncio.run(loop.run_activity_cycle(NOW))
-    assert memory.added[0][1] == 0.6  # 0.5 + 0.1，且被钳制在 [0,1]
+    adjust = asyncio.run(loop._update_mood(act, outcome, {}, 0.0))
+    assert adjust == 0.1
 
 
 def test_positive_valence_no_importance_boost():
     act = ScriptedActivity("surf")
     mood = RecordingMood(valence=0.5)
-    memory = FakeMemory()
-    loop = make_loop([act], memory=memory, mood=mood, decider=ScriptedDecider(act))
+    loop = make_loop([act], mood=mood, decider=ScriptedDecider(act))
+    outcome = ActivityOutcome(name="surf", summary="s", memory_content="m",
+                              importance=0.5)
 
-    asyncio.run(loop.run_activity_cycle(NOW))
-    assert memory.added[0][1] == 0.5  # 心情好时正常记
+    adjust = asyncio.run(loop._update_mood(act, outcome, {}, 0.0))
+    assert adjust == 0.0
 
 
 def test_low_valence_failure_no_boost():
     """重要度加成只给成功活动：失败不加。"""
     act = ScriptedActivity("game", fail=True)
     mood = RecordingMood(valence=-0.5)
-    memory = FakeMemory()
-    loop = make_loop([act], memory=memory, mood=mood, decider=ScriptedDecider(act))
+    loop = make_loop([act], mood=mood, decider=ScriptedDecider(act))
 
-    asyncio.run(loop.run_activity_cycle(NOW))
-    # 失败记忆基础重要度 0.2，失败不加成
-    assert memory.added[0][1] == 0.2
-
-
-def test_importance_clamped_to_one():
-    """加成后不超过 1.0：outcome.importance=0.95 + 0.1 → 1.0。"""
-    act = ScriptedActivity("surf")
-    act_outcome = ActivityOutcome(
-        name="surf", summary="s", memory_content="m", importance=0.95
-    )
-
-    class FixedAct(ScriptedActivity):
-        async def run(self, ctx):
-            self.runs += 1
-            self.last_ctx = ctx
-            return act_outcome
-
-    fixed = FixedAct("surf")
-    mood = RecordingMood(valence=-0.5)
-    memory = FakeMemory()
-    loop = make_loop([fixed], memory=memory, mood=mood, decider=ScriptedDecider(fixed))
-
-    asyncio.run(loop.run_activity_cycle(NOW))
-    assert memory.added[0][1] == 1.0
+    adjust = asyncio.run(loop._update_mood(act, None, {}, 0.0))
+    assert adjust == 0.0
 
 
 def test_mood_update_failure_does_not_break_cycle():
@@ -229,7 +211,7 @@ def test_mood_update_failure_does_not_break_cycle():
                      decider=ScriptedDecider(act))
     result = asyncio.run(loop.run_activity_cycle(NOW))
     assert result["ok"] is True
-    assert len(memory.added) == 1
+    assert act.runs == 1  # M13-补丁1：直塞记忆移除，活动照常完成即记账
 
 
 def test_decider_error_falls_back_to_internal_pick():

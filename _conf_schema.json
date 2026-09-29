@@ -231,6 +231,13 @@
                         "default": 12,
                         "invisible": true
                     },
+                    "activity_context_write": {
+                        "description": "活动经历写入对话上下文",
+                        "hint": "活动结束后把第一人称自述写入你们的对话上下文与 livingmemory 会话：你追问时它记得自己刚做了什么、问过什么；记忆图谱也改由 livingmemory 从对话自然总结。关闭后回到旧行为（活动经历只进它自己的记忆库，主人追问时它可能'忘了问的是啥'）。",
+                        "type": "bool",
+                        "default": true,
+                        "invisible": true
+                    },
                     "interest_cooldown_threshold": {
                         "description": "兴趣降温阈值（0-1）",
                         "hint": "启动自愈时检查：任一主题兴趣达到该值即触发一次性降温（历史偏执数据稀释）。",

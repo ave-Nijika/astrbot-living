@@ -521,6 +521,29 @@ class LivingPlugin(Star):
         )
         return None
 
+    async def _livingmemory_conversation_manager(self):
+        """livingmemory 插件的会话管理器（M13-补丁1 B1）。
+
+        只经插件注册表拿公开属性（与 memory_backend.probe 同款软依赖，
+        绝不 import 其源码）：star_cls.initializer.conversation_manager。
+        每次现取——插件异步初始化完成前/重载期间拿不到就返回 None，
+        调用方按"不可用"跳过该落点。任何失败都吞掉（DEBUG 留底）。
+        """
+        try:
+            get_star = getattr(self.context, "get_registered_star", None)
+            if not callable(get_star):
+                return None
+            meta = get_star("astrbot_plugin_livingmemory")
+            if meta is None or not getattr(meta, "activated", False):
+                return None
+            initializer = getattr(getattr(meta, "star_cls", None), "initializer", None)
+            mgr = getattr(initializer, "conversation_manager", None)
+            if mgr is not None and callable(getattr(mgr, "add_message", None)):
+                return mgr
+        except Exception as e:
+            logger.debug(f"[Living] livingmemory 会话管理器探测失败（跳过）: {e}")
+        return None
+
     async def _persona_id(self) -> str:
         """当前生效 persona 的 id（问题 3：记忆图谱的参与者边原料）。
 
@@ -747,6 +770,9 @@ class LivingPlugin(Star):
                 mood=self.mood,
             ),
             bot_identity_getter=self._bot_identity,
+            # M13-补丁1 B1：livingmemory 会话管理器动态探测——活动自述写进
+            # 它的会话存储，MemoryReflection 才能把活动当对话总结进图谱
+            lm_conversation_manager_getter=self._livingmemory_conversation_manager,
             # M9-补丁1：主人身份自动认领——target_sessions 未手填时派生
             # 全部管理员的私聊会话（与 _bot_identity_getter 同款注入先例）
             global_config_getter=lambda: self.context.astrbot_config,
