@@ -12,7 +12,8 @@ const KNOB_ORDER = [
 
 const GROUP_LABELS = {
   autonomy: "能力档位", decision: "决策", output_gate: "输出闸门",
-  sleep: "休眠", capabilities: "能力参数", memory: "记忆", model: "模型",
+  initiative: "主动搭话", sleep: "休眠", capabilities: "能力参数",
+  memory: "记忆", model: "模型",
 };
 
 /* 任务书 2.2 的危险项清单（advanced 组内，带醒目警告） */
@@ -199,11 +200,128 @@ function renderNovice() {
     }
     grid.appendChild(card);
   }
-  grid.appendChild(scheduleCard()); // 第 10 张卡：起床约定（M5-补丁4）
+  grid.appendChild(initiativeCard()); // 主动搭话卡（M14-补丁2 F3）：新手卡之后、起床约定卡之前
+  grid.appendChild(scheduleCard()); // 起床约定卡（M5-补丁4）
   renderLifeExtra(presetSchema);
 }
 
-/* 第 10 张卡：起床约定（M5-补丁4 D2）——总开关 + 自觉性滑块。
+/* 主动搭话卡（M14-补丁2 F3）：读写 advanced.initiative 的键，复用既有
+ * 差量保存；总开关关闭时隐藏明细。新手界面不暴露裸概率——三档映射
+ * INITIATIVE_LEVELS 是纯数据，initiativeLevelToProbability 是纯函数
+ * （tests/test_m14_patch2.py 对映射表做边界值断言）。 */
+
+/* 档位 → base_probability 映射（主人 10-03 定稿：0.08 / 0.18 / 0.35） */
+const INITIATIVE_LEVELS = [
+  ["quiet", "安静", 0.08],
+  ["moderate", "适中", 0.18],
+  ["active", "主动", 0.35],
+];
+
+function initiativeLevelToProbability(level) {
+  for (const [key, _label, probability] of INITIATIVE_LEVELS) {
+    if (key === level) return probability;
+  }
+  return 0.18; // 未知档位回落默认（与 schema 默认一致）
+}
+
+function initiativeCard() {
+  if (!state.values.advanced.initiative) state.values.advanced.initiative = {};
+  const ini = state.values.advanced.initiative;
+  const card = document.createElement("div");
+  card.className = "knob-card initiative-card";
+
+  const title = document.createElement("h3");
+  title.textContent = "主动搭话";
+  card.appendChild(title);
+
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent =
+    "除了分享活动和说梦话，她也会自己起念头找你说话——可能没有事由，" +
+    "也可能接上你们最近聊的话题。她睡着时绝不会打扰；每天能说多少句、" +
+    "间隔多久，和活动分享共用同一个额度。";
+  card.appendChild(hint);
+
+  const enabled = ini.enabled !== false;
+  const detail = document.createElement("div");
+  detail.className = enabled ? "initiative-detail" : "initiative-detail hidden";
+
+  const row = document.createElement("div");
+  row.className = "option-row";
+  const enabledLabel = document.createElement("p");
+  enabledLabel.className = "slider-label";
+  enabledLabel.textContent = "总开关——关掉就回到只有活动分享的状态";
+  for (const [label, value] of [["开", true], ["关", false]]) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "option";
+    btn.textContent = label;
+    if (enabled === value) btn.classList.add("selected");
+    btn.addEventListener("click", () => {
+      ini.enabled = value;
+      setDirty(true);
+      row.querySelectorAll(".option").forEach((el) => el.classList.remove("selected"));
+      btn.classList.add("selected");
+      detail.classList.toggle("hidden", value === false);
+    });
+    row.appendChild(btn);
+  }
+  detail.append(enabledLabel, row);
+
+  // 主动程度三档（写 base_probability，不暴露裸数字）
+  const levelLabel = document.createElement("p");
+  levelLabel.className = "slider-label";
+  levelLabel.textContent = "主动程度——她多常主动找你说话";
+  const levelRow = document.createElement("div");
+  levelRow.className = "option-row";
+  const currentP = typeof ini.base_probability === "number"
+    ? ini.base_probability : 0.18;
+  for (const [key, label] of INITIATIVE_LEVELS) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "option";
+    btn.textContent = label;
+    if (Math.abs(currentP - initiativeLevelToProbability(key)) < 1e-9) {
+      btn.classList.add("selected");
+    }
+    btn.addEventListener("click", () => {
+      ini.base_probability = initiativeLevelToProbability(key);
+      setDirty(true);
+      levelRow.querySelectorAll(".option").forEach((el) => el.classList.remove("selected"));
+      btn.classList.add("selected");
+    });
+    levelRow.appendChild(btn);
+  }
+  detail.append(levelLabel, levelRow);
+
+  // 未回应收敛开关（主人定稿文案）
+  const backoffLabel = document.createElement("p");
+  backoffLabel.className = "slider-label";
+  backoffLabel.textContent = "你不理她时，她会慢慢安静下来（不会完全不理你）";
+  const backoffRow = document.createElement("div");
+  backoffRow.className = "option-row";
+  const backoff = ini.unanswered_backoff !== false;
+  for (const [label, value] of [["开", true], ["关", false]]) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "option";
+    btn.textContent = label;
+    if (backoff === value) btn.classList.add("selected");
+    btn.addEventListener("click", () => {
+      ini.unanswered_backoff = value;
+      setDirty(true);
+      backoffRow.querySelectorAll(".option").forEach((el) => el.classList.remove("selected"));
+      btn.classList.add("selected");
+    });
+    backoffRow.appendChild(btn);
+  }
+  detail.append(backoffLabel, backoffRow);
+
+  card.appendChild(detail);
+  return card;
+}
+
+/* 起床约定卡（M5-补丁4 D2）——总开关 + 自觉性滑块。
  * 读写 advanced.sleep 的两个键，复用既有差量保存；关闭时隐藏滑块 */
 function scheduleCard() {
   if (!state.values.advanced.sleep) state.values.advanced.sleep = {};
@@ -419,12 +537,17 @@ function renderExpert() {
  * 提交方式二选一里选了逐项即时：兴趣是诊断级运行状态，改一项立即生效
  * 比攒着一起保存更直观，也不与配置保存的热重载互相干扰。
  *
- * M9-补丁2 B1/B2：绕过 bridge，直接同源 fetch——bridge（打包 dist）的
- * 转发路径与端点注册失配（连 M5 的 config 旧端点也失配，实测"未找到该
- * 路由"），而同源 /api/v1/plugins/extensions/<plugin>/<route> 始终正常。
- * 鉴权与 dashboard 前端同款：localStorage['token'] + Authorization Bearer
- * （dashboard/src/api/http.ts getToken 同款键）。沙箱防御：localStorage
- * 与 fetch 全程 try/catch，取不到 token 就裸请求（401 时给出专用文案）。 */
+ * M14-补丁2 E：请求层 bridge 化（更正 M9-补丁2 的历史结论）。AstrBot 4.28
+ * 的插件页 iframe sandbox 属性为 "allow-scripts allow-forms allow-downloads"
+ * ——没有 allow-same-origin，页面 origin 是 opaque：相对路径 fetch 必然
+ * 抛异常、localStorage 被禁。当年"bridge 转发失配、同源 fetch 始终正常"
+ * 的结论与现状硬证据矛盾——配置区 bridge.apiGet("config") 一直正常工作
+ * （bridge 本身可用），当时"未找到该路由"极可能是 endpoint 传了完整
+ * /api/v1/... 路径被父窗口二次拼接所致。bridge 契约：apiGet/apiPost 的
+ * endpoint 用插件内相对路径（"mood"/"mood/interests"，不带 /api/v1 前缀，
+ * 父窗口自动拼 /api/v1/plugins/extensions/<插件名>/<endpoint> 并自带
+ * 鉴权代发）。策略：bridge 优先，fetch 同源直连保留为回退（老版本
+ * AstrBot / 非 sandbox 环境）；两路共用同一套错误文案（含 401 专用）。 */
 
 const PLUGIN_API_BASE = "/api/v1/plugins/extensions/astrbot_plugin_living";
 
@@ -436,8 +559,33 @@ function authToken() {
   }
 }
 
-/* 心境端点统一请求：401 专用文案（B3），其余透传服务端 message。 */
+/* 心境端点统一请求：bridge 优先（M14-补丁2 E1）+ fetch 回退（E2）；
+ * 401 专用文案与其余服务端 message 两路共用。 */
 async function moodRequest(path, options = {}) {
+  const page = window.AstrBotPluginPage;
+  const endpoint = String(path || "").replace(/^\//, ""); // 插件内相对路径
+  const isPost = (options.method || "GET").toUpperCase() !== "GET";
+  const apiFn = isPost ? page && page.apiPost : page && page.apiGet;
+  if (typeof apiFn === "function") {
+    try {
+      const raw = isPost
+        ? await apiFn.call(page, endpoint,
+            options.body ? JSON.parse(options.body) : {})
+        : await apiFn.call(page, endpoint);
+      // 兼容已解包/未解包两种 bridge 形态，避免二次解包错位
+      const payload = raw && raw.data ? raw.data : raw;
+      if (payload && payload.status === "error") {
+        throw Object.assign(
+          new Error(payload.message || "请求失败"), { definitive: true }
+        );
+      }
+      // 与 fetch 分支同契约：返回带 data 字段的响应体
+      return { status: "ok", data: payload };
+    } catch (e) {
+      if (e && e.definitive) throw e; // 服务端明确报错：如实上抛，不回退
+      /* bridge 失败（SDK 缺方法/鉴权抛错/解析失败）→ 落到下方 fetch 回退 */
+    }
+  }
   const headers = { ...(options.headers || {}) };
   const token = authToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;

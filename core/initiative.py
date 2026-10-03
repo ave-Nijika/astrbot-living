@@ -1,27 +1,29 @@
-"""InitiativeEngine——主动搭话念头系统（M14-补丁1）。
+"""InitiativeEngine——主动搭话念头系统（M14-补丁1；M14-补丁2 复用优先收敛）。
 
 主动出口的第二条通路（与五条既有分享链路完全独立，红线 1）：念头台词
 本身就是人格化输出，不走分享改写器；发送成功后复用 M13-补丁1 的双存储
 落点进她的工作记忆（E2）。
 
-设计来源（调研报告对照详见任务报告）：
-  - private_companion 的"候选来源 → 审核 → 发送"：收敛为
-    掷概率 → 选来源 → 生成（含人格终审）→ 闸门 → 发送 → 双写 → 记账；
-  - proactive_chat 的"未回复收敛"：连续未回应 → 概率减半 → 阈值后安静；
-  - living 自己的差异点——真实生活状态：睡眠期不评估（A2）、时段权重
-    （D2）、心境调制（D3），这是两家参考插件都没有的。
+复用地基（M14-补丁2 总原则：已有的相似模块一律复用，不自带第二套）：
+  - 睡眠/静默 → 睡眠模块（loop 清醒分支才评估 + 引擎 sleeping 兜底）；
+  - 每日配额 / 最小间隔 → 共享输出闸门 should_send_message（与活动分享
+    同池，默认 10 次/天 + 30 分钟间隔，默认值不改）；念头自身零独立配额；
+  - 心境/精力 → mood 模块（energy/digest）；会话解析 → _resolve_target_
+    sessions；双写 → _write_speech_to_stores。
+念头自身只保留：基础概率、心境调制、未回应收敛（主人定制：越不理越少
+但**永远不为零**）、候选池/生成/终审、审计。无固定时窗——深夜她若醒着，
+找不找主人说话由她自己的作息与心情决定，不由固定时钟决定。
 
-F3 未回应口径（任务书钦定，报告有专节说明）：每个念头只结算一次——
-发出后的第一次评估时，主人自发出后无任何消息 → 该念头计为未回应
-（streak +1）；主人消息到达即时清零（F2，note_owner_message）。
+未回应收敛口径：每个念头只结算一次——发出后的第一次评估时，主人自发
+出后无任何消息 → streak +1；主人消息到达即时清零（note_owner_message）；
+streak 跨日每天 -1（时间冲淡）；概率乘 0.5^(streak//3)，下限 0.1。
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import random
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Callable
 
 from astrbot.api import logger
@@ -33,80 +35,20 @@ from .share_rewriter import _strip_wrapping_quotes
 INITIATIVE_TEXT_MAX = 120
 # G2：审计行里的台词预览截断（防日志泄漏长文本）
 AUDIT_TEXT_PREVIEW = 20
-# F1：发送记录有界保留
-SENT_LOG_MAX = 20
+# D2：收敛倍率下限（主人 10-03 定稿：越不理越少，但永远不为零）
+BACKOFF_MULTIPLIER_FLOOR = 0.1
 
 # living_state 表的键名（经 gate.state_get/state_set 存取）
-STATE_KEY_SENT_LOG = "initiative_sent_log"
-STATE_KEY_LAST_SENT = "initiative_last_sent_at"
 STATE_KEY_STREAK = "initiative_unanswered_streak"
+STATE_KEY_STREAK_DATE = "initiative_streak_date"
 STATE_KEY_PENDING_SETTLE = "initiative_pending_settle_at"
 STATE_KEY_LAST_OWNER_MSG = "initiative_last_owner_msg_at"
 
-# D2 时段权重内置表：[start, end) 小时区间，跨午夜段按 in_time_window 同款
-# 语义（start > end）表达；没有任何段命中的小时按 0（保守，不主动）
-DEFAULT_HOURLY_WEIGHTS: tuple[tuple[int, int, float], ...] = (
-    (6, 9, 0.5),
-    (9, 12, 0.9),
-    (12, 14, 0.8),
-    (14, 18, 0.6),
-    (18, 23, 1.0),
-    (23, 6, 0.0),
-)
-
-# B 组首批来源（H8 sources 的合法值；未知名忽略——配置手滑在审计里可见）
+# B 组首批来源（sources 配置的合法值；未知名忽略——配置手滑在审计里可见）
 KNOWN_SOURCES = ("random_miss", "open_topic")
 
 # C3：异常形态特征（防 OOC——主动搭话里不该有链接和代码块）
 _OOC_MARKERS = ("http://", "https://", "www.", "```")
-
-
-def parse_hourly_weights(raw: Any) -> tuple[tuple[int, int, float], ...] | None:
-    """H5：解析 '06-09=0.5,09-12=0.9,...'。
-
-    任何一段不合法（缺等号/缺横杠/非数字/权重负数）→ None，调用方回落
-    内置表；空串/None 同样表示"用内置表"。跨午夜段（如 23-06=0）合法。
-    """
-    if raw is None:
-        return None
-    text = str(raw).strip()
-    if not text:
-        return None
-    segments: list[tuple[int, int, float]] = []
-    for part in text.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        if "=" not in part or "-" not in part:
-            return None
-        range_text, _, weight_text = part.partition("=")
-        start_text, _, end_text = range_text.partition("-")
-        try:
-            start, end, weight = (
-                int(start_text.strip()),
-                int(end_text.strip()),
-                float(weight_text.strip()),
-            )
-        except ValueError:
-            return None
-        if not (0 <= start <= 24 and 0 <= end <= 24) or weight < 0:
-            return None
-        segments.append((start, end, weight))
-    return tuple(segments) if segments else None
-
-
-def hour_weight(
-    segments: tuple[tuple[int, int, float], ...], now: datetime
-) -> float:
-    """now.hour 落入的时段权重；无段命中 → 0.0（自定义表有缝隙时保守）。"""
-    hour = now.hour
-    for start, end, weight in segments:
-        if start <= end:
-            if start <= hour < end:
-                return weight
-        elif hour >= start or hour < end:  # 跨午夜段（如 23-06）
-            return weight
-    return 0.0
 
 
 def mood_energy_factor(mood: Any) -> float:
@@ -168,10 +110,11 @@ class InitiativeEngine:
         self._persona_getter = persona_getter
         self._rng = rng or random.Random()
         self._now = now_provider or datetime.now
-        # F 组状态：内存权威 + gate 状态库持久化镜像（跨重启恢复）
-        self._sent_log: list[datetime] = []
-        self._last_sent_at: datetime | None = None
+        # 收敛状态：内存权威 + gate 状态库持久化镜像（跨重启恢复）。
+        # M14-补丁2 B/C：独立发送账本/上次发送时间已删——节流与每日配额
+        # 完全由共享闸门记账，引擎只保留收敛四件套
         self._streak: int = 0
+        self._streak_date: date | None = None
         self._pending_settle_at: datetime | None = None
         self._last_owner_msg_at: datetime | None = None
         self._loaded = False
@@ -184,12 +127,6 @@ class InitiativeEngine:
             return conf_group(self._config_getter() or {}, "initiative")
         except Exception:
             return {}
-
-    def _conf_int(self, cfg: dict, key: str, default: int) -> int:
-        try:
-            return int(cfg.get(key, default))
-        except (TypeError, ValueError):
-            return default
 
     def _conf_float(self, cfg: dict, key: str, default: float) -> float:
         try:
@@ -204,7 +141,7 @@ class InitiativeEngine:
         return str(raw).strip().lower() not in ("false", "0", "off", "no")
 
     # ------------------------------------------------------------------
-    # 持久化（F1/F3：gate 的 living_state 键值表；gate 不支持时仅内存）
+    # 持久化（收敛状态：gate 的 living_state 键值表；gate 不支持时仅内存）
     # ------------------------------------------------------------------
     async def _load_state(self) -> None:
         if self._loaded:
@@ -222,20 +159,20 @@ class InitiativeEngine:
             except ValueError:
                 return None
 
+        def _day(raw: Any) -> date | None:
+            if not raw:
+                return None
+            try:
+                return date.fromisoformat(str(raw))
+            except ValueError:
+                return None
+
         try:
-            log_raw = await getter(STATE_KEY_SENT_LOG)
-            items = json.loads(log_raw) if log_raw else []
-            stamps = []
-            for item in items if isinstance(items, list) else []:
-                parsed = _ts(item)
-                if parsed is not None:
-                    stamps.append(parsed)
-            self._sent_log = stamps[-SENT_LOG_MAX:]
-            self._last_sent_at = _ts(await getter(STATE_KEY_LAST_SENT))
             try:
                 self._streak = max(int(await getter(STATE_KEY_STREAK) or 0), 0)
             except (TypeError, ValueError):
                 self._streak = 0
+            self._streak_date = _day(await getter(STATE_KEY_STREAK_DATE))
             self._pending_settle_at = _ts(await getter(STATE_KEY_PENDING_SETTLE))
             self._last_owner_msg_at = _ts(await getter(STATE_KEY_LAST_OWNER_MSG))
         except Exception as e:
@@ -247,16 +184,12 @@ class InitiativeEngine:
             return
         try:
             for key in keys:
-                if key == STATE_KEY_SENT_LOG:
-                    value = json.dumps(
-                        [ts.isoformat() for ts in self._sent_log],
-                        ensure_ascii=False,
-                    )
-                elif key == STATE_KEY_STREAK:
+                if key == STATE_KEY_STREAK:
                     value = str(self._streak)
+                elif key == STATE_KEY_STREAK_DATE:
+                    value = self._streak_date.isoformat() if self._streak_date else ""
                 else:
                     raw = {
-                        STATE_KEY_LAST_SENT: self._last_sent_at,
                         STATE_KEY_PENDING_SETTLE: self._pending_settle_at,
                         STATE_KEY_LAST_OWNER_MSG: self._last_owner_msg_at,
                     }[key]
@@ -266,7 +199,7 @@ class InitiativeEngine:
             logger.debug(f"[Initiative] 状态持久化失败（不影响主流程）: {e}")
 
     # ------------------------------------------------------------------
-    # F2/F3：未回应收敛
+    # 未回应收敛（F2/F3 + M14-补丁2 D：不归零）
     # ------------------------------------------------------------------
     async def note_owner_message(self, now: datetime | None = None) -> None:
         """F2：主人消息到达 → 视为已回应，连续未回应计数清零。
@@ -284,19 +217,39 @@ class InitiativeEngine:
                 f"[Initiative] 主人说话了，未回应计数清零（原 {self._streak}）"
             )
         self._streak = 0
+        self._streak_date = now.date()
         if had_outstanding:
             await self._persist(
-                STATE_KEY_LAST_OWNER_MSG, STATE_KEY_STREAK, STATE_KEY_PENDING_SETTLE
+                STATE_KEY_LAST_OWNER_MSG, STATE_KEY_STREAK, STATE_KEY_STREAK_DATE,
+                STATE_KEY_PENDING_SETTLE,
             )
         else:
             await self._persist(STATE_KEY_LAST_OWNER_MSG)
+
+    async def _decay_streak_if_new_day(self, now: datetime) -> None:
+        """M14-补丁2 D3：streak 跨日衰减——最后更新日早于今天 → -1。
+
+        每天（的第一次评估）至多减 1，时间冲淡、不无限累积；配合 D2 的
+        概率下限 0.1，收敛永远不到零。streak 为 0 或无更新日（新装/旧
+        状态无该键）时不做任何事——缺失日期按"从现在开始跟踪"处理，
+        不追溯惩罚。
+        """
+        if self._streak <= 0 or self._streak_date is None:
+            return
+        today = now.date()
+        if self._streak_date >= today:
+            return
+        self._streak = max(0, self._streak - 1)
+        self._streak_date = today
+        logger.debug(f"[Initiative] 跨日衰减：收敛计数 → {self._streak}")
+        await self._persist(STATE_KEY_STREAK, STATE_KEY_STREAK_DATE)
 
     async def _settle_unanswered(self, now: datetime) -> None:
         """F3 结算：每个念头只结算一次（发出后的第一次评估时）。
 
         主人自发出后无任何消息 → streak +1（该念头计为未回应）；有消息
-        （通常已被 note_owner_message 即时清零）→ 保持 0。口径细节见
-        任务报告 F3 专节。
+        （通常已被 note_owner_message 即时清零）→ 保持 0。两种结果都刷新
+        streak 更新日（D3 跨日衰减的计时锚点）。
         """
         if self._pending_settle_at is None:
             return
@@ -311,20 +264,24 @@ class InitiativeEngine:
         else:
             self._streak += 1
             logger.debug(f"[Initiative] 上次念头未获回应，收敛计数 → {self._streak}")
-        await self._persist(STATE_KEY_STREAK, STATE_KEY_PENDING_SETTLE)
+        self._streak_date = now.date()
+        await self._persist(
+            STATE_KEY_STREAK, STATE_KEY_STREAK_DATE, STATE_KEY_PENDING_SETTLE
+        )
 
     # ------------------------------------------------------------------
-    # D 组：概率
+    # D 组：概率（M14-补丁2 A：固定时窗已删——概率 = 基础 × 心境 × 收敛）
     # ------------------------------------------------------------------
-    def _probability(self, cfg: dict, now: datetime) -> float:
-        """D1-D4：基础概率 × 时段权重 × 心境调制 × 收敛倍率，夹在 [0,1]。"""
+    def _probability(self, cfg: dict) -> float:
+        """D1/D3/F4+补丁2 D：基础概率 × 心境调制 × 收敛倍率，夹在 [0,1]。
+
+        收敛倍率 = 0.5^(streak//3)，下限 0.1（主人定稿：越不理越少，
+        永远不为零）；unanswered_backoff=false 时倍率与下限整体不生效。
+        """
         base = max(self._conf_float(cfg, "base_probability", 0.18), 0.0)
-        segments = parse_hourly_weights(cfg.get("hourly_weights"))
-        if segments is None:
-            segments = DEFAULT_HOURLY_WEIGHTS
-        p = base * hour_weight(segments, now) * mood_energy_factor(self._mood)
+        p = base * mood_energy_factor(self._mood)
         if self._conf_bool(cfg, "unanswered_backoff", True) and self._streak >= 3:
-            p *= 0.5 ** (self._streak // 3)  # F4
+            p *= max(BACKOFF_MULTIPLIER_FLOOR, 0.5 ** (self._streak // 3))  # F4+D2
         return max(0.0, min(p, 1.0))
 
     def _enabled_sources(self, cfg: dict) -> list[str]:
@@ -333,18 +290,6 @@ class InitiativeEngine:
             return list(KNOWN_SOURCES)
         wanted = [s.strip() for s in raw.split(",") if s.strip()]
         return [s for s in wanted if s in KNOWN_SOURCES]
-
-    def _sent_today(self, now: datetime) -> int:
-        today = now.date()
-        return sum(1 for ts in self._sent_log if ts.date() == today)
-
-    def _note_initiative_sent(self, now: datetime) -> None:
-        """F1 记账 + F3 挂起结算标记（该念头等待下次评估定性）。"""
-        self._sent_log.append(now)
-        if len(self._sent_log) > SENT_LOG_MAX:
-            self._sent_log = self._sent_log[-SENT_LOG_MAX:]
-        self._last_sent_at = now
-        self._pending_settle_at = now
 
     # ------------------------------------------------------------------
     # B/C 组：来源与台词
@@ -524,7 +469,9 @@ class InitiativeEngine:
             # H1 关闭：系统整体静默，不产审计
             return {"sent": False, "reason": "disabled"}
 
-        # A2：睡眠期静默（loop 只在清醒分支调用，这里是直接调用时的兜底）
+        # A2：睡眠期静默（loop 只在清醒分支调用，这里是直接调用时的兜底）。
+        # 静默语义的最终形态（M14-补丁2 A4）：仅由睡眠模块负责——深夜她
+        # 若醒着，就按正常概率评估，不由固定时钟决定
         asleep_check = getattr(self._gate, "is_asleep_now", None)
         if callable(asleep_check):
             try:
@@ -533,34 +480,31 @@ class InitiativeEngine:
             except Exception as e:
                 logger.debug(f"[Initiative] 睡眠判定失败（按清醒继续）: {e}")
 
-        # F3：结算上一个念头的"是否被回应"
+        # D3：跨日衰减（时间冲淡收敛计数）→ F3：结算上一个念头
+        await self._decay_streak_if_new_day(now)
         await self._settle_unanswered(now)
         streak = self._streak
 
-        # F5：streak ≥ 6 → 懂事地安静下来（主人回应即恢复）
-        if self._conf_bool(cfg, "unanswered_backoff", True) and streak >= 6:
-            return self._audit(streak=streak, reason="backoff_silent")
-
-        # D7：每日念头上限（独立计数）
-        daily_max = max(self._conf_int(cfg, "daily_max", 3), 0)
-        if daily_max > 0 and self._sent_today(now) >= daily_max:
-            return self._audit(streak=streak, reason="daily_max")
-
-        # D6：念头独立最小间隔（与通用闸门取更严者，这里先拦省 token）
-        min_interval = max(self._conf_float(cfg, "min_interval_minutes", 150.0), 0.0)
-        if (
-            min_interval > 0
-            and self._last_sent_at is not None
-            and (now - self._last_sent_at).total_seconds() < min_interval * 60
-        ):
-            return self._audit(streak=streak, reason="initiative_interval")
-
-        # D1-D4：概率掷点
-        prob = self._probability(cfg, now)
+        # D1-D4+补丁2 D：概率掷点（收敛只降频、不归零）
+        prob = self._probability(cfg)
         roll = self._rng.random() if hasattr(self._rng, "random") else self._rng()
         if roll >= prob:
             return self._audit(
                 streak=streak, prob=prob, roll=roll, reason="no_roll"
+            )
+
+        # B4 预检：共享闸门（与活动分享同池的每日上限/30 分钟间隔/静默
+        # 时段）。掷点已过、生成未花 token——被闸门挡下就到此为止；掷点
+        # 之后的正式闸门检查在生成后照旧执行（A3 顺序原样保留）。
+        # M14-补丁2 B/C：独立间隔与每日上限已删，节流完全依赖共享闸门。
+        try:
+            allow, gate_reason = await self._gate.should_send_message(now)
+        except Exception as e:
+            logger.debug(f"[Initiative] 共享闸门预检失败（本次不发）: {e}")
+            allow, gate_reason = False, "gate_error"
+        if not allow:
+            return self._audit(
+                streak=streak, prob=prob, roll=roll, reason=f"gate:{gate_reason}"
             )
 
         # B3：来源选择（等权随机；open_topic 需提取成功，失败不降级）
@@ -591,7 +535,8 @@ class InitiativeEngine:
                 reason="llm_skip",
             )
 
-        # D5：通用闸门（每日上限/最小间隔/静默时段，默认值不改）
+        # D5：通用闸门正式检查（预检后的复核，A3 原位保留——极端情形下
+        # 生成耗时跨越静默时段边界时在此拦下）
         try:
             allow, gate_reason = await self._gate.should_send_message(now)
         except Exception as e:
@@ -639,16 +584,14 @@ class InitiativeEngine:
             except Exception as e:
                 logger.debug(f"[Initiative] 双写落库失败（不影响发送）: {e}")
 
-        # 记账：通用闸门配额（D5 复用）+ 念头账本（F1）
+        # 记账：共享闸门配额（B4/C6——与活动分享同池，note_message_sent
+        # 维护共享的 last_message_at 与每日计数）+ F3 挂起结算标记
         try:
             await self._gate.note_message_sent(now)
         except Exception as e:
             logger.debug(f"[Initiative] 通用闸门记账失败: {e}")
-        self._note_initiative_sent(now)
-        await self._persist(
-            STATE_KEY_SENT_LOG, STATE_KEY_LAST_SENT, STATE_KEY_PENDING_SETTLE,
-            STATE_KEY_STREAK,
-        )
+        self._pending_settle_at = now
+        await self._persist(STATE_KEY_PENDING_SETTLE)
         return self._audit(
             streak=streak, prob=prob, roll=roll, source=source,
             gate="通过", review="通过", text=line,

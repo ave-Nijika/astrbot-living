@@ -5,34 +5,31 @@ A 组：InitiativeEngine 心跳 tick 驱动、全依赖可注入；主流程
 任一环节失败静默降级。
 B/C 组：random_miss / open_topic 两来源；单次 LLM 调用生成 + SKIP 终审；
 C3 长度与异常形态防线；C4 final_review_enabled 关闭时 SKIP 指令移除。
-D 组：概率 = 基础 × 时段权重 × 心境调制 × 收敛倍率；念头独立间隔/每日
-上限与通用闸门取更严者。
+D 组：概率 = 基础 × 心境调制 × 收敛因子（M14-补丁2 起无固定时窗，节流
+完全复用共享闸门）；念头发送消耗共享配额。
 E 组：双写复用 M13-补丁1 抽象（E1 重构后活动侧行为逐字不变）。
 F 组：未回应收敛——每念头一次结算（F3 口径）、主人消息即时清零（F2）、
-streak≥3 概率减半（F4）、streak≥6 安静（F5）、状态持久化（F1）。
+衰减带下限永不为零（补丁2 D）、状态持久化。
 G/I 组：INFO 审计（台词只留 20 字预览）；心跳接入与睡眠静默。
+（补丁2 删除的独立间隔/每日上限/固定时窗/硬静默用例随实现一并移除。）
 """
 
 import asyncio
-import json
 import logging
 from datetime import datetime, timedelta
 
 import pytest
 
 from core.initiative import (
-    DEFAULT_HOURLY_WEIGHTS,
-    STATE_KEY_LAST_SENT,
-    STATE_KEY_SENT_LOG,
+    STATE_KEY_PENDING_SETTLE,
     STATE_KEY_STREAK,
+    STATE_KEY_STREAK_DATE,
     InitiativeEngine,
-    hour_weight,
     mood_energy_factor,
-    parse_hourly_weights,
 )
 from core.living_loop import LivingLoop
 
-NOW = datetime(2026, 10, 3, 20, 0, 0)  # 18-23 段，权重 1.0
+NOW = datetime(2026, 10, 3, 20, 0, 0)
 # 假号（测试先例 10001），非真实 QQ 号
 MASTER_UMO = "aiocqhttp:FriendMessage:10001"
 LINE = "今天路过那家店，想起你说想喝它家的奶茶。"
@@ -52,10 +49,7 @@ def _config(**overrides):
     cfg = {
         "initiative": {
             "enabled": True,
-            "daily_max": 3,
-            "min_interval_minutes": 150,
             "base_probability": 0.18,
-            "hourly_weights": "",
             "unanswered_backoff": True,
             "final_review_enabled": True,
             "sources": "random_miss,open_topic",
@@ -174,29 +168,8 @@ def make_engine(config=None, gate=None, rng=None, llm=None, mood=None,
 
 
 # ---------------------------------------------------------------------------
-# J1：概率与系数
+# J1：概率构成（M14-补丁2 T1：仅基础 × 心境 × 收敛，固定 rng 断言具体值）
 # ---------------------------------------------------------------------------
-def test_hour_weight_default_table():
-    cases = {7: 0.5, 9: 0.9, 10: 0.9, 12: 0.8, 13: 0.8, 14: 0.6, 17: 0.6,
-             18: 1.0, 22: 1.0, 23: 0.0, 2: 0.0, 5: 0.0, 6: 0.5}
-    for hour, expected in cases.items():
-        assert hour_weight(
-            DEFAULT_HOURLY_WEIGHTS, datetime(2026, 10, 3, hour, 0)
-        ) == expected
-
-
-def test_parse_hourly_weights_custom_override_and_fallback():
-    assert parse_hourly_weights("10-12=0.25") == ((10, 12, 0.25),)
-    # 跨午夜段合法；解析失败/空串 → None（回落内置表）
-    assert parse_hourly_weights("06-09=0.5,23-06=0") == (
-        (6, 9, 0.5), (23, 6, 0.0),
-    )
-    assert parse_hourly_weights("坏数据") is None
-    assert parse_hourly_weights("10-12=负数") is None
-    assert parse_hourly_weights("") is None
-    assert parse_hourly_weights(None) is None
-
-
 def test_mood_energy_factor_bands():
     assert mood_energy_factor(FakeMood(0.8)) == 1.2
     assert mood_energy_factor(FakeMood(0.7)) == 1.2
@@ -211,38 +184,48 @@ def test_mood_energy_factor_bands():
     assert mood_energy_factor(NoEnergy()) == 1.0
 
 
-def test_probability_composition_j1():
-    """基础 0.18 × 晚间 1.0 × 心境 1.2 = 0.216；固定 rng 命中与未命中。"""
-    engine = make_engine(rng=ScriptedRng([0.2]))
-    prob = engine._probability(engine._cfg(), NOW)
-    assert prob == pytest.approx(0.18 * 1.0 * 1.2)
-    low_hour = NOW.replace(hour=15)  # 14-18 → 0.6
-    assert engine._probability(engine._cfg(), low_hour) == pytest.approx(
-        0.18 * 0.6 * 1.2
-    )
-    # 时段权重表配置覆盖（H5）
-    engine2 = make_engine(
-        config=_config(hourly_weights="14-18=0.1"), rng=ScriptedRng([0.2])
-    )
-    assert engine2._probability(engine2._cfg(), low_hour) == pytest.approx(
-        0.18 * 0.1 * 1.2
-    )
+def test_probability_composition_no_time_window():
+    """M14-补丁2 A：概率 = 基础 × 心境，与时刻无关（时窗因子已删）。"""
+    engine = make_engine(mood=FakeMood(0.8))
+    assert engine._probability(engine._cfg()) == pytest.approx(0.18 * 1.2)
+    low_mood = make_engine(mood=FakeMood(0.3))
+    assert low_mood._probability(low_mood._cfg()) == pytest.approx(0.18 * 0.5)
+    # 基础概率配置覆盖
+    tuned = make_engine(config=_config(base_probability=0.35))
+    assert tuned._probability(tuned._cfg()) == pytest.approx(0.35 * 1.2)
+    # 签名里不再有 now（时窗参数随因子一并移除）
+    import inspect
+
+    assert "now" not in inspect.signature(InitiativeEngine._probability).parameters
 
 
-def test_backoff_multiplier_halves_probability():
-    """F4：streak ≥ 3 → ×0.5^floor(streak/3)；streak 归零恢复。"""
-    engine = make_engine(rng=ScriptedRng([0.2]))
-    base = engine._probability(engine._cfg(), NOW)
-    engine._streak = 3
-    assert engine._probability(engine._cfg(), NOW) == pytest.approx(base * 0.5)
-    engine._streak = 7  # 若不被 F5 拦，倍率 0.25（公式一般化）
-    assert engine._probability(engine._cfg(), NOW) == pytest.approx(base * 0.25)
+def test_backoff_multiplier_with_floor():
+    """F4 + 补丁2 D2：streak≥3 → ×0.5^floor(streak/3)，下限 0.1 永不为零。"""
+    engine = make_engine(mood=FakeMood(0.5))  # 心境因子 1.0，裸看收敛
+    base = engine._probability(engine._cfg())
+    assert base == pytest.approx(0.18)
+    for streak, factor in [(3, 0.5), (6, 0.25), (9, 0.125),
+                           (30, 0.1), (99, 0.1)]:
+        engine._streak = streak
+        assert engine._probability(engine._cfg()) == pytest.approx(
+            0.18 * factor
+        ), f"streak={streak}"
+        assert engine._probability(engine._cfg()) > 0
     engine._streak = 0
-    assert engine._probability(engine._cfg(), NOW) == pytest.approx(base)
+    assert engine._probability(engine._cfg()) == pytest.approx(0.18)
+
+
+def test_backoff_disabled_removes_factor_entirely():
+    """D4：unanswered_backoff=false → 倍率与下限全部不生效。"""
+    engine = make_engine(
+        config=_config(unanswered_backoff=False), mood=FakeMood(0.5)
+    )
+    engine._streak = 30
+    assert engine._probability(engine._cfg()) == pytest.approx(0.18)
 
 
 # ---------------------------------------------------------------------------
-# J2：闸门与前置分支
+# J2：闸门与前置分支（M14-补丁2 B/C：独立间隔/每日上限已删，节流全靠共享闸门）
 # ---------------------------------------------------------------------------
 def test_disabled_is_fully_silent():
     llm = FakeLLM()
@@ -258,46 +241,6 @@ def test_sleeping_gate_blocks_before_anything():
     result = asyncio.run(engine.tick(NOW))
     assert result["reason"] == "sleeping"
     assert llm.calls == []
-
-
-def test_daily_max_blocks_independent_count():
-    engine = make_engine(rng=ScriptedRng([0.0, 0.0]))
-    engine._sent_log = [NOW - timedelta(days=1), NOW - timedelta(minutes=200),
-                        NOW - timedelta(minutes=300)]
-    result = asyncio.run(engine.tick(NOW))  # 昨日 1 条不计，今日 2 条 < 3 → 放行掷点
-    assert result["sent"] is True
-    llm = engine._llm_call
-    calls_after_first = len(llm.calls)
-    engine._sent_log.append(NOW - timedelta(minutes=100))
-    result = asyncio.run(engine.tick(NOW.replace(hour=21)))
-    assert result["reason"] == "daily_max"
-    assert len(llm.calls) == calls_after_first  # 拦下时不产生新的生成调用
-
-
-def test_initiative_interval_blocks_and_opens():
-    engine = make_engine(rng=ScriptedRng([0.0, 0.0]))
-    engine._last_sent_at = NOW - timedelta(minutes=10)
-    result = asyncio.run(engine.tick(NOW))
-    assert result["reason"] == "initiative_interval"
-    engine._last_sent_at = NOW - timedelta(minutes=151)
-    llm = engine._llm_call
-    asyncio.run(engine.tick(NOW))  # 间隔已过 → 走到生成
-    assert len(llm.calls) == 1
-
-
-def test_backoff_silent_at_streak_six_and_toggle():
-    engine = make_engine(rng=ScriptedRng([0.0]))
-    engine._streak = 6
-    result = asyncio.run(engine.tick(NOW))
-    assert result["reason"] == "backoff_silent"
-    # H6 关闭：收敛机制整体不生效
-    engine2 = make_engine(
-        config=_config(unanswered_backoff=False),
-        rng=ScriptedRng([0.0, 0.0]),
-    )
-    engine2._streak = 6
-    result = asyncio.run(engine2.tick(NOW))
-    assert result["sent"] is True
 
 
 def test_no_roll_when_dice_misses():
@@ -375,11 +318,10 @@ def test_send_success_random_miss_end_to_end():
     assert sender.sent == [(MASTER_UMO, LINE)]
     # E2 双写：台词交给共享落库，键带念头前缀与来源
     assert writer.written == [(LINE, "#initiative:20261003_200000:random_miss")]
-    # D5 记账：通用闸门配额消费 + F1 念头账本
+    # B4/C6 记账：共享闸门配额消费（与活动分享同池）+ F3 挂起结算标记
     assert gate.message_sends == 1
-    assert engine._last_sent_at == NOW
     assert engine._pending_settle_at == NOW
-    assert len(engine._sent_log) == 1
+    assert engine._streak == 0
 
 
 def test_send_success_open_topic_uses_extraction():
@@ -413,11 +355,12 @@ def test_open_topic_extraction_failure_no_fallback_to_random_miss():
     assert asyncio.run(engine2.tick(NOW))["reason"] == "no_source"
 
 
-def test_common_gate_blocks_after_generation():
+def test_common_gate_blocks_initiative():
+    """T2：共享闸门拒绝 → 念头不发（M14-补丁2 起预检在生成之前）。"""
     gate = FakeGate(allow_message=False, gate_reason="msg_daily_limit")
     sender = FakeSender()
     engine = make_engine(
-        rng=ScriptedRng([0.0, 0.0]), gate=gate, sender=sender
+        rng=ScriptedRng([0.0]), gate=gate, sender=sender
     )
     result = asyncio.run(engine.tick(NOW))
     assert result["reason"] == "gate:msg_daily_limit"
@@ -438,7 +381,7 @@ def test_send_failure_consumes_no_quota():
     result = asyncio.run(engine.tick(NOW))
     assert result["reason"] == "send_failed"
     assert gate.message_sends == 0
-    assert engine._last_sent_at is None  # 未发出不记账
+    assert engine._pending_settle_at is None  # 未发出不挂结算标记
 
 
 def test_audit_line_has_roll_prob_and_20char_preview(caplog):
@@ -460,15 +403,15 @@ def test_audit_line_has_roll_prob_and_20char_preview(caplog):
 # ---------------------------------------------------------------------------
 # J4：未回应收敛
 # ---------------------------------------------------------------------------
-def _sent_engine(now=NOW):
-    """发出一条念头后的引擎（已记账）。"""
-    engine = make_engine(rng=ScriptedRng([0.0, 0.0]))
+def _sent_engine(now=NOW, rng_tail=()):
+    """发出一条念头后的引擎（已记账）；rng_tail 供后续评估的掷点。"""
+    engine = make_engine(rng=ScriptedRng([0.0, 0.0, *rng_tail]))
     asyncio.run(engine.tick(now))
     return engine
 
 
 def test_unanswered_initiative_settles_once_per_initiative():
-    engine = _sent_engine()
+    engine = _sent_engine(rng_tail=[0.99, 0.99])
     # 第一次评估：无回应 → streak 1（该念头计为未回应）
     asyncio.run(engine.tick(NOW + timedelta(minutes=5)))
     assert engine._streak == 1
@@ -478,12 +421,13 @@ def test_unanswered_initiative_settles_once_per_initiative():
 
 
 def test_owner_message_clears_streak_immediately():
-    engine = _sent_engine()
+    engine = _sent_engine(rng_tail=[0.99, 0.99])
     asyncio.run(engine.tick(NOW + timedelta(minutes=5)))
     assert engine._streak == 1
     asyncio.run(engine.note_owner_message(NOW + timedelta(minutes=8)))
     assert engine._streak == 0
     assert engine._pending_settle_at is None
+    assert engine._streak_date == (NOW + timedelta(minutes=8)).date()
     # 回应后再评估：不重复结算、不回涨
     asyncio.run(engine.tick(NOW + timedelta(minutes=10)))
     assert engine._streak == 0
@@ -491,27 +435,31 @@ def test_owner_message_clears_streak_immediately():
 
 def test_owner_message_before_next_settle_prevents_increment():
     """F2 即时清零路径：回应落在发出后、下次结算前。"""
-    engine = _sent_engine()
+    engine = _sent_engine(rng_tail=[0.99])
     asyncio.run(engine.note_owner_message(NOW + timedelta(minutes=2)))
     asyncio.run(engine.tick(NOW + timedelta(minutes=5)))
     assert engine._streak == 0
 
 
 def test_state_persisted_and_restored_across_engines():
-    """F1：发送记录/间隔/收敛计数持久化到 gate 状态库，跨引擎（重启）恢复。"""
+    """收敛状态持久化到 gate 状态库，跨引擎（重启）恢复并继续结算。"""
     gate = FakeGate()
     engine = make_engine(rng=ScriptedRng([0.0, 0.0]), gate=gate)
     engine._loaded = False  # 走真实加载/持久化路径
     asyncio.run(engine.tick(NOW))
-    assert json.loads(gate.store[STATE_KEY_SENT_LOG]) == [NOW.isoformat()]
-    assert gate.store[STATE_KEY_LAST_SENT] == NOW.isoformat()
-    assert gate.store[STATE_KEY_STREAK] == "0"
+    assert gate.store[STATE_KEY_PENDING_SETTLE] == NOW.isoformat()
 
-    # 新引擎（模拟重启）：状态恢复后 150 分钟间隔立即生效
-    engine2 = make_engine(rng=ScriptedRng([0.0, 0.0]), gate=gate)
+    # 新引擎（模拟重启）：恢复挂起标记 → 下次评估把该念头计为未回应
+    engine2 = make_engine(rng=ScriptedRng([0.99]), gate=gate)
     engine2._loaded = False
     result = asyncio.run(engine2.tick(NOW + timedelta(minutes=5)))
-    assert result["reason"] == "initiative_interval"
+    assert engine2._streak == 1
+    assert result["reason"] == "no_roll"  # 掷点未中即止，与间隔无关
+    assert gate.store[STATE_KEY_STREAK] == "1"
+    assert gate.store[STATE_KEY_STREAK_DATE] == (
+        NOW + timedelta(minutes=5)
+    ).date().isoformat()
+    assert gate.store[STATE_KEY_PENDING_SETTLE] == ""
 
 
 # ---------------------------------------------------------------------------

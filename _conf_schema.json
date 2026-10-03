@@ -361,56 +361,35 @@
                 "items": {
                     "enabled": {
                         "description": "主动搭话总开关",
-                        "hint": "开启后它会随机主动找主人聊天（概率随时段/心境浮动，被冷落会自动收敛变安静）。关闭后回到只有分享链路的行为。睡眠期永远静默。",
+                        "hint": "开启后，她除了分享活动/说梦话，还会纯粹因为想找你说话而主动开口——可能没有事由，也可能接上你们最近聊的话题。她睡着时永远不会打扰；配额与间隔和活动分享共用同一个闸门。关闭后回到只有分享的状态。",
                         "type": "bool",
                         "default": true,
                         "invisible": true
                     },
-                    "daily_max": {
-                        "description": "每日念头上限",
-                        "hint": "主动搭话每天最多几句（独立于分享的每日上限，两者同时生效取更严者）。0 = 不限制。",
-                        "type": "int",
-                        "default": 3,
-                        "invisible": true
-                    },
-                    "min_interval_minutes": {
-                        "description": "两次念头最小间隔（分钟）",
-                        "hint": "与分享的最小间隔同时生效取更严者。",
-                        "type": "int",
-                        "default": 150,
-                        "invisible": true
-                    },
                     "base_probability": {
-                        "description": "基础触发概率（0-1）",
-                        "hint": "每次心跳评估时的基础掷点，再乘时段权重/心境/收敛倍率。",
+                        "description": "主动搭话的基础概率（0-1）",
+                        "hint": "她每次'要不要现在找你说话'的内心评估里掷骰的基础值，实际概率还会乘上她的心境（精力充沛时更想说话）和收敛系数。调大=更常找你；调小=更矜持。默认 0.18（新手面板的'主动程度'三档调的就是它）。",
                         "type": "float",
                         "default": 0.18,
                         "invisible": true
                     },
-                    "hourly_weights": {
-                        "description": "时段权重表（留空用内置）",
-                        "hint": "格式 '06-09=0.5,09-12=0.9,12-14=0.8,14-18=0.6,18-23=1.0,23-06=0'。留空用内置表；解析失败也回落内置表。",
-                        "type": "string",
-                        "default": "",
-                        "invisible": true
-                    },
                     "unanswered_backoff": {
                         "description": "未回应收敛",
-                        "hint": "开启后连续得不到回应会自动降频（概率减半），连续 6 次无回应就安静下来，直到主人说话。关闭则不收敛。",
+                        "hint": "连续几次主动找你都没得到回应时，她会慢慢降低频率——但永远不会降到零（保底约六分之一的基础概率），你一说话就立刻恢复。关闭则频率不随回应变化。",
                         "type": "bool",
                         "default": true,
                         "invisible": true
                     },
                     "final_review_enabled": {
-                        "description": "发送前人格终审",
-                        "hint": "开启后生成台词时附带'不该说话就说 SKIP'的自查指令（一次调用内完成）。关闭则纯生成，供调试对比。",
+                        "description": "说话前先过一遍脑子",
+                        "hint": "生成台词时附带一次自查：此刻该不该说、像不像她会说的话，不对就把话咽回去（同一次调用内完成，不多花钱）。关闭则纯生成，供调试对比。",
                         "type": "bool",
                         "default": true,
                         "invisible": true
                     },
                     "sources": {
-                        "description": "念头来源（逗号分隔）",
-                        "hint": "random_miss=随机想念（没有事由就想说句话）；open_topic=未完结话题（从最近聊天里接话，需要 LLM 提取成功）。",
+                        "description": "念头的来源（逗号分隔）",
+                        "hint": "random_miss=没有事由，就是想找你说句话；open_topic=从你们最近的聊天里挑一个还没聊完的话题自然接上（提取不到合适话题就这次不说）。",
                         "type": "string",
                         "default": "random_miss,open_topic",
                         "invisible": true

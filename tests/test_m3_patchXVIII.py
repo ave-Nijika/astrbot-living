@@ -63,9 +63,9 @@ BASELINE_KEYS = {
     "memory": {"backend"},
     "model": {"fallback_chain", "provider_id"},
     # M14-补丁1：主动搭话念头系统（独立新组，主动出口第二条通路）
+    # M14-补丁2：独立间隔/每日上限/固定时窗三键删除（复用共享闸门与睡眠模块）
     "initiative": {
-        "base_probability", "daily_max", "enabled", "final_review_enabled",
-        "hourly_weights", "min_interval_minutes", "sources",
+        "base_probability", "enabled", "final_review_enabled", "sources",
         "unanswered_backoff",
     },
 }
