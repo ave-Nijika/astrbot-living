@@ -202,7 +202,213 @@ function renderNovice() {
   }
   grid.appendChild(initiativeCard()); // 主动搭话卡（M14-补丁2 F3）：新手卡之后、起床约定卡之前
   grid.appendChild(scheduleCard()); // 起床约定卡（M5-补丁4）
+  // M15-补丁1 F1：新后端键全部配面板入口（铁律 4b），接在睡眠/能力相关卡之后
+  grid.appendChild(farewellCard()); // 晚安消息（三档 + 概率滑块）
+  grid.appendChild(chatGuardCard()); // 聊天时不睡觉
+  grid.appendChild(browserCard()); // 浏览器能力说明 + 实时状态
+  grid.appendChild(searchToggleCard()); // 联网搜索开关
+  grid.appendChild(agentToolsCard()); // 本体工具开关
   renderLifeExtra(presetSchema);
+}
+
+/* ---------------- M15-补丁1 新手卡 ----------------
+ * 读写全部走 advanced 组既有差量保存流（与 scheduleCard 同款），
+ * 不另开提交通道；键名与 _conf_schema.json 逐字对应（F4 源码断言锚点）。 */
+
+/* 通用选项卡：options=[[label, value]...]，读写经 get/set 访问器 */
+function optionCard(title, hint, options, get, set) {
+  const card = document.createElement("div");
+  card.className = "knob-card";
+  const h = document.createElement("h3");
+  h.textContent = title;
+  card.appendChild(h);
+  const p = document.createElement("p");
+  p.className = "hint";
+  p.textContent = hint;
+  card.appendChild(p);
+  const row = document.createElement("div");
+  row.className = "option-row";
+  const current = get();
+  for (const [label, value] of options) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "option";
+    btn.textContent = label;
+    if (current === value) btn.classList.add("selected");
+    btn.addEventListener("click", () => {
+      set(value);
+      row.querySelectorAll(".option").forEach((el) => el.classList.remove("selected"));
+      btn.classList.add("selected");
+    });
+    row.appendChild(btn);
+  }
+  card.appendChild(row);
+  return card;
+}
+
+/* 晚安消息卡：不说 / 随机说（显示概率滑块）/ 她自己斟酌着说。
+ * 读写 advanced.sleep.farewell_mode + farewell_probability（A 组）。 */
+function farewellCard() {
+  if (!state.values.advanced.sleep) state.values.advanced.sleep = {};
+  const sleepValues = state.values.advanced.sleep;
+  const card = document.createElement("div");
+  card.className = "knob-card farewell-card";
+
+  const title = document.createElement("h3");
+  title.textContent = "晚安消息";
+  card.appendChild(title);
+
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent =
+    "她去睡觉时要不要跟你说声晚安。「她自己斟酌着说」会让她睡前看一眼" +
+    "今天你们聊得怎么样，再决定说不说、怎么说——聊得开心自然道晚安，" +
+    "还在气头上可以不说，想和好也可以借这句说点什么。";
+  card.appendChild(hint);
+
+  const MODES = [
+    ["不说", "off"],
+    ["随机说", "probability"],
+    ["她自己斟酌着说", "llm"],
+  ];
+  const mode = sleepValues.farewell_mode || "probability";
+  const row = document.createElement("div");
+  row.className = "option-row";
+  const sliderWrap = document.createElement("div");
+  sliderWrap.className = "schedule-slider hidden";
+  for (const [label, value] of MODES) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "option";
+    btn.textContent = label;
+    if (mode === value) btn.classList.add("selected");
+    btn.addEventListener("click", () => {
+      sleepValues.farewell_mode = value;
+      setDirty(true);
+      row.querySelectorAll(".option").forEach((el) => el.classList.remove("selected"));
+      btn.classList.add("selected");
+      sliderWrap.classList.toggle("hidden", value !== "probability");
+    });
+    row.appendChild(btn);
+  }
+  card.appendChild(row);
+
+  sliderWrap.classList.toggle("hidden", mode !== "probability");
+  const sliderLabel = document.createElement("p");
+  sliderLabel.className = "slider-label";
+  const slider = document.createElement("input");
+  slider.type = "range";
+  slider.min = "0";
+  slider.max = "100";
+  const prob = typeof sleepValues.farewell_probability === "number"
+    ? sleepValues.farewell_probability : 0.5;
+  slider.value = String(Math.round(prob * 100));
+  const updateLabel = () => {
+    sliderLabel.textContent = `晚安概率 ${slider.value}%`;
+  };
+  updateLabel();
+  slider.addEventListener("input", () => {
+    sleepValues.farewell_probability = Number(slider.value) / 100;
+    updateLabel();
+    setDirty(true);
+  });
+  sliderWrap.append(sliderLabel, slider);
+  card.appendChild(sliderWrap);
+  return card;
+}
+
+/* 聊天保护卡：advanced.sleep.standby_blocks_sleep（B 组，默认开） */
+function chatGuardCard() {
+  if (!state.values.advanced.sleep) state.values.advanced.sleep = {};
+  const sleepValues = state.values.advanced.sleep;
+  return optionCard(
+    "聊天时不睡觉",
+    "她陪你聊天的时候不会当场睡着——你安静半小时后她才恢复入睡评估。" +
+      "关掉则回到旧行为（睡意到了可能聊着聊着就睡着）。",
+    [["开", true], ["关", false]],
+    () => sleepValues.standby_blocks_sleep !== false,
+    (v) => {
+      sleepValues.standby_blocks_sleep = v;
+      setDirty(true);
+    },
+  );
+}
+
+/* 浏览器能力说明块（C2/C3）：与 README「浏览器能力（可选安装）」同源
+ * 措辞（装什么/作用/不装会怎样/安装/卸载）；状态行经 browser_status
+ * 端点实时拉取，取不到就隐藏（说明块仍在）。 */
+function browserCard() {
+  const card = document.createElement("div");
+  card.className = "knob-card browser-card";
+  const h = document.createElement("h3");
+  h.textContent = "浏览器能力（可选安装）";
+  card.appendChild(h);
+  const p = document.createElement("p");
+  p.className = "hint";
+  p.textContent =
+    "她的浏览器工具（打开网页、看画面、点击、输入）依赖 Playwright 的 " +
+    "Chromium 内核（约 150MB 下载），不随插件内置。装好后能力档位 ≥1 时" +
+    "她能真正浏览网页并把看到的画面截图存档；不装则浏览器工具不挂载，" +
+    "她的活动退化为「搜索 + 读文本」，其余能力不受影响。" +
+    "安装：在 AstrBot 的 Python 环境执行 playwright install chromium，装完重启。" +
+    "卸载：playwright uninstall chromium（或删除 ms-playwright 缓存目录），" +
+    "自动回落，无需改配置。";
+  card.appendChild(p);
+  const status = document.createElement("p");
+  status.className = "hint browser-status";
+  status.textContent = "浏览器能力：检测中…";
+  card.appendChild(status);
+  refreshBrowserStatus(status);
+  return card;
+}
+
+async function refreshBrowserStatus(el) {
+  try {
+    const res = await bridge.apiGet("browser_status");
+    const data = res && res.data ? res.data : res;
+    const installed = !!(data && data.installed);
+    el.textContent = installed
+      ? "浏览器能力：已安装"
+      : "浏览器能力：未安装（浏览器工具不可用）";
+  } catch (e) {
+    el.textContent = ""; // 状态取不到就不显示，说明块仍在
+  }
+}
+
+/* 联网搜索卡：advanced.capabilities.web_search_enabled（E 组，默认开） */
+function searchToggleCard() {
+  if (!state.values.advanced.capabilities) state.values.advanced.capabilities = {};
+  const cap = state.values.advanced.capabilities;
+  return optionCard(
+    "联网搜索",
+    "允许她自主活动时联网搜索（博查网页搜索）。你聊天时的搜索不受影响" +
+      "（那是 AstrBot 自己的搜索）。关掉后冲浪、读文章两项活动也会从她的" +
+      "活动池里退场，其余能力照旧。",
+    [["开", true], ["关", false]],
+    () => cap.web_search_enabled !== false,
+    (v) => {
+      cap.web_search_enabled = v;
+      setDirty(true);
+    },
+  );
+}
+
+/* 本体工具卡：advanced.capabilities.agent_tools_mode 的 persona/off 两态
+ * （D 组，默认 off=不允许；custom 白名单在专家区「能力参数」调） */
+function agentToolsCard() {
+  if (!state.values.advanced.capabilities) state.values.advanced.capabilities = {};
+  const cap = state.values.advanced.capabilities;
+  return optionCard(
+    "本体工具",
+    "允许她使用你给本体（AstrBot）配置的工具——按人格设定里勾选的工具" +
+      "筛选，含 MCP 工具。她自带的搜索、抓取、沙箱、记忆能力不受影响。",
+    [["允许", "persona"], ["不允许", "off"]],
+    () => (cap.agent_tools_mode === "persona" ? "persona" : "off"),
+    (v) => {
+      cap.agent_tools_mode = v;
+      setDirty(true);
+    },
+  );
 }
 
 /* 主动搭话卡（M14-补丁2 F3）：读写 advanced.initiative 的键，复用既有

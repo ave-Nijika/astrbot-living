@@ -340,7 +340,8 @@ def test_sleep_clears_standby_and_sends_farewell(tmp_path):
     config = {
         **BASE_CONFIG,
         "sleep": {**BASE_CONFIG["sleep"],
-                  "sleep_farewell_message": "我先睡了，晚安。"},
+                  "sleep_farewell_message": "我先睡了，晚安。",
+                  "farewell_probability": 1.0},  # M15-补丁1：概率档拉满，掷点必命中
     }
     plugin, _memory, _act, _read, sender = build_plugin(tmp_path, config=config)
     gate = plugin.gate

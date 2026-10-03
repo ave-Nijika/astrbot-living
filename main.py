@@ -33,6 +33,7 @@ from .core.autonomy import (
 from .core.config_knobs import ConfigKnobs
 from .core.conf_path import conf_group
 from .core.decider import ActivityDecider
+from .core.activities import web_search_enabled as _web_search_enabled
 from .core.fetcher import WebFetcher
 from .core.ghost_event import GHOST_PLATFORM_ID, build_ghost_event
 from .core.initiative import InitiativeEngine
@@ -660,11 +661,15 @@ class LivingPlugin(Star):
         return self._browser_session
 
     def _build_agent_tools(self):
-        """按当前 autonomy 配置组装生活工具集。
+        """按当前 autonomy 配置组装生活工具集（M15-补丁1 起支持 async——
+        D 组 persona 档要 await persona_manager 取本体筛选结果）。
 
         由 LivingAgentLoop 在每次活动前调用（补丁 XIII-P1）——
         档位/写层级配置热读，改配置下个活动周期即生效，无需重启插件。
         """
+        return self._build_agent_tools_async()
+
+    async def _build_agent_tools_async(self):
         config = self.config if isinstance(self.config, dict) else {}
         tier = read_tier(config)
         write_level = read_write_level(config)
@@ -680,9 +685,19 @@ class LivingPlugin(Star):
             write_level=write_level,
             workspace=self._living_workspace(),
             browser_session=browser_session,
+            # M15-补丁1 E2：博查搜索独立开关（关 = web_search 不挂载）
+            web_search_enabled=_web_search_enabled(self._effective_config()),
+            # M15-补丁1 C0：截图"能看"三路（模态探针 + 本体转述闭包）
+            image_probe=self._activity_image_probe(),
+            image_captioner=self._caption_screenshot,
         )
+        # M15-补丁1 D 组：按 agent_tools_mode 追加本体工具（含 MCP）。
+        # living 自带四件套与档位工具始终保留（她的核心生活能力，不随
+        # 本体工具开关变动，红线 5）；同名冲突以 living 自带优先（D3）。
+        await self._append_agent_tools(tools)
         # 补丁 XV 清单2：档位日志改用 build_tool_manifest（"预期清单"），
-        # 与"实际挂载"并排——两者不一致即装配有缺，一眼可查
+        # 与"实际挂载"并排——两者不一致即装配有缺，一眼可查。
+        # M15-补丁1 D5：追加结果天然反映在"实际挂载"清单里。
         manifest = build_tool_manifest(
             tier,
             write_level,
@@ -695,6 +710,179 @@ class LivingPlugin(Star):
             f"清单={manifest} 实际挂载={[t.name for t in tools.tools]}"
         )
         return tools
+
+    def _activity_image_probe(self):
+        """C0-2/C0-3 的活动模型模态探针：读 agent_loop 本轮 provider。
+
+        返回闭包（None 结果 = 探针不可用），工具侧把"未知"按支持处理，
+        交本体 runner 的模态检查做最终裁决——现状行为，不误杀。
+        """
+        loop = getattr(self, "_agent_loop", None)
+        if loop is None:
+            return None
+
+        def probe():
+            from .core.living_tools import provider_supports_image
+
+            provider = getattr(loop, "current_provider", None)
+            if provider is None:
+                return None
+            return provider_supports_image(provider)
+
+        return probe
+
+    async def _caption_screenshot(self, image_path: str) -> str | None:
+        """C0-3-①：复用本体 _ensure_img_caption 转述截图（同款语义：
+        压缩→转述→图片移除，失败走本体内部占位处理）。
+
+        未配置 default_image_caption_provider_id 返回 None（调用方按
+        "图片移除 + DEBUG" 兜底）——不自造第二套转述逻辑。
+        """
+        try:
+            from astrbot.core.astr_main_agent import _ensure_img_caption
+        except Exception as e:
+            logger.debug(f"[{PLUGIN_NAME}] 本体转述函数不可用（跳过转述）: {e}")
+            return None
+        try:
+            from astrbot.core.provider.entities import ProviderRequest
+
+            umo = build_ghost_event().unified_msg_origin
+            getter = getattr(self.context, "get_config", None)
+            cfg = {}
+            if callable(getter):
+                cfg = getter(umo=umo).get("provider_settings", {}) or {}
+            provider_id = str(
+                cfg.get("default_image_caption_provider_id") or ""
+            ).strip()
+            if not provider_id:
+                return None
+            req = ProviderRequest(
+                prompt="Please describe the image.", image_urls=[image_path]
+            )
+            await _ensure_img_caption(
+                build_ghost_event(), req, cfg, self.context, provider_id
+            )
+            parts = []
+            for part in getattr(req, "extra_user_content_parts", None) or []:
+                text = getattr(part, "text", None)
+                if text:
+                    parts.append(str(text))
+            text = "\n".join(parts).strip()
+            if not text or "[Image Captioning Failed]" in text:
+                return None
+            # 本体包了 <image_caption> 标签——剥出内文，工具层统一包装
+            if text.startswith("<image_caption>") and text.endswith(
+                "</image_caption>"
+            ):
+                text = text[len("<image_caption>"):-len("</image_caption>")]
+            return text.strip() or None
+        except Exception as e:
+            logger.debug(f"[{PLUGIN_NAME}] 截图转述失败（按未转述处理）: {e}")
+            return None
+
+    async def _append_agent_tools(self, tools) -> None:
+        """D1：agent_tools_mode 三档——off 逐字现状；persona 按当前人格的
+        tools 筛选本体工具集（复用本体筛选语义，不另造界面）；custom 按
+        白名单。D3：与 living 自带同名时以自带优先（她的 surf/read 依赖
+        自建 searcher/fetcher 的注入与脱敏语义），冲突逐条记 INFO（D3
+        报告清单的数据源）。"""
+        from astrbot.core.agent.tool import ToolSet
+
+        mode = str(
+            self._cfg("capabilities", "agent_tools_mode", "off") or "off"
+        ).strip().lower()
+        if mode not in ("persona", "custom"):
+            return
+        if mode == "custom":
+            whitelist = [
+                s.strip()
+                for s in str(
+                    self._cfg("capabilities", "agent_tools", "") or ""
+                ).split(",")
+                if s.strip()
+            ]
+            extra = self._whitelisted_toolset(whitelist, ToolSet)
+        else:
+            extra = await self._persona_filtered_toolset(ToolSet)
+        added: list[str] = []
+        skipped: list[str] = []
+        for tool in list(extra):
+            name = getattr(tool, "name", "")
+            if not name:
+                continue
+            if tools.get_tool(name) is not None:
+                skipped.append(name)
+                continue
+            tools.add_tool(tool)
+            added.append(name)
+        if added:
+            logger.info(f"[{PLUGIN_NAME}] 已追加本体工具 {len(added)} 个: {added}")
+        if skipped:
+            logger.info(
+                f"[{PLUGIN_NAME}] 本体工具与 living 自带同名，以 living 自带优先: "
+                f"{skipped}"
+            )
+
+    def _llm_tool_manager(self):
+        """本体工具注册中心（get_full_tool_set 含 MCP 工具）；取不到回 None。"""
+        getter = getattr(self.context, "get_llm_tool_manager", None)
+        try:
+            return getter() if callable(getter) else None
+        except Exception:
+            return None
+
+    def _whitelisted_toolset(self, whitelist: list[str], toolset_cls) -> Any:
+        """custom 档：按白名单从工具管理器取工具（本体 get_func 同款）。"""
+        mgr = self._llm_tool_manager()
+        toolset = toolset_cls()
+        for name in whitelist:
+            try:
+                tool = mgr.get_func(name) if mgr is not None else None
+            except Exception:
+                tool = None
+            if tool is not None and getattr(tool, "active", True):
+                toolset.add_tool(tool)
+            else:
+                logger.debug(f"[{PLUGIN_NAME}] 白名单工具不可用，跳过: {name}")
+        return toolset
+
+    async def _persona_filtered_toolset(self, toolset_cls) -> Any:
+        """persona 档：复用本体 astr_main_agent 的筛选语义（逐分支对齐）——
+        persona 存在且 tools 为 None（或无人格）→ 全量工具集去 inactive；
+        tools=[] → 空集（人格里明确禁用）；tools 列表 → 白名单逐个 get_func。"""
+        mgr = self._llm_tool_manager()
+        if mgr is None:
+            return toolset_cls()
+        persona = None
+        try:
+            pm = getattr(self.context, "persona_manager", None)
+            getter = getattr(pm, "get_default_persona_v3", None)
+            if callable(getter):
+                persona = await getter(build_ghost_event().unified_msg_origin)
+        except Exception:
+            persona = None
+        if isinstance(persona, dict):
+            tools_cfg = persona.get("tools")
+        elif persona is not None:
+            tools_cfg = getattr(persona, "tools", None)
+        else:
+            tools_cfg = None
+        if (persona and tools_cfg is None) or not persona:
+            toolset = mgr.get_full_tool_set()
+            for tool in list(toolset):
+                if not getattr(tool, "active", True):
+                    toolset.remove_tool(tool.name)
+            return toolset
+        toolset = toolset_cls()
+        if tools_cfg:
+            for name in tools_cfg:
+                try:
+                    tool = mgr.get_func(str(name))
+                except Exception:
+                    tool = None
+                if tool is not None and getattr(tool, "active", True):
+                    toolset.add_tool(tool)
+        return toolset
 
     def _free_activity_enabled(self) -> bool:
         """decision.free_activity_enabled（补丁 XV 清单3）：False 时 free
@@ -753,6 +941,9 @@ class LivingPlugin(Star):
             mood=self.mood,
             tool_builder=self._build_agent_tools,
         )
+        # M15-补丁1 C0：模态探针经 self._agent_loop 读"本轮 provider"；
+        # tool_builder 在 _run_with_provider 内调用时该值已就位
+        self._agent_loop = agent_loop
         decider = ActivityDecider(
             # 补丁 XV 清单3：free 开关在构造期先滤一次（decider/loop 内部
             # 还会按配置现读，双保险保热生效）
@@ -821,6 +1012,8 @@ class LivingPlugin(Star):
             # M12-补丁1：真实聊天历史（ConversationManager 公开 API）——
             # 分享改写的完整上下文来源；取不到时 loop 内部静默按无上下文处理
             conversation_manager=getattr(self.context, "conversation_manager", None),
+            # M15-补丁1 A3：晚安 LLM 档的人格 system prompt（复用主人格读取）
+            persona_getter=self._persona_prompt,
         )
         await self.loop.start()
 
@@ -877,6 +1070,7 @@ class LivingPlugin(Star):
             (f"{prefix}/config/reset", self._api_config_reset, ["POST"], "恢复默认值"),
             (f"{prefix}/mood", self._api_mood_get, ["GET"], "心境快照读取"),
             (f"{prefix}/mood/interests", self._api_mood_interests_post, ["POST"], "兴趣权重编辑"),
+            (f"{prefix}/browser_status", self._api_browser_status_get, ["GET"], "浏览器能力状态"),
         ]
         for route, handler, methods, desc in routes:
             register(route, handler, methods, desc)
@@ -1006,6 +1200,20 @@ class LivingPlugin(Star):
         except Exception:
             logger.exception(f"[{PLUGIN_NAME}] 兴趣写入失败")
             return {"status": "error", "message": "内部错误"}
+
+    async def _api_browser_status_get(self):
+        """浏览器能力状态（M15-补丁1 C3，可选加分项）：Chromium 二进制
+        可用性只读探测。探测可能起一次 Playwright driver 子进程（数百毫秒），
+        放线程池跑避免卡事件循环；结果只读不缓存——面板每次打开都是实况。
+        任何异常按"未安装"反馈（安装指引在面板说明块与 README）。"""
+        from .core.browser_tools import chromium_installed
+
+        try:
+            installed = await asyncio.to_thread(chromium_installed)
+            return {"status": "ok", "data": {"installed": bool(installed)}}
+        except Exception:
+            logger.exception(f"[{PLUGIN_NAME}] 浏览器状态探测失败")
+            return {"status": "ok", "data": {"installed": False}}
 
     async def _run_knob_loop(self) -> None:
         """旋钮监视循环：先记基线（不写入），之后每 5s 处理增量。

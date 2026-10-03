@@ -181,6 +181,18 @@ def _shot_tool(session):
     return tool
 
 
+def _result_text(result) -> str:
+    """M15-补丁1 C0-1：截图默认返回 CallToolResult（含图片），测试只关心
+    其中文本；字符串结果（失败/兜底路径）原样返回。"""
+    if isinstance(result, str):
+        return result
+    from mcp.types import TextContent
+
+    return "\n".join(
+        c.text for c in result.content if isinstance(c, TextContent)
+    )
+
+
 def test_screenshot_lands_in_workspace_screenshots(tmp_path):
     """验收 1：截图落在 <workspace>/screenshots/（目录自动创建），不再写
     系统 temp 根下的旧固定文件。"""
@@ -189,7 +201,7 @@ def test_screenshot_lands_in_workspace_screenshots(tmp_path):
         _workspace=str(tmp_path), _ensure_page=_fake_session(page)._ensure_page
     )
     result = asyncio.run(_shot_tool(session).call(None))
-    assert "截图已保存" in result
+    assert "截图已保存" in _result_text(result)
     shots = list((tmp_path / "screenshots").glob("living_screenshot_*.png"))
     assert len(shots) == 1
     assert Path(page.saved_to).parent == tmp_path / "screenshots"
@@ -203,7 +215,7 @@ def test_screenshot_failure_returns_text_not_raise(tmp_path):
         _workspace=str(blocker), _ensure_page=_fake_session(ShotPage())._ensure_page
     )
     result = asyncio.run(_shot_tool(session).call(None))  # 不抛
-    assert "截图失败" in result
+    assert "截图失败" in _result_text(result)
 
 
 def test_screenshot_falls_back_to_cwd(tmp_path, monkeypatch):
@@ -214,7 +226,7 @@ def test_screenshot_falls_back_to_cwd(tmp_path, monkeypatch):
     )  # 没有 _workspace 属性
     result = asyncio.run(_shot_tool(session).call(None))
     assert (tmp_path / "screenshots").is_dir()
-    assert "截图已保存" in result
+    assert "截图已保存" in _result_text(result)
 
 
 # ---------------------------------------------------------------------------

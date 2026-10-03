@@ -352,7 +352,7 @@ def test_build_agent_tools_log_uses_manifest(tmp_path, caplog):
             },
         }
         with caplog.at_level(logging.INFO, logger="astrbot"):
-            tools = plugin._build_agent_tools()
+            tools = await plugin._build_agent_tools()
         return tools
 
     tools = asyncio.run(flow())

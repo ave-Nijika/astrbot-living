@@ -30,7 +30,13 @@ from typing import Any, Callable
 
 from astrbot.api import logger
 
-from .activities import Activity, ActivityContext, ActivityOutcome, default_activities
+from .activities import (
+    Activity,
+    ActivityContext,
+    ActivityOutcome,
+    default_activities,
+)
+from .activities import web_search_enabled as _web_search_enabled
 from .ghost_event import build_ghost_event
 from .llm_failover import looks_like_llm_error_output
 from .secrets_redact import redact_secrets
@@ -116,6 +122,7 @@ class LivingLoop:
         conversation_manager: Any = None,
         lm_conversation_manager_getter: Callable[[], Any] | None = None,
         initiative: Any = None,
+        persona_getter: Callable[..., Any] | None = None,
     ) -> None:
         self._gate = gate
         self._get_memory = memory_getter
@@ -155,6 +162,9 @@ class LivingLoop:
         # M14-补丁1 A1：主动搭话念头引擎（main 装配注入）。None = 该通路
         # 不存在（既有测试/旧装配零影响）；心跳 tick 在清醒分支调用（I1）
         self.initiative = initiative
+        # M15-补丁1 A3：人格 getter（晚安 LLM 档的 system prompt 原料）。
+        # None = 晚安 prompt 不带人格（仍可用，少了点"她"的味道）
+        self._persona_getter = persona_getter
         # M13-补丁1 A5：已写过经历的活动 id（时间戳序，有界防泄漏）
         self._experience_written: set[str] = set()
         # M3 补丁 IV-B1：活动周期互斥锁——心跳与 /living do 可能并发进入
@@ -473,25 +483,55 @@ class LivingLoop:
             logger.warning(f"[LivingLoop] 唤醒确认消息发送失败: {e}")
 
     async def _send_sleep_farewell(self, now: datetime) -> None:
-        """入睡告别消息（M6-补丁1 C1：触发源从 fixed 翻转迁移至 autonomous
-        长睡入睡；小睡不发送）。
+        """入睡告别（M6-补丁1 C1：触发源是 autonomous 长睡入睡；小睡不发送
+        ——调用点只在长睡分支，本函数自身不再区分）。
 
-        `sleep_farewell_message` 非空才发送；发往待机期最后活跃会话
-        （无会话/发送失败一律静默，不影响入睡）。纯 sender 零 token。
+        M15-补丁1 A 组三档（sleep.farewell_mode）：
+          - probability（默认）：掷骰一次（沿用注入 rng），命中发
+            sleep_farewell_message 固定文案；未命中 DEBUG 审计不发；
+          - llm：调 LLM 一次判断"今晚该不该说 + 说什么"（材料：心境摘要、
+            今天与主人的最近聊天上下文、当前时间；人格可注入时一并带上），
+            输出 SKIP = 不发；异常/空静默不发；发出后走 M13 双写落库（A4，
+            她主动说的晚安进她的工作记忆）；
+          - off：从不发。
+        两档共同：无活跃会话不发、发送失败静默不影响入睡。
         """
-        farewell = str(
-            _conf_group(self._config_getter(), "sleep").get(
-                "sleep_farewell_message", ""
-            )
-            or ""
-        ).strip()
-        if not farewell:
+        cfg = _conf_group(self._config_getter(), "sleep")
+        mode = str(cfg.get("farewell_mode", "probability") or "").strip().lower()
+        if mode == "off":
             return
-        session = (
+        if mode not in ("probability", "llm"):
+            mode = "probability"  # 未知/缺失值回默认档（主人 10-03 定：默认投骰）
+        if mode == "probability":
+            await self._farewell_probability_mode(now, cfg)
+        else:
+            await self._farewell_llm_mode(now)
+
+    def _farewell_session(self) -> str | None:
+        """告别消息的发往会话（待机期最后活跃会话；无则 None 不发）。"""
+        return (
             self._sleep_manager.last_active_session
             if self._sleep_manager is not None
             else None
         )
+
+    async def _farewell_probability_mode(self, now: datetime, cfg: dict) -> None:
+        """A2 概率档：掷骰 → 命中发固定文案。纯 sender 零 token。"""
+        farewell = str(cfg.get("sleep_farewell_message", "") or "").strip()
+        if not farewell:
+            return
+        probability = _to_float(cfg.get("farewell_probability"), 0.5)
+        probability = min(max(probability, 0.0), 1.0)
+        # rng 兼容 Random 实例与裸函数两种注入形态（与睡过头交代同款）
+        rng = self._rng
+        roll = rng.random() if hasattr(rng, "random") else rng()
+        if roll >= probability:
+            logger.debug(
+                f"[LivingLoop] 晚安掷点 {roll:.3f} ≥ 概率 {probability:.2f}"
+                "→ 今晚安静入睡（未命中不发）"
+            )
+            return
+        session = self._farewell_session()
         if not session or self._sender is None:
             return
         try:
@@ -500,6 +540,76 @@ class LivingLoop:
                 logger.warning("[LivingLoop] 入睡告别消息未送达（无匹配平台）")
         except Exception as e:
             logger.warning(f"[LivingLoop] 入睡告别消息发送失败: {e}")
+
+    async def _farewell_llm_mode(self, now: datetime) -> None:
+        """A3/A4 LLM 档：判断与措辞合一，发出即双写。异常全程静默（A5）。"""
+        if self._dream_llm_call is None:
+            logger.debug("[LivingLoop] 晚安 llm 档：无可用 LLM，今晚不说")
+            return
+        session = self._farewell_session()
+        if not session or self._sender is None:
+            return
+        sessions, _source = self._resolve_target_sessions()
+        contexts = (
+            await self._load_chat_contexts(sessions) if sessions else None
+        )
+        mood_digest = (
+            self._mood.digest() if self._mood is not None else "心情平静，精力一般"
+        )
+        persona = None
+        if self._persona_getter is not None:
+            try:
+                persona = await self._persona_getter()
+            except Exception:
+                persona = None
+        if contexts:
+            chat_lines = [
+                f"{m.get('role', '?')}: {m.get('content', '')}"
+                for m in contexts
+            ]
+            chat_block = "今天和主人的最近聊天：\n" + "\n".join(chat_lines)
+        else:
+            chat_block = "今天还没和主人聊过天。"
+        prompt = (
+            f"现在是 {now.strftime('%Y-%m-%d %H:%M')}，你准备去睡了。"
+            f"你现在的状态：{mood_digest}。\n\n{chat_block}\n\n"
+            "考虑一下今晚要不要跟他道声晚安：如果今天聊得开心、被关心，"
+            "就自然地道声晚安；如果今天有不愉快、你还在气头上，可以不说；"
+            "如果你想缓和关系，也可以借这句晚安说点什么。"
+            "像人一样自己斟酌，不是每次都非说不可。\n"
+            "如果决定不说，只输出 SKIP；决定说就只输出晚安那句话本身"
+            "（一两句、口语化，不要任何前缀和引号）。"
+        )
+        try:
+            raw = await self._dream_llm_call(prompt, persona or None)
+        except Exception as e:
+            logger.debug(f"[LivingLoop] 晚安生成失败（静默，不影响入睡）: {e}")
+            return
+        line = str(raw or "").strip()
+        # SKIP/空 = 今晚不说（与念头终审同款判定口径）
+        if not line or line.upper() == "SKIP":
+            logger.debug("[LivingLoop] 晚安 llm 档：她决定今晚不说（SKIP）")
+            return
+        try:
+            sent = await self._sender.send(session, line)
+            if not sent:
+                logger.warning("[LivingLoop] 晚安消息未送达（无匹配平台）")
+                return
+        except Exception as e:
+            logger.warning(f"[LivingLoop] 晚安消息发送失败: {e}")
+            return
+        # A4：她主动说的晚安进她的工作记忆（M13 双写，与念头先例一致）
+        try:
+            await self._write_speech_to_stores(
+                line,
+                f"#farewell:{now.strftime('%Y%m%d_%H%M%S')}",
+                "(晚安道别)",
+                label="晚安道别",
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug(f"[LivingLoop] 晚安双写落库失败（不影响发送）: {e}")
 
     async def _autonomous_sleep_tick(self, now: datetime) -> None:
         """自主作息心跳（补丁 X）：到点自然醒结算 / 不在睡时评估入睡与小睡。
@@ -581,6 +691,18 @@ class LivingLoop:
         # 3) 先判长睡（M5-补丁2 A5 顺序反转），睡意达阈值即长睡；
         #    未达阈值才考虑小睡（受冷却/每日上限/夜间禁睡/min_awake 约束）。
         #    旧顺序"先小睡后长睡"让小睡分支恒先命中并 return，长睡不可达。
+        #
+        # M15-补丁1 B1/B2：待机期保护（"聊天中不入睡"）。待机期的语义就是
+        # "她在陪你聊天"（主人发消息即开启/刷新，静默 30 分钟自然过期）——
+        # 聊得正热时睡意再达标也不当场入睡；主人安静下来待机过期后，下个
+        # 心跳才恢复入睡评估。与"吵醒"机制互补：那是入睡后的补救，这是
+        # 事前预防。standby_blocks_sleep=false 时关闭保护（可回退旧行为）。
+        if self._standby_blocks_sleep(now):
+            logger.debug(
+                "[LivingLoop] 待机期保护（standby_blocks_sleep）：她正在陪主人"
+                "聊天，跳过本次入睡评估（长睡与小睡都不入）"
+            )
+            return
         result = await self._sleep_manager.begin_autonomous_sleep(
             self._mood, now
         )
@@ -602,6 +724,30 @@ class LivingLoop:
             until = now + timedelta(minutes=minutes)
             await self._gate.enter_autonomous_sleep(until, "nap", now)
             logger.info(f"[Sleep] 白天小睡 {minutes:.0f} 分钟（精力不足，补觉）")
+
+    def _standby_blocks_sleep(self, now: datetime) -> bool:
+        """B1/B2：待机期保护是否生效（配置 × 待机状态）。
+
+        sleep.standby_blocks_sleep（默认 true）：关闭即回现状（睡意达标就睡，
+        不看待机）。gate 没有待机判定（局部替身）时按"不在待机"处理，
+        保护静默失效不阻塞入睡评估。
+        """
+        try:
+            raw = _conf_group(self._config_getter(), "sleep").get(
+                "standby_blocks_sleep", True
+            )
+        except Exception:
+            raw = True
+        if isinstance(raw, bool):
+            enabled = raw
+        else:
+            enabled = str(raw).strip().lower() not in ("false", "0", "off", "no")
+        if not enabled:
+            return False
+        try:
+            return bool(self._gate.awake_standby_active(now))
+        except Exception:
+            return False
 
     async def _planned_sleep_hours(self) -> float:
         """本次入睡时记录的预计时长（供醒来比例结算）。"""
@@ -909,6 +1055,9 @@ class LivingLoop:
                 self._recent_topic_penalty_table()
             ),
             mood=self._mood,
+            # M15-补丁1 E4：搜索开关的执行侧快照（surf/read 优雅降级判定用；
+            # 传 getter 本体——配置读取异常按"开"处理，不中断活动周期）
+            search_enabled=_web_search_enabled(self._config_getter),
         )
 
         outcome = None
@@ -984,16 +1133,21 @@ class LivingLoop:
 
     def _effective_activities(self) -> list[Activity]:
         """活动池（补丁 XV 清单3）：decision.free_activity_enabled=false 时
-        摘除 free。现读配置——开关热生效，覆盖随机选择与 /living do 指名。"""
+        摘除 free。现读配置——开关热生效，覆盖随机选择与 /living do 指名。
+        M15-补丁1 E3：web_search_enabled=false 时摘除 surf/read（与 decider
+        同一 helper，两池口径一致）。"""
+        pool = self._activities
         try:
             raw = _conf_group(self._config_getter(), "decision").get(
                 "free_activity_enabled"
             )
             if raw is not None and not bool(raw):
-                return [a for a in self._activities if a.name != "free"]
+                pool = [a for a in pool if a.name != "free"]
         except Exception:
             pass
-        return self._activities
+        from .activities import activities_excluding_search
+
+        return activities_excluding_search(pool, self._config_getter)
 
     def _recent_topic_penalty_table(self) -> tuple:
         """重复惩罚表（配置 recent_topic_penalty，缺省 0.5/0.3/0.15）。"""

@@ -7,7 +7,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+from pathlib import Path
+from typing import Any, Optional
 
 from astrbot.api import logger
 
@@ -18,6 +19,26 @@ except ImportError:
     HAS_PLAYWRIGHT = False
 
 MAX_PAGE_TEXT = 3000
+
+
+def chromium_installed() -> Optional[bool]:
+    """Chromium 二进制可用性探测（M15-补丁1 C3 面板状态用）。
+
+    返回 True/False；playwright 库未安装也按 False（浏览器工具本来就
+    不可用）。只读探测：起一次 driver 拿 chromium.executable_path 再查
+    文件存在——不 launch 浏览器、不写任何状态。异常一律 False（面板按
+    "未安装"给指引）。同步阻塞（数百毫秒），调用方放线程池执行。
+    """
+    if not HAS_PLAYWRIGHT:
+        return False
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as p:
+            return Path(p.chromium.executable_path).exists()
+    except Exception as e:
+        logger.debug(f"[BrowserTools] Chromium 探测失败（按未安装处理）: {e}")
+        return False
 
 
 class BrowserSession:

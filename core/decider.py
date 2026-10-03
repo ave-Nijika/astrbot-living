@@ -157,7 +157,10 @@ class ActivityDecider:
 
     def _effective_activities(self) -> "list[Activity]":
         """决策池（补丁 XV 清单3）：decision.free_activity_enabled=false 时
-        摘除 free。每次决策现读配置——开关热生效，改配置下个决策即回固定池。"""
+        摘除 free。每次决策现读配置——开关热生效，改配置下个决策即回固定池。
+        M15-补丁1 E3：capabilities.web_search_enabled=false 时摘除 surf/read。
+        """
+        pool = self._activities
         try:
             from .conf_path import conf_group
 
@@ -165,10 +168,12 @@ class ActivityDecider:
                 "free_activity_enabled"
             )
             if raw is not None and not bool(raw):
-                return [a for a in self._activities if a.name != "free"]
+                pool = [a for a in pool if a.name != "free"]
         except Exception:
             pass
-        return self._activities
+        from .activities import activities_excluding_search
+
+        return activities_excluding_search(pool, self._config_getter)
 
     # ------------------------------------------------------------------
     # rules 档

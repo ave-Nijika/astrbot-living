@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import base64
 import re
 from typing import Any, Callable
 
@@ -20,9 +21,34 @@ from pathlib import Path
 from astrbot.api import logger
 from astrbot.core.agent.tool import FunctionTool, ToolSet, ToolExecResult
 
+import mcp.types as mcp_types
+
 from .autonomy import check_action_kind
 
 FETCH_TEXT_CHARS = 1500  # 喂给 LLM 的正文上限：够读，不至于撑爆上下文
+
+
+def provider_supports_image(provider: Any) -> bool:
+    """活动模型是否支持图片输入（M15-补丁1 C0-2 判定）。
+
+    复用本体 astr_main_agent._provider_supports_modality 的同款语义
+    （modalities 为空列表视为未配置 → 支持）；本体函数不可导入时按
+    同语义本地兜底，两边判定规则一致。provider 未知（None）时按支持
+    处理——让本体 runner 的模态检查做最终裁决（现状行为，不误杀）。
+    """
+    if provider is None:
+        return True
+    try:
+        from astrbot.core.astr_main_agent import _provider_supports_modality
+
+        return bool(_provider_supports_modality(provider, "image"))
+    except Exception:
+        pass
+    config = getattr(provider, "provider_config", None) or {}
+    modalities = config.get("modalities", []) if isinstance(config, dict) else []
+    if modalities == []:
+        return True
+    return isinstance(modalities, list) and "image" in modalities
 
 
 @pydantic_dataclass
@@ -214,6 +240,9 @@ def build_living_tools(
     write_level: int = 0,
     workspace: str = "",
     browser_session: Any = None,
+    web_search_enabled: bool = True,
+    image_probe: Callable[[], Any] | None = None,
+    image_captioner: Callable[..., Any] | None = None,
 ) -> ToolSet:
     """按能力档位装配 ToolSet（任务书 M3 补丁 XI-B1/B2）。
 
@@ -223,11 +252,16 @@ def build_living_tools(
     tier 0: 仅自带 4 工具
     tier >= 1: + 浏览器只读工具（navigate/read/screenshot）
     tier >= 2: + 工作区写入工具
+
+    M15-补丁1 E2：web_search_enabled=False 时 web_search 不挂载（独立
+    关掉博查搜索；fetch_page 与其他能力不受影响）。C0：image_probe/
+    image_captioner 注入截图工具的"能不能看图/怎么转述"判定（见
+    BrowserScreenshotTool）。
     """
     tools: list[FunctionTool] = []
 
     search_tool = WebSearchTool()
-    if searcher is not None:
+    if searcher is not None and web_search_enabled:
         search_tool.bind(searcher)
         tools.append(search_tool)
 
@@ -253,7 +287,11 @@ def build_living_tools(
         try:
             tools.append(BrowserNavigateTool().bind_session(browser_session))
             tools.append(BrowserReadTool().bind_session(browser_session))
-            tools.append(BrowserScreenshotTool().bind_session(browser_session))
+            screenshot_tool = BrowserScreenshotTool().bind_session(browser_session)
+            if image_probe is not None or image_captioner is not None:
+                # C0：装配处注入看图判定与转述闭包（都是可选，None=默认看图路径）
+                screenshot_tool.bind_image_channel(image_probe, image_captioner)
+            tools.append(screenshot_tool)
             tools.append(BrowserClickTool().bind_session(browser_session, write_level))
             tools.append(BrowserTypeTool().bind_session(browser_session, write_level))
         except Exception as e:
@@ -519,14 +557,29 @@ class BrowserReadTool(FunctionTool):
 @pydantic_dataclass
 class BrowserScreenshotTool(FunctionTool):
     name: str = "browser_screenshot"
-    description: str = "截取当前网页的屏幕截图并保存。"
+    description: str = (
+        "截取当前网页的屏幕截图并保存。返回图片内容，你可以直接看到画面。"
+    )
     parameters: dict = Field(default_factory=lambda: {
         "type": "object", "properties": {},
     })
     _session_ref: Any = None
+    # M15-补丁1 C0：活动模型模态探针（bool，None=未知）与转述闭包，
+    # 由 main 装配时注入；不注入则默认走"返回图片内容"路径
+    _image_probe: Callable[[], Any] | None = None
+    _image_captioner: Callable[..., Any] | None = None
 
     def bind_session(self, ref) -> "BrowserScreenshotTool":
         self._session_ref = ref
+        return self
+
+    def bind_image_channel(
+        self,
+        probe: Callable[[], Any] | None,
+        captioner: Callable[..., Any] | None,
+    ) -> "BrowserScreenshotTool":
+        self._image_probe = probe
+        self._image_captioner = captioner
         return self
 
     async def call(self, context, **kwargs) -> ToolExecResult:
@@ -547,7 +600,64 @@ class BrowserScreenshotTool(FunctionTool):
             # 失败保护：目录创建/写盘失败返回明确文本，不抛异常
             logger.warning(f"[browser_screenshot] 截图保存失败: {e}")
             return f"截图失败：无法写入截图目录（{e}）"
-        return f"截图已保存 {path}"
+        return await self._result_for(path)
+
+    async def _result_for(self, path: str) -> ToolExecResult:
+        """按活动模型的看图能力决定返回形态（M15-补丁1 C0）。
+
+        - 支持图片（或未知）：返回含 ImageContent 的 CallToolResult——本体
+          runner（tool_loop_agent_runner）会缓存图片并在活动模型支持图片
+          模态时作为 user 消息塞回上下文，她直接"看到"画面（零转述）；
+        - 明确不支持：走本体同款兜底——配置了 default_image_caption_provider_id
+          就转述成 <image_caption> 文本；没配就图片仅存盘（她看不到，DEBUG）。
+        """
+        supports = True
+        if self._image_probe is not None:
+            try:
+                probe = self._image_probe()
+                supports = True if probe is None else bool(probe)
+            except Exception as e:
+                logger.debug(f"[browser_screenshot] 模态探针异常（按支持处理）: {e}")
+                supports = True
+        if supports is False:
+            caption = None
+            if self._image_captioner is not None:
+                try:
+                    caption = await self._image_captioner(path)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.debug(f"[browser_screenshot] 截图转述失败: {e}")
+            if caption:
+                return mcp_types.CallToolResult(
+                    content=[
+                        mcp_types.TextContent(
+                            type="text",
+                            text=f"<image_caption>{caption}</image_caption>\n"
+                            f"截图已保存 {path}",
+                        )
+                    ]
+                )
+            logger.debug(
+                "[browser_screenshot] 活动模型不支持图片输入且未配置转述模型，"
+                f"截图仅存盘：{path}"
+            )
+            return f"截图已保存 {path}（当前模型不支持查看图片）"
+        try:
+            data = base64.b64encode(Path(path).read_bytes()).decode("ascii")
+        except Exception as e:
+            logger.warning(f"[browser_screenshot] 截图读取失败（退回路径文本）: {e}")
+            return f"截图已保存 {path}"
+        return mcp_types.CallToolResult(
+            content=[
+                mcp_types.ImageContent(
+                    type="image", data=data, mimeType="image/png"
+                ),
+                mcp_types.TextContent(
+                    type="text", text=f"截图已保存 {path}"
+                ),
+            ]
+        )
 
 
 @pydantic_dataclass

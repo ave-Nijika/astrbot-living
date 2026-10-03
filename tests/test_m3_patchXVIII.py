@@ -58,8 +58,14 @@ BASELINE_KEYS = {
         "sleep_mute_replies", "sleepiness_jitter",
         "sleepiness_threshold", "wake_ack_message", "wake_n_messages",
         "wake_source", "wake_window_minutes", "weights",
+        # M15-补丁1：晚安三档 + 聊天中不入睡
+        "farewell_mode", "farewell_probability", "standby_blocks_sleep",
     },
-    "capabilities": {"cooldown_between_activities_hours", "sandbox_timeout_seconds"},
+    "capabilities": {
+        "cooldown_between_activities_hours", "sandbox_timeout_seconds",
+        # M15-补丁1：搜索独立开关 + 本体工具三档 + 白名单
+        "web_search_enabled", "agent_tools_mode", "agent_tools",
+    },
     "memory": {"backend"},
     "model": {"fallback_chain", "provider_id"},
     # M14-补丁1：主动搭话念头系统（独立新组，主动出口第二条通路）

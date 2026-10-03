@@ -558,9 +558,35 @@
                     },
                     "sleep_farewell_message": {
                         "description": "入睡告别消息",
-                        "hint": "清醒待机结束、继续入睡时告知主人的一句话（零 token）。留空 = 安静入睡不告知。",
+                        "hint": "清醒待机结束、继续入睡时告知主人的一句话（零 token）。留空 = 安静入睡不告知。仅 probability 档使用；llm 档由她自己现场斟酌措辞（忽略本条）。",
                         "type": "string",
                         "default": "",
+                        "invisible": true
+                    },
+                    "farewell_mode": {
+                        "description": "晚安消息档位",
+                        "hint": "probability=每次长睡入睡掷一次骰子，命中就发上面的固定晚安（默认）；llm=睡前让 LLM 看今天聊得怎么样自己斟酌说不说、说什么（聊得开心自然道晚安，还在气头上可以不说）；off=从不发晚安。",
+                        "type": "string",
+                        "options": [
+                            "probability",
+                            "llm",
+                            "off"
+                        ],
+                        "default": "probability",
+                        "invisible": true
+                    },
+                    "farewell_probability": {
+                        "description": "随机晚安概率（0-1）",
+                        "hint": "farewell_mode=probability 时每次入睡的发送概率，命中发 sleep_farewell_message。默认 0.5（一半的晚上说晚安）。",
+                        "type": "float",
+                        "default": 0.5,
+                        "invisible": true
+                    },
+                    "standby_blocks_sleep": {
+                        "description": "聊天中不入睡",
+                        "hint": "她正在陪你聊天时（待机期内）不做入睡判定——聊得再久也不会当场睡着；你安静 30 分钟后待机过期，下个心跳才恢复入睡评估。关闭则回到旧行为（睡意达标就可能聊着聊着睡着）。",
+                        "type": "bool",
+                        "default": true,
                         "invisible": true
                     },
                     "wake_source": {
@@ -651,6 +677,32 @@
                         "hint": "刚忙完一件事需要歇一会儿，隔多久才允许下一次冲动。",
                         "type": "float",
                         "default": 2.0,
+                        "invisible": true
+                    },
+                    "web_search_enabled": {
+                        "description": "允许她联网搜索（博查网页搜索）",
+                        "hint": "关闭后她自主活动不再挂载 web_search 搜索工具，冲浪/读文章两项活动也从活动池剔除（转而做其他活动）；她的网页抓取（fetch_page）与你的聊天搜索不受影响（那是 AstrBot 自己的搜索，同一条 key 但独立开关）。",
+                        "type": "bool",
+                        "default": true,
+                        "invisible": true
+                    },
+                    "agent_tools_mode": {
+                        "description": "复用本体工具",
+                        "hint": "off=只用她自带的生活工具（默认）；persona=把当前人格设定里勾选的本体工具（含 MCP）也给她用，筛选规则与聊天侧完全一致；custom=按下面的白名单追加。",
+                        "type": "string",
+                        "options": [
+                            "off",
+                            "persona",
+                            "custom"
+                        ],
+                        "default": "off",
+                        "invisible": true
+                    },
+                    "agent_tools": {
+                        "description": "本体工具白名单（custom 档）",
+                        "hint": "逗号分隔的工具名，如 web_search,fetch_page。仅 agent_tools_mode=custom 时生效；留空 = 不追加任何本体工具。与 living 自带工具同名时以自带优先。",
+                        "type": "string",
+                        "default": "",
                         "invisible": true
                     }
                 },

@@ -75,6 +75,17 @@
 
 - [astrbot_plugin_livingmemory](https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory)：长期记忆 + 知识图谱（不装则降级 SQLite）
 
+### 浏览器能力（可选安装）
+
+她的"自由上网"分两层：搜索/读文本开箱即用；**浏览器（真实打开网页、看画面、点页面）依赖 Playwright 的 Chromium 内核**，出于体积考虑不随插件内置，需要时手动安装。
+
+- **需要装什么**：Playwright 的 Chromium 浏览器内核（约 150MB 下载，装一次即可）。
+- **有什么作用**：装好后，能力档位 ≥1 时她会多出五件浏览器工具——打开网页、读页面、把看到的画面截图存档、点击元素、填写输入框。截图会真正进入她的"眼睛"：活动模型支持图片输入时她直接看到画面（不支持时可配置转述模型代看）。登录态会保存在她的工作区（browser_state.json），下次接着用。
+- **不装会怎样**：五件浏览器工具不挂载（能力档位照常显示），她的自主活动自动退化为"搜索 + 读文本"模式——照样冲浪读文章，只是看不到画面、点不了页面，其余能力（游戏/记忆/搜索等）完全不受影响。
+- **怎么安装**：在 AstrBot 的 Python 运行环境里执行 `playwright install chromium`，装完重启 AstrBot（或重载本插件）。
+- **怎么卸载**：执行 `playwright uninstall chromium`（或直接删除 Playwright 缓存目录：Windows 为 `%LOCALAPPDATA%\ms-playwright`，Linux/macOS 为 `~/.cache/ms-playwright`）。卸载后她自动回落到无浏览器形态，无需改任何配置。
+- **怎么看装没装**：配置面板新手页"浏览器能力"卡片会实时显示"已安装 / 未安装"。
+
 ## 配置
 
 所有配置项可在 WebUI 中调整，热生效（改了不用重启）。完整列表见 `_conf_schema.json`。

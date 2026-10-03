@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -116,13 +117,24 @@ class LivingAgentLoop:
         self._persona_getter = persona_getter
         self._life_extra_getter = life_extra_getter
         self._mood = mood
+        # M15-补丁1 C0：本轮尝试正在使用的 provider（模态探针的数据源）。
+        # _run_with_provider 每次尝试先更新——工具工厂装配 ToolSet 时读到的
+        # 总是"这次活动实际在用的模型"
+        self.current_provider: Any = None
         # 最近一次循环的结算（/living debug 展示 token 统计用）
         self.last_result: AgentRunResult | None = None
 
-    def _get_tools(self) -> ToolSet:
-        """获取当前 ToolSet（优先 tool_builder 工厂，回退 fallback）。"""
+    async def _get_tools(self) -> ToolSet:
+        """获取当前 ToolSet（优先 tool_builder 工厂，回退 fallback）。
+
+        M15-补丁1 D：工具工厂允许是 async 函数（persona 档要 await
+        persona_manager 取筛选结果）；同步工厂行为不变。
+        """
         if self._tool_builder is not None:
-            return self._tool_builder()
+            result = self._tool_builder()
+            if inspect.isawaitable(result):
+                result = await result
+            return result
         if self._tools_fallback is not None:
             return self._tools_fallback
         from .living_tools import build_living_tools  # 相对导入：同上（潜伏雷，agent 循环首次触发即炸）
@@ -219,11 +231,13 @@ class LivingAgentLoop:
         max_steps: int,
     ) -> AgentRunResult:
         """用指定 provider 跑一轮完整 agent 循环（单次尝试）。"""
+        # M15-补丁1 C0：先记录本轮 provider（工具工厂装配时读它做模态判定）
+        self.current_provider = provider
         system_prompt = await self._system_prompt(intent)
         agent_context = AstrAgentContext(context=self._context, event=build_ghost_event())
         request = ProviderRequest(
             prompt=intent,
-            func_tool=self._get_tools(),
+            func_tool=await self._get_tools(),
             system_prompt=system_prompt or "",
         )
         runner = ToolLoopAgentRunner()

@@ -35,6 +35,51 @@ TOPIC_POOL = [
     "冷知识",
 ]
 
+# M15-补丁1 E3：依赖"搜索→挑结果"模式的活动——web_search_enabled=false
+# 时从可选池剔除（她转而做其他活动）；与 free 的剔除先例同款实现
+SEARCH_DEPENDENT_ACTIVITIES = ("surf", "read")
+
+
+def web_search_enabled(config_source: Any) -> bool:
+    """capabilities.web_search_enabled 的统一读取（默认 true，E1）。
+
+    config_source 接受配置 dict 或 config_getter callable（getter 的调用
+    在本函数 try 内——配置读取抛异常按"开"处理，不中断决策/活动链）。
+    容错一切脏值：缺失/None/异常 = 开（不改变现状）；显式 false/
+    "false"/"0"/"off"/"no" = 关。"""
+    try:
+        from .conf_path import conf_group
+
+        config = config_source() if callable(config_source) else config_source
+        raw = conf_group(config or {}, "capabilities").get("web_search_enabled")
+    except Exception:
+        return True
+    if raw is None:
+        return True
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() not in ("false", "0", "off", "no")
+
+
+def activities_excluding_search(activities: list, config_source: Any) -> list:
+    """E3：搜索关闭时摘除 surf/read（热读，改配置下个决策即生效）。
+
+    config_source 同 web_search_enabled：dict 或 getter；getter 抛异常
+    按默认开处理（回全量池，行为不劣于现状——红线 5 的同款容错）。"""
+    try:
+        config = config_source() if callable(config_source) else config_source
+    except Exception:
+        return activities
+    if web_search_enabled(config):
+        return activities
+    kept = [a for a in activities if a.name not in SEARCH_DEPENDENT_ACTIVITIES]
+    if len(kept) != len(activities):
+        logger.info(
+            "[Activities] 网页搜索已关闭（web_search_enabled=false），"
+            f"活动池摘除: {'/'.join(SEARCH_DEPENDENT_ACTIVITIES)}"
+        )
+    return kept
+
 
 @dataclass
 class ActivityContext:
@@ -60,6 +105,9 @@ class ActivityContext:
     recent_topics: list[str] = field(default_factory=list)
     interest_penalty_table: tuple = (0.5, 0.3, 0.15)
     mood: Any = None
+    # M15-补丁1 E4：搜索开关的执行侧快照（心跳装配时读）——配置热变更的
+    # 窗口里活动可能"已被选中但搜索已关"，此时活动内部优雅降级不报错
+    search_enabled: bool = True
 
     def date_prefix(self) -> str:
         # 不用 strftime 的 %-m：Windows 平台不支持该转义
@@ -279,6 +327,19 @@ class SurfActivity(Activity):
         )
 
     async def _run_script(self, ctx: ActivityContext) -> ActivityOutcome:
+        # M15-补丁1 E4：搜索已关（热变更窗口）→ 跳过搜索步骤优雅收场，
+        # 不报错不烧 API；搜索可用时行为与现状逐字一致
+        if not ctx.search_enabled:
+            logger.info("[surf] 网页搜索已关闭，本次按未搜索优雅跳过")
+            return ActivityOutcome(
+                name=self.name,
+                summary="想搜点新鲜事，但发现搜索功能关着，就随手翻了翻别的",
+                memory_content=(
+                    f"{ctx.date_prefix()}我想搜点东西来着，"
+                    "结果发现搜索功能关着，没搜成。"
+                ),
+                importance=0.3,
+            )
         topic = ctx.pick_topic()
         results = await ctx.searcher.search(topic, count=5)
         if not results:
@@ -320,6 +381,18 @@ class ReadArticleActivity(Activity):
         )
 
     async def _run_script(self, ctx: ActivityContext) -> ActivityOutcome:
+        # M15-补丁1 E4：同 surf——搜索已关时优雅跳过（读文章依赖"先搜后读"）
+        if not ctx.search_enabled:
+            logger.info("[read] 网页搜索已关闭，本次按未搜索优雅跳过")
+            return ActivityOutcome(
+                name=self.name,
+                summary="想读篇文章，但发现搜索功能关着，没读成",
+                memory_content=(
+                    f"{ctx.date_prefix()}我想读篇文章来着，"
+                    "结果发现搜索功能关着，没读成。"
+                ),
+                importance=0.3,
+            )
         topic = ctx.pick_topic()
         results = await ctx.searcher.search(topic, count=5)
         target = next((r for r in results if r.get("url")), None)

@@ -214,8 +214,8 @@ def test_agent_loop_tool_builder_invoked_per_call():
         config_getter=lambda: {},
         tool_builder=builder,
     )
-    loop._get_tools()
-    loop._get_tools()
+    asyncio.run(loop._get_tools())  # M15-补丁1：_get_tools 变 async（工厂可为 async）
+    asyncio.run(loop._get_tools())
     assert len(calls) == 2, "tool_builder 未被每次调用（配置热读链路断裂）"
 
 
@@ -235,9 +235,9 @@ def test_agent_loop_tool_builder_reflects_config_change():
     loop = LivingAgentLoop(
         context=None, config_getter=lambda: {}, tool_builder=builder,
     )
-    names_t0 = [t.name for t in loop._get_tools().tools]
+    names_t0 = [t.name for t in asyncio.run(loop._get_tools()).tools]
     state["tier"] = 1
-    names_t1 = [t.name for t in loop._get_tools().tools]
+    names_t1 = [t.name for t in asyncio.run(loop._get_tools()).tools]
     assert "browser_navigate" not in names_t0
     assert "browser_navigate" in names_t1
     assert names_t0 != names_t1
@@ -252,7 +252,7 @@ def test_agent_loop_falls_back_to_static_tools():
     loop = LivingAgentLoop(
         context=None, config_getter=lambda: {}, tools=static,
     )
-    assert loop._get_tools() is static
+    assert asyncio.run(loop._get_tools()) is static
 
 
 # ---------------------------------------------------------------------------
