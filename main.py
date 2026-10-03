@@ -35,6 +35,7 @@ from .core.conf_path import conf_group
 from .core.decider import ActivityDecider
 from .core.fetcher import WebFetcher
 from .core.ghost_event import GHOST_PLATFORM_ID, build_ghost_event
+from .core.initiative import InitiativeEngine
 from .core.lazy_memory import LazyMemory
 from .core.living_loop import LivingLoop
 from .core.living_state import LivingGate
@@ -544,6 +545,33 @@ class LivingPlugin(Star):
             logger.debug(f"[Living] livingmemory 会话管理器探测失败（跳过）: {e}")
         return None
 
+    # ------------------------------------------------------------------
+    # 主动搭话念头系统接线（M14-补丁1）：引擎的会话/上下文/双写回调
+    # 都转发给 loop 的既有实现——三段会话优先级与双存储落库不复制第二份
+    # ------------------------------------------------------------------
+    def _initiative_session(self) -> str | None:
+        """念头目标会话（I3）：复用 loop 的三段优先级解析，取第一个。"""
+        if self.loop is None:
+            return None
+        sessions, _source = self.loop._resolve_target_sessions()
+        return sessions[0] if sessions else None
+
+    async def _initiative_chat_contexts(self):
+        """open_topic 的话题材料（B2）：复用 loop 的真实聊天上下文读取。"""
+        if self.loop is None:
+            return None
+        sessions, _source = self.loop._resolve_target_sessions()
+        return await self.loop._load_chat_contexts(sessions)
+
+    async def _initiative_speech_write(self, text: str, dedup_key: str) -> None:
+        """念头台词双写（E2）：复用 M13-补丁1 的共享落库；占位与日志
+        标签在这一层固定。"""
+        if self.loop is None:
+            return
+        await self.loop._write_speech_to_stores(
+            text, dedup_key, "(主动搭话)", label="主动搭话"
+        )
+
     async def _persona_id(self) -> str:
         """当前生效 persona 的 id（问题 3：记忆图谱的参与者边原料）。
 
@@ -773,6 +801,20 @@ class LivingPlugin(Star):
             # M13-补丁1 B1：livingmemory 会话管理器动态探测——活动自述写进
             # 它的会话存储，MemoryReflection 才能把活动当对话总结进图谱
             lm_conversation_manager_getter=self._livingmemory_conversation_manager,
+            # M14-补丁1 A1/I 组：主动搭话念头引擎（主动出口第二条通路）——
+            # 会话解析/话题材料/双写落库经下方三个 _initiative_* 方法转发
+            # 给 loop 既有实现，不复制第二份；任何失败在引擎内部静默降级
+            initiative=InitiativeEngine(
+                config_getter=self._effective_config,
+                gate=self.gate,
+                llm_call=self._decision_llm_call,
+                mood=self.mood,
+                sender=self.sender,
+                persona_getter=self._persona_prompt,
+                session_getter=self._initiative_session,
+                contexts_getter=self._initiative_chat_contexts,
+                speech_writer=self._initiative_speech_write,
+            ),
             # M9-补丁1：主人身份自动认领——target_sessions 未手填时派生
             # 全部管理员的私聊会话（与 _bot_identity_getter 同款注入先例）
             global_config_getter=lambda: self.context.astrbot_config,
@@ -1569,6 +1611,23 @@ class LivingPlugin(Star):
         remember_identity = getattr(self, "_remember_self_identity", None)
         if callable(remember_identity):
             remember_identity(event)
+        # M14-补丁1 I2：念头系统的回应记账（F2）——主人消息到达即清零
+        # 未回应收敛计数。只认念头目标会话（主人的私聊会话）来的消息，
+        # 群聊里别人说话不算"回应她"。任何失败只 DEBUG，绝不影响消息链路
+        initiative = (
+            getattr(self.loop, "initiative", None) if self.loop is not None else None
+        )
+        if initiative is not None:
+            try:
+                target = self._initiative_session()
+                try:
+                    msg_session = event.unified_msg_origin
+                except Exception:
+                    msg_session = None
+                if target and msg_session and msg_session == target:
+                    await initiative.note_owner_message(datetime.now())
+            except Exception as e:
+                logger.debug(f"[Initiative] 回应记账失败（忽略）: {e}")
         if self.sleep_manager is None:
             return
         now = datetime.now()

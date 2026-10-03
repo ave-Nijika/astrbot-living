@@ -5,6 +5,9 @@
   - 活动经历以第一人称自述写入对话上下文与 livingmemory 会话（M13-补丁1
     双落点），不再直塞记忆图谱；只有配置了 output_gate.target_sessions 才可能
     真正发消息，且每条都过消息闸门（上限/间隔/静默时段）；
+  - 主动出口有两条独立通路：五条分享链路（活动/梦/睡过头/告别/致谢，走
+    改写器）+ M14-补丁1 的主动搭话念头系统（self.initiative，人格化台词
+    不改写），后者只在清醒分支评估；
   - 日志：关键生命周期用 INFO，判定与"本可发送"一律 DEBUG。
 
 异常哲学：活动失败 ≠ 进程崩溃。活动周期整体 try/except，任何异常只记
@@ -112,6 +115,7 @@ class LivingLoop:
         global_config_getter: Callable[[], Any] | None = None,
         conversation_manager: Any = None,
         lm_conversation_manager_getter: Callable[[], Any] | None = None,
+        initiative: Any = None,
     ) -> None:
         self._gate = gate
         self._get_memory = memory_getter
@@ -148,6 +152,9 @@ class LivingLoop:
         # M13-补丁1 B1：livingmemory 插件的会话管理器动态探测（reflection
         # 数据源的写入点，main 注入）。None = 不写该落点（向后兼容）
         self._lm_conv_mgr_getter = lm_conversation_manager_getter
+        # M14-补丁1 A1：主动搭话念头引擎（main 装配注入）。None = 该通路
+        # 不存在（既有测试/旧装配零影响）；心跳 tick 在清醒分支调用（I1）
+        self.initiative = initiative
         # M13-补丁1 A5：已写过经历的活动 id（时间戳序，有界防泄漏）
         self._experience_written: set[str] = set()
         # M3 补丁 IV-B1：活动周期互斥锁——心跳与 /living do 可能并发进入
@@ -361,6 +368,26 @@ class LivingLoop:
         # M3 补丁 X：自主作息——到点自然醒（结算恢复）与白天小睡。
         # M6-补丁1：fixed 机制已移除，autonomous 是唯一睡眠行为。
         await self._autonomous_sleep_tick(now)
+
+        # M14-补丁1 I1：主动搭话念头评估——与睡意评估同段、仅清醒分支
+        # （睡眠期零主动输出，红线 5）；gate 没有睡眠判定（局部替身）时
+        # 按清醒处理，引擎内部还有 sleeping 兜底。异常只 DEBUG，绝不影响
+        # 心跳与既有五条分享链路。
+        if self.initiative is not None:
+            asleep_now = False
+            asleep_check = getattr(self._gate, "is_asleep_now", None)
+            if callable(asleep_check):
+                try:
+                    asleep_now = bool(asleep_check(now))
+                except Exception:
+                    asleep_now = False
+            if not asleep_now:
+                try:
+                    await self.initiative.tick(now)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.debug(f"[LivingLoop] 念头评估异常（不影响心跳）: {e}")
 
         allow, reason = await self._gate.should_wake(now, force=force)
         if not allow:
@@ -1105,43 +1132,50 @@ class LivingLoop:
     async def _write_activity_experience(
         self, activity: Activity, narration: str, activity_id: str
     ) -> None:
-        """活动经历双存储落点（M13-补丁1 A/B，主人 09-29 拍板）。
+        """活动经历双存储落点（M13-补丁1 A/B）——M14-补丁1 E1 起只保留
+        活动侧的幂等键与占位形态（语义逐字不变），落库细节在
+        _write_speech_to_stores（活动与念头共用）。"""
+        await self._write_speech_to_stores(
+            narration,
+            f"{activity_id}:{activity.name}",
+            f"(自主活动：{activity.name})"[:50],
+        )
+
+    async def _write_speech_to_stores(
+        self, text: str, dedup_key: str, user_msg: str, label: str = "活动经历"
+    ) -> None:
+        """话语双存储落点（M14-补丁1 E1，活动经历与主动搭话共用）。
 
         A：AstrBot 对话上下文（主人当前对话末尾追加一对消息）——主人追问时
-           LLM 直接看到自述原文（"是我先问的，我忘了问的是啥"的修复点）；
+           LLM 直接看到话语原文（"是我先问的，我忘了问的是啥"的修复点）；
         B：livingmemory 会话消息存储（主人真实 umo）——MemoryReflection
-           把活动当普通对话自然总结进图谱（单一事实来源，C1 移除直塞后
-           图谱改由它供给）。
-        两处写入任一失败都只 DEBUG，不影响分享主链路（A3/B4）；开关关闭
-        全部跳过（B5）。
+           把它当普通对话自然总结进图谱（单一事实来源）。
+        两处写入任一失败都只 DEBUG，不影响发送主链路（A3/B4/E3）；开关
+        关闭全部跳过（B5）。dedup_key 幂等：同一键只写一次（先占位再
+        尝试——两处落点不追求原子，失败重试会重复写上下文，宁可丢一次
+        也不重）。
         """
         if not self._experience_write_enabled():
             return
-        text = str(narration or "").strip()
+        text = str(text or "").strip()
         if not text:
             return
-        # A5 幂等：同一活动只写一次（键 = 活动 id + 活动名——id 是秒级
-        # 时间戳，同秒两个不同活动是两次经历，不该互相顶掉）。先占位再
-        # 尝试——两处落点不追求原子，失败重试会重复写上下文，宁可丢一次
-        # 也不重
-        dedup_key = f"{activity_id}:{activity.name}"
         if dedup_key in self._experience_written:
             return
         self._experience_written.add(dedup_key)
         if len(self._experience_written) > 128:
-            # 有界防泄漏：activity_id 是时间戳序，保留最近 64 个
+            # 有界防泄漏：键按时间戳序，保留最近 64 个
             self._experience_written = set(
                 sorted(self._experience_written)[-64:]
             )
         sessions, _source = self._resolve_target_sessions()
         if not sessions:
-            logger.debug("[LivingLoop] 活动经历：无主人会话，跳过写入")
+            logger.debug(f"[LivingLoop] {label}：无主人会话，跳过写入")
             return
         umo = sessions[0]  # 与分享主会话同源（M12-补丁1 先例：取第一个）
-        user_msg = f"(自主活动：{activity.name})"[:50]  # A2：占位有界
         asst_msg = text[:400]  # A2：自述有界
-        await self._write_context_pair(umo, user_msg, asst_msg)
-        await self._write_lm_session_message(umo, asst_msg)
+        await self._write_context_pair(umo, user_msg, asst_msg, label)
+        await self._write_lm_session_message(umo, asst_msg, label)
 
     def _experience_write_enabled(self) -> bool:
         """B5 开关：decision.activity_context_write（默认 true；读取失败
@@ -1157,7 +1191,7 @@ class LivingLoop:
         return str(raw).strip().lower() not in ("false", "0", "off", "no")
 
     async def _write_context_pair(
-        self, umo: str, user_msg: str, asst_msg: str
+        self, umo: str, user_msg: str, asst_msg: str, label: str = "活动经历"
     ) -> None:
         """A：写入 AstrBot 对话上下文（主人当前对话末尾追加一对消息）。
 
@@ -1168,7 +1202,7 @@ class LivingLoop:
         mgr = self._conversation_manager
         if mgr is None:
             logger.debug(
-                "[LivingLoop] 活动经历：未注入会话管理器，跳过上下文写入"
+                f"[LivingLoop] {label}：未注入会话管理器，跳过上下文写入"
             )
             return
         try:
@@ -1177,7 +1211,7 @@ class LivingLoop:
                 cid = await mgr.new_conversation(umo)
             if not cid:
                 logger.debug(
-                    "[LivingLoop] 活动经历：无法取得对话 id，跳过上下文写入"
+                    f"[LivingLoop] {label}：无法取得对话 id，跳过上下文写入"
                 )
                 return
             await mgr.add_message_pair(
@@ -1185,13 +1219,15 @@ class LivingLoop:
                 {"role": "user", "content": user_msg},
                 {"role": "assistant", "content": asst_msg},
             )
-            logger.info(f"[LivingLoop] 活动经历已写入对话上下文（{umo}）")
+            logger.info(f"[LivingLoop] {label}已写入对话上下文（{umo}）")
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.debug(f"[LivingLoop] 活动经历写入上下文失败（不影响分享）: {e}")
+            logger.debug(f"[LivingLoop] {label}写入上下文失败（不影响发送）: {e}")
 
-    async def _write_lm_session_message(self, umo: str, asst_msg: str) -> None:
+    async def _write_lm_session_message(
+        self, umo: str, asst_msg: str, label: str = "活动经历"
+    ) -> None:
         """B：写入 livingmemory 会话消息存储（MemoryReflection 的数据源）。
 
         走其会话管理器公开方法 add_message（不依赖 event 对象，B1 查证结论）：
@@ -1213,12 +1249,12 @@ class LivingLoop:
             raise
         except Exception as e:
             logger.debug(
-                f"[LivingLoop] 活动经历：livingmemory 管理器探测失败（跳过）: {e}"
+                f"[LivingLoop] {label}：livingmemory 管理器探测失败（跳过）: {e}"
             )
             return
         if mgr is None or not callable(getattr(mgr, "add_message", None)):
             logger.debug(
-                "[LivingLoop] 活动经历：livingmemory 会话管理器不可用（跳过）"
+                f"[LivingLoop] {label}：livingmemory 会话管理器不可用（跳过）"
             )
             return
         identity = await self._bot_identity() or {}
@@ -1232,12 +1268,12 @@ class LivingLoop:
                 platform=identity.get("platform") or umo.partition(":")[0],
                 is_bot_message=True,
             )
-            logger.info(f"[LivingLoop] 活动经历已写入 livingmemory 会话（{umo}）")
+            logger.info(f"[LivingLoop] {label}已写入 livingmemory 会话（{umo}）")
         except asyncio.CancelledError:
             raise
         except Exception as e:
             logger.debug(
-                f"[LivingLoop] 活动经历写入 livingmemory 失败（不影响分享）: {e}"
+                f"[LivingLoop] {label}写入 livingmemory 失败（不影响发送）: {e}"
             )
 
     def _session_id(self, ctx: ActivityContext | None) -> str | None:

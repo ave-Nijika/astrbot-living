@@ -394,6 +394,15 @@ class LivingGate:
         )
         await db.commit()
 
+    async def state_get(self, key: str) -> str | None:
+        """键值直读（M14-补丁1：initiative 发送记录/收敛计数持久化用，
+        与本闸门自身状态同表同存取路径）。"""
+        return await self._get_raw(key)
+
+    async def state_set(self, key: str, value: str) -> None:
+        """键值直写（与 state_get 配对）。"""
+        await self._set_raw(key, value)
+
     async def get_state(self, now: datetime | None = None) -> dict:
         """读完整状态；跨日时清零今日计数（保留绝对时间戳——冷却跨日仍有效）。"""
         now = now or datetime.now()

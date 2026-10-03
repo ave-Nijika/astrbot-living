@@ -355,6 +355,69 @@
                 },
                 "invisible": true
             },
+            "initiative": {
+                "description": "主动搭话念头系统（主动出口第二条通路，与分享链路独立）",
+                "type": "object",
+                "items": {
+                    "enabled": {
+                        "description": "主动搭话总开关",
+                        "hint": "开启后它会随机主动找主人聊天（概率随时段/心境浮动，被冷落会自动收敛变安静）。关闭后回到只有分享链路的行为。睡眠期永远静默。",
+                        "type": "bool",
+                        "default": true,
+                        "invisible": true
+                    },
+                    "daily_max": {
+                        "description": "每日念头上限",
+                        "hint": "主动搭话每天最多几句（独立于分享的每日上限，两者同时生效取更严者）。0 = 不限制。",
+                        "type": "int",
+                        "default": 3,
+                        "invisible": true
+                    },
+                    "min_interval_minutes": {
+                        "description": "两次念头最小间隔（分钟）",
+                        "hint": "与分享的最小间隔同时生效取更严者。",
+                        "type": "int",
+                        "default": 150,
+                        "invisible": true
+                    },
+                    "base_probability": {
+                        "description": "基础触发概率（0-1）",
+                        "hint": "每次心跳评估时的基础掷点，再乘时段权重/心境/收敛倍率。",
+                        "type": "float",
+                        "default": 0.18,
+                        "invisible": true
+                    },
+                    "hourly_weights": {
+                        "description": "时段权重表（留空用内置）",
+                        "hint": "格式 '06-09=0.5,09-12=0.9,12-14=0.8,14-18=0.6,18-23=1.0,23-06=0'。留空用内置表；解析失败也回落内置表。",
+                        "type": "string",
+                        "default": "",
+                        "invisible": true
+                    },
+                    "unanswered_backoff": {
+                        "description": "未回应收敛",
+                        "hint": "开启后连续得不到回应会自动降频（概率减半），连续 6 次无回应就安静下来，直到主人说话。关闭则不收敛。",
+                        "type": "bool",
+                        "default": true,
+                        "invisible": true
+                    },
+                    "final_review_enabled": {
+                        "description": "发送前人格终审",
+                        "hint": "开启后生成台词时附带'不该说话就说 SKIP'的自查指令（一次调用内完成）。关闭则纯生成，供调试对比。",
+                        "type": "bool",
+                        "default": true,
+                        "invisible": true
+                    },
+                    "sources": {
+                        "description": "念头来源（逗号分隔）",
+                        "hint": "random_miss=随机想念（没有事由就想说句话）；open_topic=未完结话题（从最近聊天里接话，需要 LLM 提取成功）。",
+                        "type": "string",
+                        "default": "random_miss,open_topic",
+                        "invisible": true
+                    }
+                },
+                "invisible": true
+            },
             "sleep": {
                 "description": "休眠（M3 生效，M0 先占位）",
                 "type": "object",

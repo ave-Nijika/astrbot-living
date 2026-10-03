@@ -191,12 +191,13 @@ def test_config_watcher_tracks_disk_changes(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 装配完整性：7 处 config_getter 全部指向磁盘直读（静态断言）
+# 装配完整性：config_getter 全部指向磁盘直读（静态断言）
 # ---------------------------------------------------------------------------
 def test_assembly_uses_disk_reader():
     src = (WORKDIR / "main.py").read_text(encoding="utf-8")
     assert "config_getter=lambda: self.config" not in src
-    assert src.count("config_getter=self._effective_config") == 7
+    # 7 + M14-补丁1 的 InitiativeEngine（主动搭话念头引擎，同一磁盘直读）
+    assert src.count("config_getter=self._effective_config") == 8
 
 
 # ---------------------------------------------------------------------------

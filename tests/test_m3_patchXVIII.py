@@ -62,6 +62,12 @@ BASELINE_KEYS = {
     "capabilities": {"cooldown_between_activities_hours", "sandbox_timeout_seconds"},
     "memory": {"backend"},
     "model": {"fallback_chain", "provider_id"},
+    # M14-补丁1：主动搭话念头系统（独立新组，主动出口第二条通路）
+    "initiative": {
+        "base_probability", "daily_max", "enabled", "final_review_enabled",
+        "hourly_weights", "min_interval_minutes", "sources",
+        "unanswered_backoff",
+    },
 }
 
 DANGER_KEYS = [
