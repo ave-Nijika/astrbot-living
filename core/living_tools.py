@@ -24,6 +24,7 @@ from astrbot.core.agent.tool import FunctionTool, ToolSet, ToolExecResult
 import mcp.types as mcp_types
 
 from .autonomy import check_action_kind
+from .browser_tools import MAX_PAGE_TEXT, chromium_installed
 
 FETCH_TEXT_CHARS = 1500  # 喂给 LLM 的正文上限：够读，不至于撑爆上下文
 
@@ -284,18 +285,32 @@ def build_living_tools(
 
     # tier >= 1: 浏览器工具
     if tier >= 1 and browser_session is not None:
-        try:
-            tools.append(BrowserNavigateTool().bind_session(browser_session))
-            tools.append(BrowserReadTool().bind_session(browser_session))
-            screenshot_tool = BrowserScreenshotTool().bind_session(browser_session)
-            if image_probe is not None or image_captioner is not None:
-                # C0：装配处注入看图判定与转述闭包（都是可选，None=默认看图路径）
-                screenshot_tool.bind_image_channel(image_probe, image_captioner)
-            tools.append(screenshot_tool)
-            tools.append(BrowserClickTool().bind_session(browser_session, write_level))
-            tools.append(BrowserTypeTool().bind_session(browser_session, write_level))
-        except Exception as e:
-            logger.warning(f'浏览器工具加载失败（不影响其他工具）: {e}', exc_info=True)
+        # M15-补丁2 A2：fail-closed 挂载——chromium_installed() 探测返回
+        # True 才挂五件套；返回 False 或 None（未装 / 探测失败）一律不挂
+        # + INFO 日志，与 README/面板"未装 Chromium 则不挂载浏览器工具"
+        # 的承诺一致，杜绝"工具在列表里但一调就错"的惰性挂载假象。
+        if chromium_installed() is not True:
+            logger.info(
+                "Chromium 未安装（或探测失败），浏览器工具不挂载——安装方法见 README 浏览器能力章节"
+            )
+        else:
+            try:
+                # A1：复活 BrowserSessionRef——五个工具统一经 ref.session 取值
+                # （ref 复活后 .session 形态即正确，工具内部取值路径不改）；
+                # ref.write_level 同步装配期 write_level，会话引用状态完整。
+                session_ref = BrowserSessionRef(browser_session)
+                session_ref.write_level = write_level
+                tools.append(BrowserNavigateTool().bind_session(session_ref))
+                tools.append(BrowserReadTool().bind_session(session_ref))
+                screenshot_tool = BrowserScreenshotTool().bind_session(session_ref)
+                if image_probe is not None or image_captioner is not None:
+                    # C0：装配处注入看图判定与转述闭包（都是可选，None=默认看图路径）
+                    screenshot_tool.bind_image_channel(image_probe, image_captioner)
+                tools.append(screenshot_tool)
+                tools.append(BrowserClickTool().bind_session(session_ref, write_level))
+                tools.append(BrowserTypeTool().bind_session(session_ref, write_level))
+            except Exception as e:
+                logger.warning(f'浏览器工具加载失败（不影响其他工具）: {e}', exc_info=True)
 
     # tier >= 2: 工作区受限的文件工具（任务书 M3 补丁 XIV 2.1）
     if tier >= 2 and workspace:
@@ -542,6 +557,10 @@ class BrowserReadTool(FunctionTool):
         "type": "object", "properties": {},
     })
     _session_ref: Any = None
+    # M15-补丁2：call() 既有的 text[:self._max_text] 取值路径此前没有对应
+    # 字段定义（一调即 AttributeError）——补齐默认值（与 browser_tools 的
+    # MAX_PAGE_TEXT 同源），取值路径本身不动。
+    _max_text: int = MAX_PAGE_TEXT
 
     def bind_session(self, ref) -> "BrowserReadTool":
         self._session_ref = ref

@@ -701,7 +701,11 @@ class LivingPlugin(Star):
         manifest = build_tool_manifest(
             tier,
             write_level,
-            has_browser=browser_session is not None,
+            # M15-补丁2 A2 闭环：fail-closed 挂载后须同口径——未装 Chromium
+            # 时实际不挂五件套，manifest 也必须同步不列，"清单 vs 实际挂载"
+            # 的一致性日志才有意义（否则天天假报不一致）。
+            has_browser=browser_session is not None
+            and self._chromium_ready(),
             has_workspace=bool(self._living_workspace()),
         )
         logger.info(
@@ -883,6 +887,22 @@ class LivingPlugin(Star):
                 if tool is not None and getattr(tool, "active", True):
                     toolset.add_tool(tool)
         return toolset
+
+    @staticmethod
+    def _chromium_ready() -> bool:
+        """M15-补丁2 A2：Chromium 可用性（与 living_tools 挂载判定同口径）。
+
+        fail-closed：探测返回 False/None（未装/探测失败）都视为不可用。
+        """
+        try:
+            # 与 living_tools 挂载判定同源取符号——测试对
+            # `core.living_tools.chromium_installed` 的 monkeypatch 同时
+            # 作用于"挂载"与"manifest"两处，口径天然一致。
+            from .core.living_tools import chromium_installed
+
+            return chromium_installed() is True
+        except Exception:
+            return False
 
     def _free_activity_enabled(self) -> bool:
         """decision.free_activity_enabled（补丁 XV 清单3）：False 时 free

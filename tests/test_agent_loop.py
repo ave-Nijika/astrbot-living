@@ -219,8 +219,12 @@ def test_agent_loop_tool_builder_invoked_per_call():
     assert len(calls) == 2, "tool_builder 未被每次调用（配置热读链路断裂）"
 
 
-def test_agent_loop_tool_builder_reflects_config_change():
+def test_agent_loop_tool_builder_reflects_config_change(monkeypatch):
     """同一 loop 内配置变化 → 下一次取到的工具集随之变化。"""
+    # M15-补丁2 A2：模拟"Chromium 已安装"——本测试核对 tier 热读（tier 0→1
+    # 工具集随之变化），探测语义不归它管（fail-closed 两态由
+    # test_m15_patch2.py T3 守护）。
+    monkeypatch.setattr("core.living_tools.chromium_installed", lambda: True)
     from core.agent_loop import LivingAgentLoop
 
     state = {"tier": 0}

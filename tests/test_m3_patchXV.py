@@ -247,9 +247,13 @@ def _mg():
 
 
 @pytest.mark.parametrize("tier", [0, 1, 2, 3])
-def test_manifest_matches_actual_mount(tier):
+def test_manifest_matches_actual_mount(tier, monkeypatch):
     """build_tool_manifest(…, has_browser, has_workspace) 的集合必须等于
     build_living_tools 同参装配出的实际工具名集合。"""
+    # M15-补丁2 A2：模拟"Chromium 已安装"——本测试核对 manifest 与实际
+    # 挂载的一致性，不含探测语义（fail-closed 两态由 test_m15_patch2.py
+    # T3 守护）。
+    monkeypatch.setattr("core.living_tools.chromium_installed", lambda: True)
     from core.browser_tools import BrowserSession
 
     session = BrowserSession(workspace="ws") if tier >= 1 else None

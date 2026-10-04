@@ -63,7 +63,11 @@ def test_tier0_no_browser():
     assert "web_search" in names
 
 
-def test_tier1_includes_browser():
+def test_tier1_includes_browser(monkeypatch):
+    # M15-补丁2 A2：fail-closed 挂载后，未装 Chromium 的环境不再挂五件套；
+    # 本测试关心的是"tier>=1 且有会话时的挂载形态"而非探测本身，故模拟
+    # "Chromium 已安装"保持原意图（探测两态由 test_m15_patch2.py T3 守护）。
+    monkeypatch.setattr("core.living_tools.chromium_installed", lambda: True)
     from core.browser_tools import BrowserSession
     session = BrowserSession(workspace="/tmp")
     ts = _build(tier=1, browser_session=session)

@@ -337,9 +337,14 @@ def test_initialize_wires_mood_and_decider(tmp_path):
 # ---------------------------------------------------------------------------
 # 补丁 XV：manifest 进档位日志（清单 2）与 free 开关进两处活动池（清单 3）
 # ---------------------------------------------------------------------------
-def test_build_agent_tools_log_uses_manifest(tmp_path, caplog):
+def test_build_agent_tools_log_uses_manifest(tmp_path, caplog, monkeypatch):
     """验收 2：_build_agent_tools 的档位日志来自 build_tool_manifest，
     且清单与实际挂载的工具名集合一致。"""
+
+    # M15-补丁2 A2：模拟"Chromium 已安装"——本测试核对 manifest 与实际
+    # 挂载的一致性，探测语义不归它管（fail-closed 两态由
+    # test_m15_patch2.py T3 守护）。
+    monkeypatch.setattr("core.living_tools.chromium_installed", lambda: True)
 
     async def flow():
         plugin = make_plugin(tmp_path / "m.db")
