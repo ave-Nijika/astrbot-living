@@ -262,8 +262,11 @@ def test_share_repeat_trigger_writes_once():
     assert gate.message_sends == 2
     assert len(calls) == 2  # 落库被调两次，但真实写入去重
     assert len(mgr.pairs) == 1
-    assert len(loop._experience_written & {"#share:" + hashlib.md5(
-        REWRITE_TEXT.encode("utf-8")).hexdigest()[:16]}) == 1
+    # M16-补丁2 A2 同步（set→dict），并把恒真的成员断言收紧为
+    # "恰好这一个键"——该循环只发生一次话语落库，键值算错或多写都现形
+    assert list(loop._experience_written) == [
+        "#share:" + hashlib.md5(REWRITE_TEXT.encode("utf-8")).hexdigest()[:16]
+    ]
 
 
 def test_share_send_failure_no_write_no_quota():

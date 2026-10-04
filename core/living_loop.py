@@ -166,8 +166,10 @@ class LivingLoop:
         # M15-补丁1 A3：人格 getter（晚安 LLM 档的 system prompt 原料）。
         # None = 晚安 prompt 不带人格（仍可用，少了点"她"的味道）
         self._persona_getter = persona_getter
-        # M13-补丁1 A5：已写过经历的活动 id（时间戳序，有界防泄漏）
-        self._experience_written: set[str] = set()
+        # M13-补丁1 A5：已写过的落库幂等键（M16-补丁2 A2：dict 保插入序，
+        # 裁剪按插入序 FIFO 淘汰最旧的——原 set+字典序会把 #share: 等键族
+        # 按字符先后优先淘汰，幂等键被裁后同句会重复落库）
+        self._experience_written: dict[str, None] = {}
         # M3 补丁 IV-B1：活动周期互斥锁——心跳与 /living do 可能并发进入
         # 周期，双周期同时写记忆/同时调 LLM 既浪费 token 又可能数据竞争
         self._cycle_lock = asyncio.Lock()
@@ -1347,20 +1349,41 @@ class LivingLoop:
             return
         if dedup_key in self._experience_written:
             return
-        self._experience_written.add(dedup_key)
+        self._experience_written[dedup_key] = None
         if len(self._experience_written) > 128:
-            # 有界防泄漏：键按时间戳序，保留最近 64 个
-            self._experience_written = set(
-                sorted(self._experience_written)[-64:]
-            )
+            # 有界防泄漏：按插入序 FIFO 淘汰最旧的，保留最近 64 个
+            # （M16-补丁2 A2：原 set+sorted 是字典序，会把 #farewell:→
+            # #initiative:→#share: 等键族按字符先后优先清掉，与"最近"
+            # 无关——同句重现时幂等失效）
+            for k in list(self._experience_written)[:-64]:
+                del self._experience_written[k]
         sessions, _source = self._resolve_target_sessions()
         if not sessions:
             logger.debug(f"[LivingLoop] {label}：无主人会话，跳过写入")
             return
         umo = sessions[0]  # 与分享主会话同源（M12-补丁1 先例：取第一个）
-        asst_msg = text[:400]  # A2：自述有界
+        asst_msg = text[:self._speech_store_limit()]
         await self._write_context_pair(umo, user_msg, asst_msg, label)
         await self._write_lm_session_message(umo, asst_msg, label)
+
+    def _speech_store_limit(self) -> int:
+        """A1（M16-补丁2）：话语落库上限 = max(400, share_max_length 配置值)。
+
+        落库上限必须 ≥ 她实际发出文本的上限（分享改写上限即
+        output_gate.share_max_length，share_rewriter.py 同源），否则用户把
+        该项调大到 400 以上时就会"发出去的是完整的、自己回读到的被砍了
+        尾巴"——"发出 == 回读"不成立。配置缺失/非法回落默认 120 → 上限
+        取 400（现状行为不变）；不新增配置键。读法与 _experience_write_enabled
+        同款（try 内消化一切脏值）。"""
+        limit = 400
+        try:
+            raw = _conf_group(self._config_getter() or {}, "output_gate").get(
+                "share_max_length", 120
+            )
+            limit = max(limit, int(raw))
+        except Exception:
+            pass
+        return limit
 
     def _experience_write_enabled(self) -> bool:
         """B5 开关：decision.activity_context_write（默认 true；读取失败
