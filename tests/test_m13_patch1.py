@@ -116,6 +116,9 @@ class FakeCtxMgr:
 
     async def new_conversation(self, umo):
         self.new_conversations.append(umo)
+        # 忠实模拟真实 mgr：新建会把该对话设为当前对话（M16-补丁1 起一个
+        # 周期有经历+分享两次写入，第二次写入应命中"已有当前对话"）
+        self.has_curr = True
         return self.cid
 
     async def add_message_pair(self, cid, user_msg, assistant_msg):
@@ -201,13 +204,16 @@ def make_loop(activity, mgr=_DEFAULT, lm=_DEFAULT, config=None, memory=None,
 # A 组：AstrBot 对话上下文写入
 # ---------------------------------------------------------------------------
 def test_success_experience_pair_written():
-    """活动正常结束 → 当前对话末尾追加一对消息（占位 user + 自述 assistant）。"""
+    """活动正常结束 → 当前对话末尾追加一对消息（占位 user + 自述 assistant）。
+
+    M16-补丁1 适配：周期内还多了分享话语的落库（A1），pairs 共 2 对；
+    本测试只锁第 0 对（经历）的形态，分享对由 test_m16_patch1.py 专测。"""
     act = ScriptedActivity(outcome=_outcome())
     loop, mgr, lm, sender, memory = make_loop(act)
 
     result = asyncio.run(loop.run_activity_cycle(NOW))
     assert result["ok"] is True
-    assert len(mgr.pairs) == 1
+    assert len(mgr.pairs) == 2
     cid, user_msg, asst_msg = mgr.pairs[0]
     assert cid == "cid-1"
     assert user_msg == {"role": "user", "content": "(自主活动：surf)"}
@@ -302,7 +308,10 @@ def test_idempotent_same_activity_written_once():
 
 
 def test_same_second_different_activities_both_written():
-    """同秒两个不同活动是两次经历——幂等键含活动名，不互相顶掉。"""
+    """同秒两个不同活动是两次经历——幂等键含活动名，不互相顶掉。
+
+    M16-补丁1 适配：首周期的分享话语也落一对（第二周期同内容分享被
+    内容哈希幂等去重），共 3 对；经历对的断言照旧。"""
     first = ScriptedActivity(name="surf", outcome=_outcome())
     second = ScriptedActivity(name="read", outcome=_outcome())
     loop, mgr, lm, sender, memory = make_loop(first)
@@ -310,10 +319,11 @@ def test_same_second_different_activities_both_written():
     asyncio.run(loop.run_activity_cycle(NOW))
     loop._activities = [second]
     asyncio.run(loop.run_activity_cycle(NOW))
-    assert len(mgr.pairs) == 2
-    assert {p[1]["content"] for p in mgr.pairs} == {
+    assert len(mgr.pairs) == 3
+    assert {p[1]["content"] for p in mgr.pairs} >= {
         "(自主活动：surf)", "(自主活动：read)"
     }
+    assert "(分享)" in {p[1]["content"] for p in mgr.pairs}
 
 
 # ---------------------------------------------------------------------------
@@ -377,7 +387,8 @@ def test_lm_message_uses_master_umo_and_assistant_role():
     loop, mgr, lm, sender, memory = make_loop(act, identity=identity)
 
     asyncio.run(loop.run_activity_cycle(NOW))
-    assert len(lm.calls) == 1
+    # M16-补丁1 适配：第 0 条是经历、第 1 条是分享话语（A1）
+    assert len(lm.calls) == 2
     call = lm.calls[0]
     assert call["session_id"] == MASTER_UMO
     assert not call["session_id"].startswith("living_ghost")
@@ -408,7 +419,7 @@ def test_lm_unavailable_skips_only_that_sink():
 
     result = asyncio.run(loop.run_activity_cycle(NOW))
     assert result["ok"] is True
-    assert len(mgr.pairs) == 1
+    assert len(mgr.pairs) == 2  # 经历 + 分享话语（M16-补丁1 A1）
     assert sender.sent
 
 
@@ -421,13 +432,13 @@ def test_lm_probe_failure_and_add_failure_are_silent():
 
     loop, mgr, lm, sender, memory = make_loop(act, lm=boom_getter)
     asyncio.run(loop.run_activity_cycle(NOW))
-    assert len(mgr.pairs) == 1 and sender.sent
+    assert len(mgr.pairs) == 2 and sender.sent  # 经历 + 分享话语（M16）
 
     broken = FakeLmMgr(error=RuntimeError("lm store gone"))
     loop2, mgr2, lm2, sender2, _ = make_loop(act, lm=broken)
     asyncio.run(loop2.run_activity_cycle(NOW))
     assert broken.calls == []
-    assert len(mgr2.pairs) == 1 and sender2.sent
+    assert len(mgr2.pairs) == 2 and sender2.sent
 
 
 # ---------------------------------------------------------------------------
@@ -472,7 +483,7 @@ def test_zero_direct_memory_adds_in_full_cycle():
     asyncio.run(loop.run_activity_cycle(NOW))
     assert act.runs == 1
     assert memory.added == []
-    assert len(mgr.pairs) == 1 and len(lm.calls) == 1
+    assert len(mgr.pairs) == 2 and len(lm.calls) == 2  # 经历 + 分享话语（M16）
 
 
 def test_failed_cycle_also_writes_experience():

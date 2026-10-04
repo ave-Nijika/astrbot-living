@@ -262,11 +262,17 @@ def test_bad_history_json_degrades_quietly():
 
 
 def test_switch_off_zero_messages_no_mgr_calls():
-    """D5/验收6：share_context_messages=0 → mgr 零调用、prompt 同现状。"""
+    """D5/验收6：share_context_messages=0 → mgr 零调用、prompt 同现状。
+
+    M16-补丁1 适配：本测试只锁"改写上下文读路径"零调用——落库写路径
+    （A1 发送成功后 _write_speech_to_stores 也会经 mgr 写上下文）在这里
+    显式关掉，由 test_m16_patch1.py 专门覆盖。"""
     mgr = FakeConvMgr(history=_history(6))
     llm = FakeLLM()
-    loop, _ = make_loop(config={"decision": {"share_context_messages": 0}},
-                        llm=llm, mgr=mgr)
+    loop, _ = make_loop(
+        config={"decision": {"share_context_messages": 0,
+                             "activity_context_write": False}},
+        llm=llm, mgr=mgr)
     asyncio.run(loop._maybe_share(REPORT, None))
     assert mgr.calls == []
     assert CONTEXT_FRAME_TEXT not in llm.calls[0]["prompt"]

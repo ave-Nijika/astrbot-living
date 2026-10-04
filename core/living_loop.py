@@ -22,6 +22,7 @@ M3 双事件（任务书 A1）：睡眠可被两个事件打断——
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import random
 from contextlib import suppress
@@ -445,7 +446,7 @@ class LivingLoop:
                     )
                 except Exception as e:
                     logger.warning(f"[LivingLoop] 进入待机失败: {e}")
-                await self._send_wake_ack()
+                await self._send_wake_ack(now)
             self._pending_dream = True
 
         result = await self.run_activity_cycle(now=now)
@@ -456,11 +457,12 @@ class LivingLoop:
             await self._maybe_dream(now)
         return True, reason, activity_name
 
-    async def _send_wake_ack(self) -> None:
+    async def _send_wake_ack(self, now: datetime) -> None:
         """唤醒确认消息（补丁 II 二）：零延迟回主人一句，纯 sender 零 token。
 
         发往触发吵醒的最后一个会话；留空配置/无会话/发送失败一律静默
-        （WARNING），不影响后续活动周期。
+        （WARNING），不影响后续活动周期。M16-补丁1 A5：发送成功后落双
+        存储（固定文案 dedup 含时间戳，理由同晚安概率档）。
         """
         ack = str(
             _conf_group(self._config_getter(), "sleep").get("wake_ack_message", "")
@@ -477,10 +479,23 @@ class LivingLoop:
             return
         try:
             sent = await self._sender.send(session, ack)
-            if not sent:
-                logger.warning("[LivingLoop] 唤醒确认消息未送达（无匹配平台）")
         except Exception as e:
             logger.warning(f"[LivingLoop] 唤醒确认消息发送失败: {e}")
+            return
+        if not sent:
+            logger.warning("[LivingLoop] 唤醒确认消息未送达（无匹配平台）")
+            return
+        try:
+            await self._write_speech_to_stores(
+                ack,
+                f"#wake:{int(now.timestamp())}",
+                "(唤醒)",
+                label="唤醒确认",
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"[LivingLoop] 唤醒确认落库失败（不影响发送）: {e}")
 
     async def _send_sleep_farewell(self, now: datetime) -> None:
         """入睡告别（M6-补丁1 C1：触发源是 autonomous 长睡入睡；小睡不发送
@@ -536,10 +551,26 @@ class LivingLoop:
             return
         try:
             sent = await self._sender.send(session, farewell)
-            if not sent:
-                logger.warning("[LivingLoop] 入睡告别消息未送达（无匹配平台）")
         except Exception as e:
             logger.warning(f"[LivingLoop] 入睡告别消息发送失败: {e}")
+            return
+        if not sent:
+            logger.warning("[LivingLoop] 入睡告别消息未送达（无匹配平台）")
+            return
+        # M16-补丁1 A4：她说出口的晚安也落双存储。固定文案的 dedup 必须
+        # 含时间戳（同一句话每晚都要各落一次，内容哈希会导致只有第一次落）；
+        # 落库失败只 WARNING，不影响已完成的发送。
+        try:
+            await self._write_speech_to_stores(
+                farewell,
+                f"#farewell:{int(now.timestamp())}",
+                "(晚安)",
+                label="晚安",
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"[LivingLoop] 晚安落库失败（不影响发送）: {e}")
 
     async def _farewell_llm_mode(self, now: datetime) -> None:
         """A3/A4 LLM 档：判断与措辞合一，发出即双写。异常全程静默（A5）。"""
@@ -1605,8 +1636,11 @@ class LivingLoop:
         # 才改写（拦下就别浪费 token）。M9-补丁4（主人 2026-09-24 拍板）：
         # 改写失败/未产出 → **整条分享静默跳过**（不再降级发送原文）——
         # 原文是工作汇报体，发进聊天框就是 OOC；宁可这次不说也不说错话。
-        # 汇报内容不会丢：它已作为自述写入对话上下文与 livingmemory 会话
-        # （M13-补丁1 双落点）。改写器未注入（None）时保持直发原文
+        # M16-补丁1 B1（改掉旧注释的误导）：M13 双写落的是"活动经历
+        # （narration）"，不是这里实际发出的分享文本——改写器可能产出
+        # 经历里没有的细节，主人追问时她必须能回读"自己实际说过的话"，
+        # 所以发送成功后把 text_to_send 也落库（见下方发送循环之后）。
+        # 改写器未注入（None）时保持直发原文
         # （向后兼容 M3 补丁 VIII 的开关语义）。
         if self._share_rewriter is None:
             text_to_send = text  # 未注入：直发原文（向后兼容）
@@ -1633,6 +1667,7 @@ class LivingLoop:
                 return
             text_to_send = rewritten
 
+        sent_any = False
         for session in sessions:
             try:
                 sent = await self._sender.send(session, text_to_send)
@@ -1642,6 +1677,24 @@ class LivingLoop:
             if sent:
                 # 只有真发出去才记账，失败的会话不消耗配额
                 await self._gate.note_message_sent(now)
+                sent_any = True
+        # M16-补丁1 A1：她实际发出的分享文本落双存储（AstrBot 对话上下文 +
+        # livingmemory 会话），下次对话近场可回读。活动分享/梦话/睡过头
+        # 交代三条路径共用本入口，此单点即全覆盖（A2/A3）；循环外只落一次
+        # （多会话不重复写）；dedup 用内容哈希——同一句话重试/重复触发不
+        # 重复落；落库失败只 WARNING，不回滚发送与配额记账（红线 1/3）。
+        if sent_any:
+            dedup = "#share:" + hashlib.md5(
+                text_to_send.encode("utf-8")
+            ).hexdigest()[:16]
+            try:
+                await self._write_speech_to_stores(
+                    text_to_send, dedup, "(分享)", label="活动分享"
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(f"[LivingLoop] 分享话语落库失败（不影响发送）: {e}")
 
     def _pick_activity(self) -> Activity:
         """随机选活动，避免和上次相同（连着两回干一样的事就不像生活了）。"""

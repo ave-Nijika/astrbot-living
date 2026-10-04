@@ -39,6 +39,21 @@ TOPIC_POOL = [
 # 时从可选池剔除（她转而做其他活动）；与 free 的剔除先例同款实现
 SEARCH_DEPENDENT_ACTIVITIES = ("surf", "read")
 
+# M16-补丁1 C1：本体 agent runner（tool_loop_agent_runner）被 request_stop
+# 中断时把 completion_text 换成的固定占位语——它们不含任何活动信息，
+# 不该混进她的经历（"我印象里没有"现象链的根因 C 之一）。
+_INTERRUPTION_MARKERS = {"output stopped", "stop output"}
+
+
+def _informative_partial(text: str) -> bool:
+    """超预算中断的半截产出是否含有真实信息（M16-补丁1 C1）。
+
+    空串/纯中断占位语 → False（经历退化为不含 partial 的完整句式）；
+    其余按有信息处理。判定只认占位语本体（含结尾标点变体），不做泛化
+    猜测——误把真内容当噪音比漏掉一句占位语代价大。"""
+    t = str(text or "").strip().lower().rstrip(".。!！?？")
+    return bool(t) and t not in _INTERRUPTION_MARKERS
+
 
 def web_search_enabled(config_source: Any) -> bool:
     """capabilities.web_search_enabled 的统一读取（默认 true，E1）。
@@ -260,12 +275,18 @@ class Activity(ABC):
         text = str(getattr(result, "text", "") or "").strip()
         if getattr(result, "budget_exceeded", False):
             # 超预算中断（任务书 C2）：不回退脚本二次消费（那会重复花钱），
-            # 把半程当一段经历记下来——记忆照写，不算 crash
-            partial = text[:80] if text else ""
+            # 把半程当一段经历记下来——记忆照写，不算 crash。
+            # M16-补丁1 C1：被掐断时 final text 常是本体 runner 的固定占位
+            # 语（"Output stopped."）——纯中断串不算经历，退化为不含
+            # partial 的完整句式；有真内容时上限 80→200（经历更饱满，
+            # 她下次才回想得起这次具体在玩什么）。
+            partial = text[:200] if _informative_partial(text) else ""
             memory = (
                 f"{ctx.date_prefix()}我{self.description}，"
-                f"玩到一半被 token 预算叫停了。{partial}"
+                "玩到一半被 token 预算叫停了。"
             )
+            if partial:
+                memory += partial
             logger.info(
                 f"[{self.name}] agent 循环触达 token 预算"
                 f"（{getattr(result, 'tokens_used', '?')} tokens），按半程经历记录"
