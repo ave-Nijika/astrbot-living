@@ -707,6 +707,8 @@ class LivingPlugin(Star):
             has_browser=browser_session is not None
             and self._chromium_ready(),
             has_workspace=bool(self._living_workspace()),
+            # M15-补丁3 A3 顺手：搜索关闭时实际不挂 web_search，清单同口径
+            has_search=_web_search_enabled(self._effective_config()),
         )
         logger.info(
             f"[{PLUGIN_NAME}] 档位={tier}({TIER_NAMES.get(tier, '?')}) "

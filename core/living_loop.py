@@ -45,7 +45,10 @@ from .secrets_redact import redact_secrets
 DEFAULT_CHECK_INTERVAL_MIN = 45.0
 DEFAULT_MAX_RUN_SECONDS = 300.0
 CONFIG_POLL_SECONDS = 5.0
-DEFAULT_AGENT_ACTIVITIES = ("surf", "read", "game")
+# M15-补丁3 A1：free 加入默认白名单——它的唯一执行形态就是 agent 模式
+# （脚本模式没有自由度），不在名单里它就是个空壳：拿不到 agent 通道 →
+# 降级别的活动代跑 → 搜索关着时 0.2 秒空转还写一条假经历
+DEFAULT_AGENT_ACTIVITIES = ("surf", "read", "game", "free")
 DREAM_MAX_CHARS = 120
 # M7-补丁1 A1：分享文本最小长度。正常分享文案（梦、活动总结、睡过头交代）
 # 都远超 4 字；空壳/占位通常 0-3 字。低于下限视为空产物——不调改写器、

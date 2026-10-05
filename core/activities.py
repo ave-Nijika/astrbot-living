@@ -567,33 +567,71 @@ class MemoryBrowsingActivity(Activity):
 
 
 class FreeActivity(Activity):
-    """自由活动：LLM 拿当前工具清单自主决定做什么（任务书 M3 补丁 XI-B5）。"""
+    """自由活动：LLM 拿当前工具清单自主决定做什么（任务书 M3 补丁 XI-B5）。
+
+    M15-补丁3 A3（方案二，中性化）：description 保持静态类属性——它是
+    decider 活动清单 prompt、日志共用的文案，改成动态要动所有引用点的
+    契约；措辞中性化（不点名具体能力）即可处处为真，动态的能力细节由
+    agent_intent 按 ctx 现场生成。"""
 
     name = "free"
     description = (
-        "自由时间：你可以用当前可用的工具做任何想做的事——"
-        "搜索、读文章、写代码、记笔记，或者做别的事。"
+        "自由时间：用当前可用的工具（如果有）做任何想做的事，"
+        "或者就自己琢磨点有意思的事。"
     )
     supports_agent = True
 
     def agent_intent(self, ctx: ActivityContext) -> str:
-        tools_line = "web_search / fetch_page / run_python / remember"
+        # M15-补丁3 A3：工具清单按 ctx 实际能力现场生成——searcher/
+        # fetcher/sandbox/memory 与 build_living_tools 的挂载同源（都出自
+        # abilities 装配），web_search 还要看 search_enabled 快照。搜索
+        # 关闭时不再告诉 LLM"可以搜"（她去找又找不到，只能"翻别的"）。
+        tools: list[str] = []
+        if ctx.searcher is not None and ctx.search_enabled:
+            tools.append("web_search")
+        if ctx.fetcher is not None:
+            tools.append("fetch_page")
+        if ctx.sandbox is not None:
+            tools.append("run_python")
+        if ctx.memory is not None:
+            tools.append("remember")
+        if tools:
+            tools_line = " / ".join(tools)
+            closing = "请自主决定做什么，然后用工具去做，最后汇报你做了什么。"
+        else:
+            tools_line = "当前没有可用工具"
+            closing = "就在心里想一件有意思的小事，最后告诉我你想了什么。"
         hint = self._params_hint(ctx)
         extra = f"（方向偏好：{hint}）" if hint else ""
         return (
             f"现在是完全的自由活动时间，{extra}。"
-            f"你可以使用这些工具：{tools_line}。"
-            "请自主决定做什么，然后用工具去做，最后汇报你做了什么。"
+            f"你可以使用这些工具：{tools_line}。{closing}"
         )
 
     async def run(self, ctx: ActivityContext) -> ActivityOutcome:
         return await self._run_script(ctx)
 
     async def _run_script(self, ctx: ActivityContext) -> ActivityOutcome:
-        # free 活动必须走 agent 路径（脚本模式没有自由度）
+        # free 活动必须走 agent 路径（脚本模式没有自由度）。
+        # M15-补丁3 A2：agent 通道不可用时的兜底不再落回 surf——搜索关闭
+        # 时那是"0.2 秒撞墙 + 写一条'搜索关着就翻别的'的假经历"（本补丁
+        # 根因层二/三），搜索开着时也只是"代跑一次 surf"，都不是自由活动。
+        # 降级目标选 game：同为自娱自乐、脚本模式自洽且不依赖搜索与
+        # agent，与 free 的语义最近；连沙箱也没有时老实承认"本轮没做成"，
+        # 不空转、不留假经历。
         if ctx.agent is None:
-            # agent 不可用时降级为 surf
-            return await SurfActivity().run(ctx)
+            if ctx.sandbox is not None:
+                return await MiniGameActivity().run(ctx)
+            return ActivityOutcome(
+                name=self.name,
+                summary="自由时间没想好做什么，发了会儿呆",
+                memory_content=(
+                    f"{ctx.date_prefix()}本想自由地玩点什么，"
+                    "但工具不凑手，没做成，发了会儿呆就过去了。"
+                ),
+                importance=0.2,
+                topics=["自由时间"],
+            )
         return await self._try_agent_mode(ctx)
 
 

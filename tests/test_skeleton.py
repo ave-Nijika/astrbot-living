@@ -92,8 +92,9 @@ def test_conf_schema_valid_and_groups_complete():
     assert sleep_items["wake_ack_message"]["default"] == "醒了，怎么了？"
     assert sleep_items["sleep_farewell_message"]["default"] == ""
     assert decision["agent_activities"]["type"] == "list"
+    # M15-补丁3 A1：free 加入默认白名单（与 DEFAULT_AGENT_ACTIVITIES 一致）
     assert decision["agent_activities"]["default"] == [
-        "surf", "read", "game"
+        "surf", "read", "game", "free"
     ]
     assert decision["single_run_token_budget"]["default"] == 20000
     assert decision["max_tool_rounds"]["default"] == 8

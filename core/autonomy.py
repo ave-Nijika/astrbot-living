@@ -71,16 +71,26 @@ def is_write_allowed(path: str, workspace: str, write_level: int) -> bool:
 
 
 def build_tool_manifest(
-    tier: int, write_level: int, has_browser: bool = False, has_workspace: bool = False
+    tier: int,
+    write_level: int,
+    has_browser: bool = False,
+    has_workspace: bool = False,
+    has_search: bool = True,
 ) -> list[str]:
     """当前档位的工具名清单（日志可观测，补丁 XV 清单2 起由
     main._build_agent_tools 的档位日志使用）。
 
     名称必须与 build_living_tools 的实际挂载一致（一致性由
     tests/test_m3_patchXV.py 的接线测试守护）：browser 五件套含
-    click/type，工作区三件套含 list。
+    click/type，工作区三件套含 list。M15-补丁3 A3 顺手（grep 同源问题）：
+    has_search=False（capabilities.web_search_enabled=false）时不列
+    web_search——否则搜索关闭下"清单 vs 实际挂载"天天假报不一致（与
+    M15-补丁2 给 has_browser 做的 fail-closed 同口径）。
     """
-    names = ["web_search", "fetch_page", "run_python", "remember"]
+    names: list[str] = []
+    if has_search:
+        names.append("web_search")
+    names += ["fetch_page", "run_python", "remember"]
     if tier >= 1 and has_browser:
         names += [
             "browser_navigate", "browser_read", "browser_screenshot",
