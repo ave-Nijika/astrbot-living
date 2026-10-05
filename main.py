@@ -740,7 +740,10 @@ class LivingPlugin(Star):
         return self._build_agent_tools_async()
 
     async def _build_agent_tools_async(self):
-        config = self.config if isinstance(self.config, dict) else {}
+        # M18-补丁1 C2：同一函数统一运行时同源——原先 tier/write_level 取
+        # self.config（面板保存后不同步的启动时旧值），web_search_enabled
+        # 却取 _effective_config（磁盘直读），同函数两来源。现统一磁盘直读。
+        config = self._effective_config()
         tier = read_tier(config)
         write_level = read_write_level(config)
         browser_session = self._get_browser_session(write_level) if tier >= 1 else None
@@ -756,7 +759,7 @@ class LivingPlugin(Star):
             workspace=self._living_workspace(),
             browser_session=browser_session,
             # M15-补丁1 E2：博查搜索独立开关（关 = web_search 不挂载）
-            web_search_enabled=_web_search_enabled(self._effective_config()),
+            web_search_enabled=_web_search_enabled(config),
             # M15-补丁1 C0：截图"能看"三路（模态探针 + 本体转述闭包）
             image_probe=self._activity_image_probe(),
             image_captioner=self._caption_screenshot,
@@ -778,7 +781,7 @@ class LivingPlugin(Star):
             and self._chromium_ready(),
             has_workspace=bool(self._living_workspace()),
             # M15-补丁3 A3 顺手：搜索关闭时实际不挂 web_search，清单同口径
-            has_search=_web_search_enabled(self._effective_config()),
+            has_search=_web_search_enabled(config),
         )
         logger.info(
             f"[{PLUGIN_NAME}] 档位={tier}({TIER_NAMES.get(tier, '?')}) "
@@ -1211,7 +1214,10 @@ class LivingPlugin(Star):
         from .core.panel_api import PanelApiError, build_config_payload
 
         try:
-            payload = build_config_payload(self.config, self._panel_schema())
+            # M18-补丁1 C1：以运行时同源为准（_effective_config 磁盘直读
+            # + schema 缺键补默认）——手改 JSON 后面板显示的也是运行时
+            # 真实使用的值；保存链路不变（仍写 self.config + save_config）
+            payload = build_config_payload(self._effective_config(), self._panel_schema())
             return {"status": "ok", "data": payload}
         except PanelApiError as e:
             return {"status": "error", "message": str(e)}
@@ -1267,6 +1273,17 @@ class LivingPlugin(Star):
                 pass
             summary = apply_panel_reset(self.config, schema)
             self._panel_save_config()
+            # M18-补丁1 B1：基线随默认值一并归位——监视器若仍持旧基线，
+            # 会把"回到默认"当成"用户改了档位"，下个周期按映射把非默认
+            # 值写回（面板说恢复了，实际没有）。本段与上面的内存重写之间
+            # 无 await，对旋钮监视任务是原子的：它要么整体前跑（旧值 vs
+            # 旧基线，无差异），要么整体后跑（默认值 vs 默认基线，无差异）。
+            try:
+                knobs = getattr(self, "_knobs", None)
+                if knobs is not None:
+                    knobs.reset_baseline()
+            except Exception as e:
+                logger.debug(f"[{PLUGIN_NAME}] 旋钮基线归位失败（不影响）: {e}")
             logger.info(
                 f"[{PLUGIN_NAME}] 已恢复默认值（preset {summary['preset_keys']} 项 / "
                 f"advanced {summary['advanced_keys']} 项）"
@@ -1733,25 +1750,100 @@ class LivingPlugin(Star):
             return [error]
         return [f"没做成：{error}"]
 
+    # M18-补丁1 A3：白名单与 schema 的 advanced 组一一对应——原名单里
+    # persona/misc 从未在 schema 存在过（删），autonomy 漏了（导致
+    # tier/write_level 改不了，补）
     _CONFIG_ALLOWED_GROUPS = (
-        "decision", "capabilities", "output_gate", "model",
-        "sleep", "memory", "persona", "misc",
+        "autonomy", "capabilities", "decision", "initiative",
+        "memory", "model", "output_gate", "sleep", "style_learning",
     )
 
+    # A3：取值有约束的键 → 合法值提示（写入前校验，与 read_tier 的
+    # clamp 范围一致）
+    _CONFIG_VALUE_CONSTRAINTS = {
+        ("autonomy", "tier"): "0=仅自带工具 1=+浏览器只读 2=+工作区写 3=全权",
+        ("autonomy", "write_level"):
+            "0=只读 1=浏览交互 2=轻写入（评论/点赞） 3=全权",
+    }
+
+    def _config_schema_item(self, group: str, key: str) -> dict | None:
+        """schema 里该键的定义（与面板同源的校验依据）；读不到返回 None。"""
+        try:
+            items = self._panel_schema().get("advanced", {}).get("items", {})
+            item = items.get(group, {}).get("items", {}).get(key)
+            return item if isinstance(item, dict) else None
+        except Exception:
+            return None
+
+    def _config_group_keys(self, group: str) -> tuple[str, ...]:
+        """组内可写的键名（schema 定义优先；schema 不可用退回运行时组）。"""
+        try:
+            items = self._panel_schema().get("advanced", {}).get("items", {})
+            group_items = items.get(group, {}).get("items", {})
+            if isinstance(group_items, dict) and group_items:
+                return tuple(group_items)
+        except Exception:
+            pass
+        try:
+            return tuple(conf_group(self.config, group))
+        except Exception:
+            return ()
+
+    @staticmethod
+    def _convert_command_value(item: dict, raw: str) -> tuple[Any, str | None]:
+        """按 schema 类型转换命令输入（M18-补丁1 A1：与面板同源校验）。
+
+        返回 (值, None) 或 (None, 错误文本)。string/text 原样返回。"""
+        t = item.get("type")
+        if t == "bool":
+            lower = str(raw).strip().lower()
+            if lower in ("true", "1", "on"):
+                return True, None
+            if lower in ("false", "0", "off"):
+                return False, None
+            return None, "需要 true/false"
+        if t == "int":
+            try:
+                return int(str(raw).strip()), None
+            except ValueError:
+                return None, "需要整数"
+        if t == "float":
+            try:
+                return float(str(raw).strip()), None
+            except ValueError:
+                return None, "需要数字"
+        if t in ("list", "object"):
+            try:
+                return json.loads(raw), None
+            except ValueError:
+                return None, (
+                    f"需要合法 JSON（{'数组' if t == 'list' else '对象'}），"
+                    "建议在面板编辑"
+                )
+        return str(raw), None
+
     async def _living_config_lines(self, key: str, value: str) -> list[str]:
+        """M18-补丁1 A 组：命令写入与运行时读取同源。
+
+        原实现写顶层 group——分层后运行时读 advanced 嵌套（conf_group
+        嵌套优先），顶层写入被完全忽略，回复却称"热生效"（假生效）。现
+        经 apply_panel_save 写 advanced.<group>.<key>（与面板保存完全同
+        源，同一套 schema 校验），落盘后用 _effective_config() 回读验证，
+        验证通过才允许说"已生效"（A2/A4）。"""
         if not key or not value:
             return [
                 "用法：/living config <group>.<key> <value>",
                 f"允许的组：{'/'.join(self._CONFIG_ALLOWED_GROUPS)}",
                 "例：/living config decision.daily_impulse_limit 5",
+                "例：/living config autonomy.tier 2（0=仅自带 1=+浏览 2=+写 3=全权）",
             ]
         if "." in key:
             group, _, k = key.partition(".")
         else:
-            # 裸键名：在允许组里找唯一匹配
+            # 裸键名：在允许组的 schema 定义里找唯一匹配
             hits = [
                 (g, kk) for g in self._CONFIG_ALLOWED_GROUPS
-                for kk in (self.config.get(g, {}) or {})
+                for kk in self._config_group_keys(g)
                 if kk == key
             ]
             if not hits:
@@ -1764,25 +1856,49 @@ class LivingPlugin(Star):
             return [
                 f"不允许修改组 {group!r}。允许：{'/'.join(self._CONFIG_ALLOWED_GROUPS)}"
             ]
+        item = self._config_schema_item(group, k)
+        if item is None:
+            return [f"未知配置键 {group}.{k!r}（以面板可编辑项为准）。"]
 
-        # 类型自动转换：bool → int → float → str（配置热读，下一次判定生效）
-        lower = value.lower()
-        if lower in ("true", "false"):
-            converted: Any = lower == "true"
-        else:
-            try:
-                converted = int(value)
-            except ValueError:
-                try:
-                    converted = float(value)
-                except ValueError:
-                    converted = value
+        converted, conv_error = self._convert_command_value(item, value)
+        if conv_error:
+            return [f"{group}.{k} {conv_error}，收到 {value!r}。"]
+        constraint = self._CONFIG_VALUE_CONSTRAINTS.get((group, k))
+        if constraint is not None and (
+            not isinstance(converted, int) or isinstance(converted, bool)
+            or not 0 <= converted <= 3
+        ):
+            return [f"{group}.{k} 取值 0-3（{constraint}）。"]
+
+        # 回读展示的旧值取运行时真实值（磁盘直读），不是内存旧值
         try:
-            group_cfg = self.config.setdefault(group, {})
-            old_value = group_cfg.get(k)
-            group_cfg[k] = converted
+            old_value = conf_group(self._effective_config(), group).get(k)
+        except Exception:
+            old_value = None
+
+        from .core.panel_api import PanelApiError, apply_panel_save
+
+        try:
+            # A1：与面板保存完全同源（同一套类型校验 + 写 advanced.<group>）
+            apply_panel_save(
+                self.config, self._panel_schema(),
+                {"advanced": {group: {k: converted}}},
+            )
+        except PanelApiError as e:
+            return [f"设置被拒绝：{e}"]
         except Exception as e:
             return [f"写入失败：{e}"]
+
+        # A5：旧版本曾把值写到顶层 group（读取侧永远读不到的孤儿键）——
+        # 写入新位置的同时清掉同名残留（幂等；group 是白名单组名，
+        # 不可能是 preset/advanced，无误伤面）
+        try:
+            if isinstance(self.config, dict):
+                self.config.pop(group, None)
+        except Exception as e:
+            logger.debug(f"[/living config] 顶层残留清理失败（不影响）: {e}")
+
+        save_error = ""
         try:
             saver = getattr(self.config, "save_config_async", None)
             if callable(saver):
@@ -1790,8 +1906,24 @@ class LivingPlugin(Star):
             elif hasattr(self.config, "save_config"):
                 self.config.save_config()
         except Exception as e:
-            logger.warning(f"[/living config] 配置落盘失败（内存已生效）: {e}")
-        return [f"已设置 {group}.{k}：{old_value!r} → {converted!r}（热生效）"]
+            save_error = str(e)
+            logger.warning(f"[/living config] 配置落盘失败: {e}")
+
+        # A2：运行时同源回读——验证通过才允许说"已生效"
+        verified, read_back = False, None
+        try:
+            read_back = conf_group(self._effective_config(), group).get(k)
+            verified = read_back == converted
+        except Exception:
+            verified = False
+        if not verified:
+            detail = f"（落盘异常：{save_error}）" if save_error else ""
+            return [
+                f"设置未生效：{group}.{k} 写入后回读不符"
+                f"（期望 {converted!r}，读到 {read_back!r}）{detail}。"
+                "请检查配置文件后重试。"
+            ]
+        return [f"已设置 {group}.{k}：{old_value!r} → {converted!r}（已生效）"]
 
     async def _living_debug_lines(self) -> list[str]:
         lines = ["[astrbot-living] 调试信息"]
@@ -1832,7 +1964,7 @@ class LivingPlugin(Star):
             "/living memories [n] — 最近记忆；/living pause|resume — 暂停/恢复",
             "/living wake — 手动唤醒；/living sleep — 手动入睡",
             "/living do <activity> [topic] — 强制执行（每日上限内）",
-            "/living config <group>.<key> <value> — 改配置（热生效）",
+            "/living config <group>.<key> <value> — 改配置（写入并回读验证后生效）",
             "/living debug — 判定链与 token 统计",
         ]
 

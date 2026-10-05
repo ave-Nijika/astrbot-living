@@ -359,7 +359,10 @@ def test_decision_llm_no_text_anywhere_returns_none(tmp_path):
 # 问题 3：/living config 嵌套键
 # ---------------------------------------------------------------------------
 def test_config_group_prefix_and_bare_key(tmp_path):
-    """组前缀形式直接写组；裸键在允许组内唯一匹配时也能写。"""
+    """组前缀形式直接写组；裸键在允许组内唯一匹配时也能写。
+
+    M18-补丁1 A1：写入落在运行时真正读取的位置（advanced 嵌套）——
+    旧实现写顶层 group，分层后被读取侧完全忽略（假生效）。"""
     from test_command_system import _close_plugin, build_plugin, run_cmd
 
     plugin, _memory, _act, _read, _sender = build_plugin(tmp_path)
@@ -369,13 +372,15 @@ def test_config_group_prefix_and_bare_key(tmp_path):
         run_cmd(plugin, "/living config decision.daily_impulse_limit 10")
     )[0]
     assert any("已设置" in line for line in lines)
-    assert plugin.config["decision"]["daily_impulse_limit"] == 10
+    assert plugin.config["advanced"]["decision"]["daily_impulse_limit"] == 10
 
     # 裸键（用户习惯形式）：decision 组内唯一 → 写对地方
     lines = asyncio.run(
         run_cmd(plugin, "/living config impulse_check_interval_minutes 7")
     )[0]
-    assert plugin.config["decision"]["impulse_check_interval_minutes"] == 7
+    assert plugin.config["advanced"]["decision"][
+        "impulse_check_interval_minutes"
+    ] == 7
     _close_plugin(plugin)  # M8-补丁1：连接收尾（复用 command_system 的 helper）
 
 

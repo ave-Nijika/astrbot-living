@@ -132,6 +132,9 @@ def build_plugin(tmp_path, config=None, memory_rows=None):
     plugin = object.__new__(main_module.LivingPlugin)
     config = dict(BASE_CONFIG if config is None else config)
     plugin.config = config
+    # M18-补丁1：_living_config_lines 回读验证走 _effective_config——
+    # 配置文件路径指向 tmp 且不存在 → 回落内存 config（不碰真机配置）
+    plugin._plugin_config_path = lambda: str(tmp_path / "cfg_missing.json")
     plugin.context = types.SimpleNamespace()  # 仅 debug 的 provider 链用到（可失败）
     plugin.memory_note = "测试后端"
 
@@ -399,23 +402,29 @@ def test_do_respects_daily_limit(tmp_path):
 # /living config
 # ---------------------------------------------------------------------------
 def test_config_hot_effect(tmp_path):
-    """config 改完即热生效：gate 下一次判定读到新值。"""
+    """config 改完即热生效：gate 下一次判定读到新值。
+
+    M18-补丁1 A1：写入落在运行时真正读取的位置（advanced 嵌套，与面板
+    同源），不再是被读取侧完全忽略的顶层。"""
     plugin, _memory, _act, _read, _sender = build_plugin(tmp_path)
 
     lines = asyncio.run(
         run_cmd(plugin, "/living config decision.daily_impulse_limit 10")
     )[0]
     assert any("已设置" in line for line in lines)
-    assert plugin.config["decision"]["daily_impulse_limit"] == 10  # int 转换
+    assert any("已生效" in line for line in lines)
+    assert plugin.config["advanced"]["decision"]["daily_impulse_limit"] == 10
     reached, count, limit = asyncio.run(plugin.gate.daily_limit_info(T0))
-    assert limit == 10  # 热生效：gate 读到了新值
+    assert limit == 10  # 热生效：gate 经 conf_group 读到了新值
     _close_plugin(plugin)  # M8-补丁1：连接收尾
 def test_config_bool_conversion(tmp_path):
     plugin, _memory, _act, _read, _sender = build_plugin(tmp_path)
     lines = asyncio.run(
         run_cmd(plugin, "/living config sleep.sleep_mute_replies false")
     )[0]
-    assert plugin.config["sleep"]["sleep_mute_replies"] is False
+    # M18-补丁1 A1：写入 advanced 嵌套（运行时同源位置）
+    assert plugin.config["advanced"]["sleep"]["sleep_mute_replies"] is False
+    assert any("已生效" in line for line in lines)
     _close_plugin(plugin)  # M8-补丁1：连接收尾
 def test_config_rejects_unknown_group(tmp_path):
     plugin, _memory, _act, _read, _sender = build_plugin(tmp_path)

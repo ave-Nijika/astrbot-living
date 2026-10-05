@@ -16,11 +16,26 @@ const GROUP_LABELS = {
   capabilities: "能力参数", memory: "记忆", model: "模型",
 };
 
-/* 任务书 2.2 的危险项清单（advanced 组内，带醒目警告） */
+/* 任务书 2.2 的危险项清单（advanced 组内，带醒目警告）。
+ * M18-补丁1 D1：补入 daily_impulse_limit——与 token 预算/工具轮数叠加时
+ * 同样影响成本（0 = 不限制，叠加其他开关时可能放量）。 */
 const DANGER_KEYS = new Set([
   "sleep.weights", "sleep.fatigue_rate_per_hour",
   "decision.recent_topic_penalty", "decision.single_run_token_budget",
   "decision.max_tool_rounds", "decision.max_run_seconds",
+  "decision.daily_impulse_limit",
+]);
+
+/* M18-补丁1 D2：新手档位旋钮映射的目标键（与 core/config_knobs.py 的
+ * KNOB_PRESETS + preset_model 直通一一对应）——专家区的手改会在新手区
+ * 切换对应档位时被覆盖，专家组里标出"档位联动"提示。 */
+const KNOB_MAPPED_KEYS = new Set([
+  "decision.impulse_check_interval_minutes", "decision.activity_probability",
+  "decision.daily_impulse_limit", "decision.interest_daily_decay",
+  "decision.recent_topic_window", "decision.exploration_trigger",
+  "decision.free_activity_enabled", "decision.decision_mode",
+  "output_gate.daily_message_limit", "output_gate.message_min_interval_minutes",
+  "autonomy.tier", "autonomy.write_level", "model.provider_id",
 ]);
 
 /* Pages 沙箱（opaque origin）禁用 localStorage —— 直接访问会抛 SecurityError。
@@ -784,6 +799,15 @@ function renderExpert() {
         chip.title = "改错会导致它作息失序或烧钱，不确定就别动";
         nameEl.prepend(chip);
         row.classList.add("danger-row");
+      }
+      // M18-补丁1 D2：旋钮映射目标键——新手区切档位会覆盖专家区的手改
+      if (KNOB_MAPPED_KEYS.has(`${group}.${key}`)) {
+        const chip = document.createElement("span");
+        chip.className = "mapped-chip";
+        chip.textContent = "档位联动";
+        chip.title = "新手区对应的档位旋钮会写入这个键；在新手区切换档位时，" +
+          "你在这里改的值会被档位映射覆盖";
+        nameEl.prepend(chip);
       }
       const ctrl = document.createElement("div");
       ctrl.className = "key-control";

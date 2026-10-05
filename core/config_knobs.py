@@ -215,6 +215,23 @@ class ConfigKnobs:
         self._last_knobs = merged
         self._save_state(merged)  # 幂等：把补齐的新键同步回盘
 
+    def reset_baseline(self) -> None:
+        """把基线重置为"当前配置里的旋钮值"并落盘（M18-补丁1 B1）。
+
+        面板恢复默认值把整树写回 schema 默认，旋钮也在其中；若监视器仍持
+        旧基线（如 active 档），下个周期会把"回到默认"当成"用户改了档位"，
+        按映射把非默认值写回——面板说恢复了，实际没有。必须在 reset 的
+        同一路径里把基线一并归位（arm() 不行：它优先读盘上旧基线）。
+        任何异常都降级 WARNING——绝不影响 reset 主流程。
+        """
+        try:
+            current = self.snapshot_knobs(self._config_getter())
+            self._last_knobs = current
+            self._save_state(current)
+            logger.info("[Knobs] 基线已随恢复默认值归位")
+        except Exception as e:
+            logger.warning(f"[Knobs] 基线归位失败（忽略）: {e}")
+
     async def apply_changes(self) -> list[str]:
         """检测旋钮变化 → 按映射写底层键 → 持久化。
 
