@@ -158,8 +158,14 @@ def make_plugin(db_path):
     plugin._gate_db_path = lambda: str(db_path) + ".gate"
     plugin._memory_db_path = lambda: str(db_path)
     plugin._mood_db_path = lambda: str(db_path) + ".mood"
+    # M17-补丁1：initialize 装配 StyleLearner 直调 _plugin_data_dir 取
+    # style_pool.json 路径——同样屏蔽进 tmp（不写 AstrBot 本体 data/）
+    plugin._plugin_data_dir = lambda: str(db_path) + ".pdata"
     plugin.searcher = types.SimpleNamespace(close=lambda: asyncio.sleep(0))
-    plugin.fetcher = types.SimpleNamespace(close=lambda: asyncio.sleep(0))
+    # M17-补丁1：fetcher.recent_samples 是风格学习的取样通道挂载点
+    plugin.fetcher = types.SimpleNamespace(
+        close=lambda: asyncio.sleep(0), recent_samples=lambda: [],
+    )
     plugin.sandbox = types.SimpleNamespace()  # initialize 接线时仅引用不调用
     plugin.sender = types.SimpleNamespace()
     return plugin

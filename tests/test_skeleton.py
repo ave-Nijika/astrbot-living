@@ -98,6 +98,40 @@ def test_conf_schema_valid_and_groups_complete():
     ]
     assert decision["single_run_token_budget"]["default"] == 20000
     assert decision["max_tool_rounds"]["default"] == 8
+    # M17-补丁1：随机吵醒阈值 + 醒来补回复（sleep 组新键）
+    assert sleep_items["wake_random_enabled"]["default"] is True
+    assert sleep_items["wake_messages_min"]["default"] == 1
+    assert sleep_items["wake_messages_max"]["default"] == 3
+    assert sleep_items["pending_reply_enabled"]["default"] is False
+    # M17-补丁1：风格学习组（独立新组，默认关——主人要先看效果）
+    style = advanced["style_learning"]["items"]
+    assert style["enabled"]["default"] is False
+    assert style["max_inject_chars"]["default"] == 300
+    assert style["max_items_per_pick"]["default"] == 2
+    assert style["pool_limit"]["default"] == 200
+    assert style["decay_days"]["default"] == 14
+    assert style["source_weights"]["items"]["dialogue"]["default"] == 1.0
+    assert style["source_weights"]["items"]["article"]["default"] == 0.5
+
+
+def test_panel_cards_match_schema_keys():
+    """M17-补丁1（F4 锚点）：新手面板三张新卡的键名与 schema 逐字对应，
+    面板卡片函数已接入新手视图渲染；专家组组标签含 style_learning。"""
+    app = (WORKDIR / "pages" / "config" / "app.js").read_text(encoding="utf-8")
+    for key in ("wake_random_enabled", "pending_reply_enabled"):
+        assert key in app, f"面板缺 sleep.{key} 卡片"
+    assert "style_learning" in app  # 风格学习卡 + 组标签
+    for fn in ("wakeRandomCard", "pendingReplyCard", "styleLearningCard"):
+        assert fn in app
+    assert "grid.appendChild(wakeRandomCard())" in app
+    assert "grid.appendChild(pendingReplyCard())" in app
+    assert "grid.appendChild(styleLearningCard())" in app
+    schema_text = (WORKDIR / "_conf_schema.json").read_text(encoding="utf-8")
+    for key in ("wake_random_enabled", "wake_messages_min", "wake_messages_max",
+                "pending_reply_enabled", "max_inject_chars",
+                "max_items_per_pick", "pool_limit", "decay_days",
+                "source_weights"):
+        assert key in schema_text
 
 
 def test_main_py_compiles():

@@ -659,9 +659,90 @@
                             "alarm"
                         ],
                         "invisible": true
+                    },
+                    "wake_random_enabled": {
+                        "description": "随机吵醒阈值",
+                        "hint": "每次入睡时随机抽定\"连发几条能吵醒她\"（1-3 条中按睡眠深浅加权：刚入睡偏难叫醒，快醒时偏容易叫醒），同一次睡眠内固定不变。关闭则回到固定阈值（wake_n_messages）。（M17-补丁1 C1）",
+                        "type": "bool",
+                        "default": true,
+                        "invisible": true
+                    },
+                    "wake_messages_min": {
+                        "description": "吵醒阈值下限（条）",
+                        "hint": "随机抽定范围的最小值（浅睡端最容易达到的条数）。",
+                        "type": "int",
+                        "default": 1,
+                        "invisible": true
+                    },
+                    "wake_messages_max": {
+                        "description": "吵醒阈值上限（条）",
+                        "hint": "随机抽定范围的最大值（深睡端最难达到的条数）。",
+                        "type": "int",
+                        "default": 3,
+                        "invisible": true
+                    },
+                    "pending_reply_enabled": {
+                        "description": "醒来补回复",
+                        "hint": "她睡着时你发的消息（没吵醒她的），她醒来后会自己判断要不要回：可能认真回，可能轻描淡写接一句，也可能判断不用回就不回。默认关，先看效果再决定常开。（M17-补丁1 C2）",
+                        "type": "bool",
+                        "default": false,
+                        "invisible": true
                     }
                 },
                 "invisible": true
+            },
+            "style_learning": {
+                "description": "风格学习（M17-补丁1 A 组）",
+                "type": "object",
+                "items": {
+                    "enabled": {
+                        "description": "风格学习总开关",
+                        "hint": "她在读文章/冲浪时从真人语料里学说话风格（句式、思维方式、待人接物，不只口癖），并在说话时低调度参考。判定为 AI 生成的语料绝不学。默认关，先看效果再决定常开。",
+                        "type": "bool",
+                        "default": false
+                    },
+                    "max_inject_chars": {
+                        "description": "单次注入字符上限",
+                        "hint": "说话时最多带多少字的语气参考（硬上限，防注入盖过人设）。",
+                        "type": "int",
+                        "default": 300
+                    },
+                    "max_items_per_pick": {
+                        "description": "单次取用条数上限",
+                        "hint": "一次说话最多参考几条风格片段（1-2 条为宜，塞多了会四不像）。",
+                        "type": "int",
+                        "default": 2
+                    },
+                    "pool_limit": {
+                        "description": "素材库容量上限（条）",
+                        "hint": "风格片段最多存多少条，超出时按权重×新鲜度×使用率淘汰综合分最低的。",
+                        "type": "int",
+                        "default": 200
+                    },
+                    "decay_days": {
+                        "description": "不用衰减周期（天）",
+                        "hint": "一条风格片段超过这么多天没用上，权重开始减半衰减（每过一个周期再减半），衰减到底自动淘汰——她最近学什么，说话就带什么味。",
+                        "type": "int",
+                        "default": 14
+                    },
+                    "source_weights": {
+                        "description": "来源权重",
+                        "hint": "dialogue=实战对话（评论区、回复串，最能学到跟人交流），article=单作者文章。权重越高越容易被取用。",
+                        "type": "object",
+                        "items": {
+                            "dialogue": {
+                                "description": "实战对话权重",
+                                "type": "float",
+                                "default": 1.0
+                            },
+                            "article": {
+                                "description": "文章权重",
+                                "type": "float",
+                                "default": 0.5
+                            }
+                        }
+                    }
+                }
             },
             "capabilities": {
                 "description": "能力开关",

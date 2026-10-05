@@ -60,6 +60,9 @@ BASELINE_KEYS = {
         "wake_source", "wake_window_minutes", "weights",
         # M15-补丁1：晚安三档 + 聊天中不入睡
         "farewell_mode", "farewell_probability", "standby_blocks_sleep",
+        # M17-补丁1：随机吵醒阈值 + 醒来补回复
+        "wake_random_enabled", "wake_messages_min", "wake_messages_max",
+        "pending_reply_enabled",
     },
     "capabilities": {
         "cooldown_between_activities_hours", "sandbox_timeout_seconds",
@@ -73,6 +76,11 @@ BASELINE_KEYS = {
     "initiative": {
         "base_probability", "enabled", "final_review_enabled", "sources",
         "unanswered_backoff",
+    },
+    # M17-补丁1：风格学习（素材库与记忆完全分开的独立新组）
+    "style_learning": {
+        "enabled", "max_inject_chars", "max_items_per_pick",
+        "pool_limit", "decay_days", "source_weights",
     },
 }
 

@@ -127,6 +127,7 @@ class LivingLoop:
         lm_conversation_manager_getter: Callable[[], Any] | None = None,
         initiative: Any = None,
         persona_getter: Callable[..., Any] | None = None,
+        style_learner: Any = None,
     ) -> None:
         self._gate = gate
         self._get_memory = memory_getter
@@ -169,6 +170,9 @@ class LivingLoop:
         # M15-补丁1 A3：人格 getter（晚安 LLM 档的 system prompt 原料）。
         # None = 晚安 prompt 不带人格（仍可用，少了点"她"的味道）
         self._persona_getter = persona_getter
+        # M17-补丁1：风格学习引擎（A 组）——A7 学习触发与 A5 梦话注入
+        # 都经它；None = 该链路不存在（既有测试/旧装配零影响）
+        self._style_learner = style_learner
         # M13-补丁1 A5：已写过的落库幂等键（M16-补丁2 A2：dict 保插入序，
         # 裁剪按插入序 FIFO 淘汰最旧的——原 set+字典序会把 #share: 等键族
         # 按字符先后优先淘汰，幂等键被裁后同句会重复落库）
@@ -695,6 +699,10 @@ class LivingLoop:
                         f"（精力 {detail['energy']:.2f}）"
                     )
             await self._gate.exit_autonomous_sleep(now)
+            # M17-补丁1 C2：自然醒结算——她在睡期收到的未回消息，由 LLM
+            # 一次判断回不回（不回是合法结果）。长睡与小睡都结算；任何
+            # 失败只 DEBUG，不影响醒来的恢复流程
+            await self._settle_pending_replies(now, actual_h)
             self._pending_dream = True  # 自然醒掷梦（沿用补丁 II 链路）
             return
 
@@ -747,6 +755,13 @@ class LivingLoop:
                 f"[Living] 进入自主睡眠，预计 "
                 f"{result['until'].strftime('%H:%M')} 自然醒"
             )
+            # M17-补丁1 C1：本次睡眠的吵醒阈值在入睡时抽定并落盘
+            # （睡眠期内每条消息不重抽；随机关 → 回落固定阈值）
+            if self._sleep_manager is not None:
+                try:
+                    await self._sleep_manager.arm_wake_threshold("long", now)
+                except Exception as e:
+                    logger.warning(f"[Sleep] 吵醒阈值抽定失败（按固定阈值）: {e}")
             # M5-补丁3 B2：autonomous 的睡前回顾由长睡入睡触发
             # M6-补丁1 C1：入睡告别同点触发（fixed 翻转段已随机制移除；
             # 小睡两者都不触发）
@@ -759,6 +774,12 @@ class LivingLoop:
             minutes = nap[1]
             until = now + timedelta(minutes=minutes)
             await self._gate.enter_autonomous_sleep(until, "nap", now)
+            # M17-补丁1 C1：小睡同样抽定阈值（浅睡端，偏容易醒）
+            if self._sleep_manager is not None:
+                try:
+                    await self._sleep_manager.arm_wake_threshold("nap", now)
+                except Exception as e:
+                    logger.warning(f"[Sleep] 小睡阈值抽定失败（按固定阈值）: {e}")
             logger.info(f"[Sleep] 白天小睡 {minutes:.0f} 分钟（精力不足，补觉）")
 
     def _standby_blocks_sleep(self, now: datetime) -> bool:
@@ -861,6 +882,149 @@ class LivingLoop:
                 logger.warning(f"[Schedule] 睡过头交代发送失败: {e}")
         return True
 
+    # ------------------------------------------------------------------
+    # 醒来补回复（M17-补丁1 C2）：睡着时的未回消息 → 醒来后一次判断
+    # ------------------------------------------------------------------
+    # 三档输出协议（一次 LLM 调用同时判断与生成，成本红线：每次自然醒
+    # 最多 1 次）：SKIP=不回（合法结果，什么都不发）；REPLY=认真回；
+    # BRIEF=糊弄回。REPLY/BRIEF 的正文在首行之后。
+    _WAKE_REPLY_MAX_CHARS = 300
+
+    async def _settle_pending_replies(
+        self, now: datetime, actual_h: float = 0.0
+    ) -> None:
+        """自然醒结算：取出睡眠期未回消息 → 一次 LLM 判断三档 → 处理。
+
+        - 不回（SKIP）→ 只记 DEBUG，无任何输出（主人定稿：不回是合法结果）；
+        - 认真回 / 糊弄回 → 发送（走既有 _sender）+ M16 双写落库（她说的话
+          要能被自己回读——M16 的规矩）；
+        - 边界：醒来时主人正在聊天（待机期活跃）→ 不插这条，消息留待
+          正常聊天自然消化（取出即清，不重 judgment）；
+        - 开关关闭 / 无消息 / LLM 通道缺失 → 零调用直接返回；
+        - 任何失败只 DEBUG，绝不影响醒来的恢复流程（红线 5）。
+        """
+        manager = self._sleep_manager
+        if (
+            manager is None
+            or self._dream_llm_call is None
+            or self._sender is None
+        ):
+            return
+        try:
+            enabled = bool(
+                _conf_group(self._config_getter(), "sleep").get(
+                    "pending_reply_enabled", False
+                )
+            )
+        except Exception:
+            enabled = False
+        if not enabled:
+            return
+        try:
+            messages = await manager.take_pending_messages()
+        except Exception as e:
+            logger.debug(f"[LivingLoop] 未回消息读取失败（跳过补回复）: {e}")
+            return
+        if not messages:
+            return  # 无未回消息 → 零 LLM 调用（成本红线）
+        # 边界：主人此刻正在聊天（待机期 = 30 分钟内说过话）——刚聊过天
+        # 的情况下突然插"我睡着时你发的…"很突兀，跳过
+        try:
+            if self._gate.awake_standby_active(now):
+                logger.info(
+                    "[LivingLoop] 醒来时主人正在聊天，睡眠期未回消息不做补回复"
+                )
+                return
+        except Exception:
+            pass
+        lines = []
+        for item in messages:
+            at = str(item.get("at") or "")
+            try:
+                at_text = datetime.fromisoformat(at).strftime("%H:%M")
+            except (TypeError, ValueError):
+                at_text = "?"
+            lines.append(f"- [{at_text}] {str(item.get('text') or '').strip()}")
+        mood_digest = ""
+        if self._mood is not None:
+            try:
+                digest = getattr(self._mood, "digest", None)
+                mood_digest = str(digest()) if callable(digest) else ""
+            except Exception:
+                mood_digest = ""
+        prompt = (
+            "你刚睡醒。你睡着的时候收到了这些消息（当时你在睡，没回）：\n"
+            + "\n".join(lines)
+            + f"\n\n你睡了 {max(actual_h, 0.0):.1f} 个小时，"
+            f"现在是 {now.month}月{now.day}日 {now.hour}:{now.minute:02d}。"
+        )
+        if mood_digest:
+            prompt += f"你现在的状态：{mood_digest}"
+        prompt += (
+            "\n\n想想现在要不要回、怎么回：\n"
+            "- 如果已经不用回了（话题早过去了/只是随口一说/现在突然回"
+            "反而奇怪）→ 只输出 SKIP\n"
+            "- 如果值得正经回应 → 第一行写 REPLY，第二行开始写你要发的话\n"
+            "- 如果轻轻带一句就好 → 第一行写 BRIEF，第二行开始写你要发的"
+            "话（一句轻描淡写的，比如\"昨晚睡着了，你说的那个我看看哈\"）\n"
+            "用你自己的口吻，像刚睡醒看到手机消息那样自然。"
+            "只输出上述内容之一。"
+        )
+        try:
+            raw = await self._dream_llm_call(prompt, None)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug(f"[LivingLoop] 补回复判断失败（静默跳过）: {e}")
+            return
+        text = str(raw or "").strip()
+        if not text:
+            logger.debug("[LivingLoop] 补回复判断空输出（不回）")
+            return
+        first_line, _, rest = text.partition("\n")
+        head = first_line.strip().upper()
+        if head.startswith("SKIP"):
+            logger.info("[LivingLoop] 醒来补回复判断：不回（睡过的时间就过去了）")
+            return
+        if not (head.startswith("REPLY") or head.startswith("BRIEF")):
+            # 输出形态不合协议：按不回处理（宁可漏回，不发怪话）
+            logger.debug(
+                f"[LivingLoop] 补回复输出形态异常（按不回处理）: {text[:60]}"
+            )
+            return
+        from .share_rewriter import _strip_wrapping_quotes
+
+        reply = _strip_wrapping_quotes(rest.strip())[: self._WAKE_REPLY_MAX_CHARS]
+        if not reply:
+            logger.debug("[LivingLoop] 补回复正文为空（不回）")
+            return
+        # 发送目标：最后一条未回消息的会话（最近的互动落点）
+        session = str(messages[-1].get("session") or "").strip()
+        if not session:
+            logger.debug("[LivingLoop] 未回消息缺会话信息，无法补回复")
+            return
+        mode = "认真回" if head.startswith("REPLY") else "糊弄回"
+        try:
+            sent = await self._sender.send(session, reply)
+        except Exception as e:
+            logger.warning(f"[LivingLoop] 补回复发送失败: {e}")
+            return
+        if not sent:
+            logger.warning("[LivingLoop] 补回复未送达（无匹配平台）")
+            return
+        logger.info(f"[LivingLoop] 醒来补回复已发送（{mode}）：{reply[:50]}")
+        try:
+            await self._write_speech_to_stores(
+                reply,
+                f"#wake-reply:{int(now.timestamp())}",
+                "(睡着错过的消息)",
+                label="醒来补回复",
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug(f"[LivingLoop] 补回复落库失败（不影响发送）: {e}")
+
     @staticmethod
     def _is_bedtime_review(row: Any) -> bool:
         """判断一条记忆是否是"睡前回顾"自身（M5-补丁2 B1）。
@@ -937,6 +1101,20 @@ class LivingLoop:
         except Exception as e:
             logger.warning(f"[LivingLoop] 睡前回顾写入失败: {e}")
 
+    def _style_hint(self, now: datetime) -> str:
+        """A5（M17-补丁1）：风格注入块（梦话等 living 自己的说话共用）。
+
+        库空/关闭/异常一律空串——注入是锦上添花，任何故障都静默跳过，
+        绝不影响说话主链路（红线 1/5）。"""
+        learner = self._style_learner
+        if learner is None:
+            return ""
+        try:
+            return str(learner.inject_block(now) or "")
+        except Exception as e:
+            logger.debug(f"[LivingLoop] 风格提示生成失败（静默跳过）: {e}")
+            return ""
+
     async def _maybe_dream(self, now: datetime) -> None:
         """梦（任务书 B5）：醒来后的低概率彩蛋，任何失败都静默。"""
         if self._dream_llm_call is None:
@@ -969,6 +1147,11 @@ class LivingLoop:
             + "\n\n请说一句你刚才做的梦，80 字以内，第一人称，语气朦胧含糊，"
             "把碎片搅在一起也没关系，梦本来就是不讲道理的。只输出梦话本身。"
         )
+        # M17-补丁1 A5：梦话也带一点学到的语气（低调注入，库空/关闭/异常
+        # 一律空串静默跳过——红线 1/5）
+        style_hint = self._style_hint(now)
+        if style_hint:
+            prompt += "\n" + style_hint
         try:
             text = await self._dream_llm_call(prompt, None)
         except Exception as e:
@@ -1152,6 +1335,18 @@ class LivingLoop:
         await self._write_activity_experience(activity, narration, activity_id)
         await self._gate.note_activity_finished()
         logger.info(f"[LivingLoop] 活动结束 name={activity.name}")
+        # M17-补丁1 A7：风格学习挂活动结束——read/surf 从本轮实际读到的
+        # 内容取样（fetcher 留档，脚本与 agent 两种执行形态都覆盖），
+        # 一次活动最多学 1 条。任何失败只 DEBUG（红线 5）
+        if self._style_learner is not None:
+            try:
+                await self._style_learner.on_activity_end(
+                    activity.name, now, activity_id
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug(f"[LivingLoop] 风格学习异常（不影响活动）: {e}")
 
         # 候选分享（内部过输出闸门）。M7-补丁1 A2：空/纯空白 summary 不进
         # 分享——与 _maybe_share 入口防线（A1）相互独立，双防线

@@ -11,12 +11,21 @@ from __future__ import annotations
 
 import html as html_mod
 import re
+from collections import deque
+from datetime import datetime
 
 import httpx
 
 DEFAULT_TIMEOUT = 15.0
 MAX_BYTES = 2 * 1024 * 1024  # 2MB 响应上限
 MAX_TEXT_CHARS = 20000  # 提取后正文上限，防止单页占用过多 token
+
+# M17-补丁1 A7：最近抓取缓冲——风格学习（style_learning）从"她这轮实际
+# 读到的内容"里取样的通道。为什么放 fetcher 层：脚本模式（read 的
+# ctx.fetcher.fetch）与 agent 模式（fetch_page 工具）最终都汇到
+# WebFetcher.fetch，一处记录两种执行形态统一覆盖，agent 循环零改动。
+RECENT_FETCH_KEEP = 6  # 最近 N 次
+RECENT_TEXT_CHARS = 4000  # 每条正文存档上限（学习材料只需开头一段）
 
 _DEFAULT_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -83,6 +92,7 @@ class WebFetcher:
     ) -> None:
         self._timeout = timeout
         self._max_bytes = max_bytes
+        self._recent: deque[dict] = deque(maxlen=RECENT_FETCH_KEEP)
         self._client: httpx.AsyncClient | None = None
         self._headers = {
             "User-Agent": user_agent,
@@ -133,4 +143,23 @@ class WebFetcher:
         if m:
             title = html_mod.unescape(m.group(1)).strip()
 
-        return {"title": title, "text": extract_text(html), "status": status}
+        text = extract_text(html)
+        # M17-补丁1 A7：留档供风格学习取样（有界，失败不影响抓取本身）
+        try:
+            self._recent.append(
+                {
+                    "url": str(url)[:300],
+                    "title": title,
+                    "text": text[:RECENT_TEXT_CHARS],
+                    "at": datetime.now().isoformat(timespec="seconds"),
+                }
+            )
+        except Exception:
+            pass
+        return {"title": title, "text": text, "status": status}
+
+    def recent_samples(self) -> list[dict]:
+        """最近抓取的正文样本（style_learning 的 sample_getter 挂载点）。
+
+        旧的在前的 deque 反转成"越新越靠前"——学习器优先送检最新的。"""
+        return list(reversed(self._recent))

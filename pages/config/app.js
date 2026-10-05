@@ -12,8 +12,8 @@ const KNOB_ORDER = [
 
 const GROUP_LABELS = {
   autonomy: "能力档位", decision: "决策", output_gate: "输出闸门",
-  initiative: "主动搭话", sleep: "休眠", capabilities: "能力参数",
-  memory: "记忆", model: "模型",
+  initiative: "主动搭话", sleep: "休眠", style_learning: "风格学习",
+  capabilities: "能力参数", memory: "记忆", model: "模型",
 };
 
 /* 任务书 2.2 的危险项清单（advanced 组内，带醒目警告） */
@@ -205,6 +205,9 @@ function renderNovice() {
   // M15-补丁1 F1：新后端键全部配面板入口（铁律 4b），接在睡眠/能力相关卡之后
   grid.appendChild(farewellCard()); // 晚安消息（三档 + 概率滑块）
   grid.appendChild(chatGuardCard()); // 聊天时不睡觉
+  grid.appendChild(wakeRandomCard()); // 随机吵醒（M17-补丁1 C1）
+  grid.appendChild(pendingReplyCard()); // 醒来补回复（M17-补丁1 C2）
+  grid.appendChild(styleLearningCard()); // 风格学习（M17-补丁1 A5）
   grid.appendChild(browserCard()); // 浏览器能力说明 + 实时状态
   grid.appendChild(searchToggleCard()); // 联网搜索开关
   grid.appendChild(agentToolsCard()); // 本体工具开关
@@ -329,6 +332,63 @@ function chatGuardCard() {
     () => sleepValues.standby_blocks_sleep !== false,
     (v) => {
       sleepValues.standby_blocks_sleep = v;
+      setDirty(true);
+    },
+  );
+}
+
+/* 随机吵醒卡：advanced.sleep.wake_random_enabled（M17-补丁1 C1，默认开） */
+function wakeRandomCard() {
+  if (!state.values.advanced.sleep) state.values.advanced.sleep = {};
+  const sleepValues = state.values.advanced.sleep;
+  return optionCard(
+    "随机吵醒",
+    "每次入睡时随机抽定「连发几条能吵醒她」（1-3 条中按睡眠深浅加权：" +
+      "刚入睡偏难叫醒，快天亮时偏容易叫醒），同一次睡觉内不变。" +
+      "关掉则回到固定阈值（默认 3 条）。",
+    [["开", true], ["关", false]],
+    () => sleepValues.wake_random_enabled !== false,
+    (v) => {
+      sleepValues.wake_random_enabled = v;
+      setDirty(true);
+    },
+  );
+}
+
+/* 醒来补回复卡：advanced.sleep.pending_reply_enabled（M17-补丁1 C2，默认关） */
+function pendingReplyCard() {
+  if (!state.values.advanced.sleep) state.values.advanced.sleep = {};
+  const sleepValues = state.values.advanced.sleep;
+  return optionCard(
+    "醒来补回复",
+    "她睡着时你发的消息（没吵醒她的），她醒来后会自己看看要不要回：" +
+      "可能认真回，可能轻描淡写接一句（\"昨晚睡着了，你说的那个我看看哈\"），" +
+      "也可能觉得不用回就不回。默认关，先看效果再决定常开。",
+    [["开", true], ["关", false]],
+    () => sleepValues.pending_reply_enabled === true,
+    (v) => {
+      sleepValues.pending_reply_enabled = v;
+      setDirty(true);
+    },
+  );
+}
+
+/* 风格学习卡：advanced.style_learning.enabled（M17-补丁1 A5，默认关） */
+function styleLearningCard() {
+  if (!state.values.advanced.style_learning) {
+    state.values.advanced.style_learning = {};
+  }
+  const styleValues = state.values.advanced.style_learning;
+  return optionCard(
+    "风格学习",
+    "她在读文章、冲浪的时候，会从真人写的东西里学说话风格——句式、" +
+      "思维方式、待人接物，不只是口癖。学到的味道会在她说话时低调度参考，" +
+      "用得顺的变成习惯，久不用自然淡出。判定像 AI 写的语料绝不学。" +
+      "默认关，先看效果再决定常开（细项在专家组「风格学习」）。",
+    [["开", true], ["关", false]],
+    () => styleValues.enabled === true,
+    (v) => {
+      styleValues.enabled = v;
       setDirty(true);
     },
   );

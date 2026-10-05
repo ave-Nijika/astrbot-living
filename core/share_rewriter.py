@@ -130,12 +130,16 @@ class ShareRewriter:
         persona_getter: Callable[..., Any] | None = None,
         life_extra_getter: Callable[..., Any] | None = None,
         mood: Any = None,
+        style_hint_getter: Callable[[], str] | None = None,
     ) -> None:
         self._llm_call = llm_call  # async (prompt, system_prompt) -> str | None
         self._config_getter = config_getter
         self._persona_getter = persona_getter
         self._life_extra_getter = life_extra_getter
         self._mood = mood
+        # M17-补丁1 A5：风格注入 getter（同步，返回注入块文本；空串=跳过）。
+        # None = 不注入（旧装配/测试零影响）。注入失败由 getter 侧静默兜底
+        self._style_hint_getter = style_hint_getter
 
     # ------------------------------------------------------------------
     def _group(self, name: str) -> dict:
@@ -189,6 +193,15 @@ class ShareRewriter:
                 pass
         if mood_digest:
             parts.append(f"你现在的状态：{mood_digest}")
+        # M17-补丁1 A5：学到的说话语气参考（低调、参考性、不是身份定义；
+        # 空串/异常一律静默跳过——红线 1/5）
+        if self._style_hint_getter is not None:
+            try:
+                style_hint = str(self._style_hint_getter() or "").strip()
+                if style_hint:
+                    parts.append(style_hint)
+            except Exception as e:
+                logger.debug(f"[ShareRewrite] 风格提示读取失败（跳过）: {e}")
         return "\n\n".join(parts) if parts else None
 
     # ------------------------------------------------------------------

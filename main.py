@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -55,6 +56,7 @@ from .core.selfheal import run_identity_selfheal
 from .core.search import BochaSearcher
 from .core.sender import Sender
 from .core.sleep import SleepManager
+from .core.style_learning import StyleLearner
 
 PLUGIN_NAME = "astrbot_plugin_living"
 
@@ -627,6 +629,74 @@ class LivingPlugin(Star):
         return text or None
 
     # ------------------------------------------------------------------
+    # 风格注入（M17-补丁1 A5）：四路说话入口共用的低调用料
+    # ------------------------------------------------------------------
+    def _style_hint_silent(self) -> str:
+        """同步风格注入块 getter（ShareRewriter 挂载点）。
+
+        库空/关闭/异常一律空串——注入是锦上添花，任何故障都静默跳过
+        （红线 1/5），绝不影响分享改写主链路。"""
+        learner = getattr(self, "_style_learner", None)
+        if learner is None:
+            return ""
+        try:
+            return str(learner.inject_block() or "").strip()
+        except Exception as e:
+            logger.debug(f"[{PLUGIN_NAME}] 风格提示生成失败（跳过）: {e}")
+            return ""
+
+    async def _persona_with_style(self) -> str | None:
+        """主动搭话的人格 + 风格注入（M17-补丁1 A5）。
+
+        InitiativeEngine 会把返回值当 persona 截前 500 字（红线 7 不改
+        initiative.py），所以这里先预截人格再接风格块，保证两段都完整
+        进入 system prompt：风格块硬控 120 字（主动搭话是"一句话"场景，
+        提示宜短），人格保底 200 字、上限 500-块长。"""
+        try:
+            persona = await self._persona_prompt()
+        except Exception:
+            persona = None
+        persona = str(persona or "").strip()
+        style = self._style_hint_silent()[:120]
+        if not style:
+            return persona or None
+        budget = max(500 - len(style) - 2, 200)
+        persona = persona[:budget]
+        combined = f"{persona}\n\n{style}" if persona else style
+        return combined or None
+
+    @filter.on_llm_request()
+    async def inject_style_on_llm_request(
+        self, event: AstrMessageEvent, req: Any
+    ) -> None:
+        """正常对话的语气注入（M17-补丁1 A5，living 第一次介入正常对话）。
+
+        红线 6 的三条：
+        - 只追加：注入走 req.extra_user_content_parts 追加型通道，绝不
+          覆盖/重排既有 system_prompt 与 contexts——astrbot_plugin_
+          prompt_preset 也挂本钩子且会整体替换 system_prompt，追加通道
+          与它正交（先替换后追加，两者都生效，T16 验证此场景）；
+        - 不留痕：TextPart.mark_as_temp() 使注入只面向本轮 provider，
+          不写进会话历史存储；
+        - 稳：钩子内任何异常一律吞掉，绝不让主人的正常聊天失败。"""
+        try:
+            learner = getattr(self, "_style_learner", None)
+            if learner is None or not learner.enabled():
+                return
+            hint = str(learner.inject_block() or "").strip()
+            if not hint:
+                return
+            from astrbot.core.agent.message import TextPart
+
+            parts = getattr(req, "extra_user_content_parts", None)
+            if parts is None:
+                return  # 本体形态有变时安全退出（不注入、不报错）
+            parts.append(TextPart(text=hint).mark_as_temp())
+            logger.debug("[living] 已在正常对话注入语气参考（风格学习）")
+        except Exception as e:
+            logger.debug(f"[{PLUGIN_NAME}] 语气注入失败（不影响聊天）: {e}")
+
+    # ------------------------------------------------------------------
     # 自主能力接线（补丁 XIII：档位配置热读 + 浏览器会话复用）
     # ------------------------------------------------------------------
     def _living_workspace(self) -> str:
@@ -955,6 +1025,26 @@ class LivingPlugin(Star):
             # M9-补丁1：主人身份自动认领——owner_id 未手填时派生自管理员
             global_config_getter=lambda: self.context.astrbot_config,
         )
+        # M17-补丁1 C1/C2：重启时若仍在睡，恢复入睡时抽定的吵醒阈值与
+        # 睡眠期未回消息留档（取不到/解析失败静默按默认继续）
+        try:
+            await self.sleep_manager.restore_wake_threshold()
+            await self.sleep_manager.load_pending_messages()
+        except Exception as e:
+            logger.warning(f"[{PLUGIN_NAME}] 睡眠侧状态恢复失败（按默认继续）: {e}")
+        # M17-补丁1 A 组：风格学习引擎——素材库 style_pool.json 在插件
+        # 数据目录，与记忆/图谱/会话存储完全分开（红线 2，不参与记忆召回）；
+        # 学习材料来自 fetcher 的最近抓取留档（read/surf 脚本与 agent 两种
+        # 执行形态统一覆盖，A7）
+        self._style_learner = StyleLearner(
+            config_getter=self._effective_config,
+            llm_call=self._decision_llm_call,
+            pool_path=os.path.join(self._plugin_data_dir(), "style_pool.json"),
+            sample_getter=self.fetcher.recent_samples,
+            search_enabled_getter=lambda: _web_search_enabled(
+                self._effective_config()
+            ),
+        )
         agent_loop = LivingAgentLoop(
             context=self.context,
             config_getter=self._effective_config,
@@ -1009,6 +1099,8 @@ class LivingPlugin(Star):
                     self._preset("life_extra", "") or ""
                 ),
                 mood=self.mood,
+                # M17-补丁1 A5：学到的说话语气参考（同步 getter，空串跳过）
+                style_hint_getter=self._style_hint_silent,
             ),
             bot_identity_getter=self._bot_identity,
             # M13-补丁1 B1：livingmemory 会话管理器动态探测——活动自述写进
@@ -1023,7 +1115,9 @@ class LivingPlugin(Star):
                 llm_call=self._decision_llm_call,
                 mood=self.mood,
                 sender=self.sender,
-                persona_getter=self._persona_prompt,
+                # M17-补丁1 A5：人格 + 风格注入（包装版 persona getter，
+                # initiative.py 本体零改动——红线 7）
+                persona_getter=self._persona_with_style,
                 session_getter=self._initiative_session,
                 contexts_getter=self._initiative_chat_contexts,
                 speech_writer=self._initiative_speech_write,
@@ -1036,6 +1130,8 @@ class LivingPlugin(Star):
             conversation_manager=getattr(self.context, "conversation_manager", None),
             # M15-补丁1 A3：晚安 LLM 档的人格 system prompt（复用主人格读取）
             persona_getter=self._persona_prompt,
+            # M17-补丁1 A 组：风格学习引擎（A7 学习触发 / A5 梦话注入）
+            style_learner=self._style_learner,
         )
         await self.loop.start()
 
@@ -1898,9 +1994,14 @@ class LivingPlugin(Star):
         if self.sleep_manager.last_window_count:
             # 模块级 conf_group（非 self._cfg）：消息监听热路径上的局部
             # mock 对象只带 config 属性，不带完整插件方法
-            threshold = self.sleep_manager._i(
-                conf_group(self.config, "sleep").get("wake_n_messages"), 3
-            )
+            threshold_fn = getattr(self.sleep_manager, "current_wake_threshold", None)
+            if callable(threshold_fn):
+                # M17-补丁1 C1：显示入睡时抽定的阈值（未抽定回落固定值）
+                threshold = threshold_fn()
+            else:
+                threshold = self.sleep_manager._i(
+                    conf_group(self.config, "sleep").get("wake_n_messages"), 3
+                )
             logger.info(
                 f"[Living] 休眠计数 {window_count}/{threshold}"
             )
@@ -1908,6 +2009,16 @@ class LivingPlugin(Star):
             message_str = event.message_str
         except Exception:
             message_str = ""
+        # M17-补丁1 C2：睡眠期收到的消息留档（醒来后由 LLM 一次判断
+        # 回不回）。触发吵醒的那条在上面已 return（她马上正常回应，
+        # 不算"错过"）；记录条件（开关/在睡/命令豁免/有界）在
+        # record_pending_message 内自查，失败只 DEBUG 不影响拦截链路
+        try:
+            recorder = getattr(self.sleep_manager, "record_pending_message", None)
+            if callable(recorder):
+                await recorder(session, message_str, now)
+        except Exception as e:
+            logger.debug(f"[Living] 未回消息留档失败（忽略）: {e}")
         if self.sleep_manager.should_mute_message(now, message_str):
             # 拦截 = 事件不再向后续插件 handler 与 LLM 回复管线传播
             #（scheduler 逐阶段检查 is_stopped）——主人定稿的"真正休息"。

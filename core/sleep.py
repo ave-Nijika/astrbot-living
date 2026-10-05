@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import json
 import random
 from collections import deque
 from datetime import datetime, timedelta, time as dt_time
@@ -22,6 +23,15 @@ from .living_loop import derive_admin_identity
 # 本插件的命令前缀：这些消息永远不拦（任务书 B4 例外）
 # 本插件命令与紧急命令：休眠期拦截永远豁免（任务书 M3 补丁 IX 需求 2-5）
 OWN_COMMAND_KEYWORDS = ("living_wake", "/stop")
+
+# ---------------------------------------------------------------------------
+# M17-补丁1 C2：睡眠期未回消息的持久化键（gate.state 存 JSON）与有界约束
+# ---------------------------------------------------------------------------
+PENDING_MESSAGES_KEY = "sleep_pending_messages"
+WAKE_THRESHOLD_KEY = "wake_threshold"
+PENDING_PER_SESSION_LIMIT = 10  # 每会话最多留最近 10 条
+PENDING_TOTAL_LIMIT = 30  # 全局上限（防多会话刷屏）
+PENDING_TEXT_MAX_CHARS = 200  # 单条留档长度（判断材料够用即可）
 
 
 # ---------------------------------------------------------------------------
@@ -423,6 +433,12 @@ class SleepManager(SleepManagerAutonomous):
         self.last_active_session: str | None = None
         # 最近一次吵醒计数（休眠窗内），供 describe_mute 报进度
         self.last_window_count: int = 0
+        # M17-补丁1 C1：本次睡眠的吵醒阈值（入睡时抽定并落盘；None =
+        # 未抽定——随机关/未入睡/重启未恢复 → 回落固定 wake_n_messages）
+        self._wake_threshold: int | None = None
+        # M17-补丁1 C2：睡眠期未回消息（内存镜像；gate.state 持久化镜像，
+        # 只留最近一次睡眠窗口——每次入睡清空重记）
+        self._pending_messages: list[dict] = []
 
     # ------------------------------------------------------------------
     # 配置
@@ -449,6 +465,106 @@ class SleepManager(SleepManagerAutonomous):
     # ------------------------------------------------------------------
     # 吵醒计数（任务书 B3）
     # ------------------------------------------------------------------
+    # M17-补丁1 C1：随机吵醒阈值——每次入睡时抽定一次并落盘（不是每条
+    # 消息都重抽，否则等于没有阈值），按睡眠阶段加权：
+    #   抽定分布（线性加权离散抽样）：对 v ∈ [min, max]，
+    #     w(v) = (1-t)·(v-min+1) + t·(max-v+1)，t = stage_ratio ∈ [0,1]
+    #   t=0（刚入睡，深睡）→ 权重偏向 max（难叫醒）；t=1（浅睡/快醒）
+    #   → 偏向 min（容易醒）；t=0.5 退化为均匀分布。
+    #   长睡入睡取 t=0（深睡起点），小睡取 t=0.8（短睡近醒）。
+    #   例 min=1/max=3：深睡 P(3)=1/2、P(2)=1/3、P(1)=1/6；浅睡反序。
+    def _wake_cfg(self) -> tuple[bool, int, int, int]:
+        """(random_enabled, fixed, lo, hi)，全部 clamp 到合法区间。"""
+        cfg = self._group("sleep")
+        fixed = max(self._i(cfg.get("wake_n_messages"), 3), 1)
+        enabled = cfg.get("wake_random_enabled", True)
+        if isinstance(enabled, bool):
+            random_enabled = enabled
+        else:
+            random_enabled = str(enabled).strip().lower() not in (
+                "false", "0", "off", "no",
+            )
+        lo = max(self._i(cfg.get("wake_messages_min"), 1), 1)
+        hi = max(self._i(cfg.get("wake_messages_max"), 3), lo)
+        return random_enabled, fixed, lo, hi
+
+    def draw_wake_threshold(self, stage_ratio: float = 0.0) -> int:
+        """按睡眠阶段加权抽一个吵醒阈值（纯计算，不落状态）。"""
+        random_enabled, fixed, lo, hi = self._wake_cfg()
+        if not random_enabled:
+            return fixed
+        if hi == lo:
+            return hi
+        t = max(0.0, min(1.0, float(stage_ratio)))
+        weights = [
+            (1.0 - t) * (v - lo + 1) + t * (hi - v + 1)
+            for v in range(lo, hi + 1)
+        ]
+        total = sum(weights)
+        if total <= 0:
+            return fixed
+        roll = self._rng_float() * total
+        acc = 0.0
+        for offset, w in enumerate(weights):
+            acc += w
+            if roll < acc:
+                return lo + offset
+        return hi
+
+    async def arm_wake_threshold(
+        self, kind: str = "long", now: datetime | None = None
+    ) -> int | None:
+        """入睡时抽定本次睡眠的吵醒阈值并落盘（C1）。
+
+        同时清空上一睡眠窗口的未回消息（C2"只留最近一次睡眠窗口"）。
+        随机关 → 阈值置 None（回落固定 wake_n_messages，T11 兼容）。"""
+        now = now or self._now()
+        random_enabled, _fixed, lo, hi = self._wake_cfg()
+        if random_enabled:
+            # 长睡=深睡起点（t=0，偏难叫醒）；小睡=短时浅睡（t=0.8，偏易醒）
+            stage_ratio = 0.8 if kind == "nap" else 0.0
+            self._wake_threshold = self.draw_wake_threshold(stage_ratio)
+            logger.info(
+                f"[Sleep] 本次{'小睡' if kind == 'nap' else '长睡'}抽定吵醒"
+                f"阈值 {self._wake_threshold} 条（范围 {lo}-{hi}）"
+            )
+        else:
+            self._wake_threshold = None
+        if self._gate is not None:
+            try:
+                await self._gate.state_set(
+                    WAKE_THRESHOLD_KEY,
+                    "" if self._wake_threshold is None else str(self._wake_threshold),
+                )
+            except Exception as e:
+                logger.debug(f"[Sleep] 吵醒阈值落盘失败（不影响入睡）: {e}")
+        await self.clear_pending_messages()
+        return self._wake_threshold
+
+    async def restore_wake_threshold(self) -> None:
+        """重启恢复（C1"落盘"语义的另一半）：重启时若仍在睡，阈值沿
+        用入睡时抽定的值；取不到/解析失败回落 None（固定阈值兜底）。"""
+        if self._gate is None:
+            return
+        try:
+            raw = await self._gate.state_get(WAKE_THRESHOLD_KEY)
+        except Exception:
+            return
+        try:
+            self._wake_threshold = max(int(str(raw).strip()), 1) if raw else None
+        except (TypeError, ValueError):
+            self._wake_threshold = None
+        if self._wake_threshold is not None:
+            logger.info(
+                f"[Sleep] 恢复入睡时抽定的吵醒阈值 {self._wake_threshold}"
+            )
+
+    def current_wake_threshold(self) -> int:
+        """当前生效阈值：入睡时抽定的值优先，未抽定回落固定值。"""
+        if self._wake_threshold is not None:
+            return self._wake_threshold
+        return max(self._i(self._group("sleep").get("wake_n_messages"), 3), 1)
+
     def counts_toward_wake(self, sender_id: str | None) -> bool:
         """这条消息是否计入吵醒（wake_source 配置：all / owner_only）。
 
@@ -497,7 +613,9 @@ class SleepManager(SleepManagerAutonomous):
         window_minutes = max(
             self._f(self._group("sleep").get("wake_window_minutes"), 10), 1.0
         )
-        threshold = max(self._i(self._group("sleep").get("wake_n_messages"), 3), 1)
+        # M17-补丁1 C1：阈值用入睡时抽定的值（未抽定回落固定值）——
+        # 同一次睡眠内每条消息面对的是同一个阈值，不重抽
+        threshold = self.current_wake_threshold()
 
         if not self._gate.is_asleep_now(now):
             return False, len(self._stamps)
@@ -533,6 +651,98 @@ class SleepManager(SleepManagerAutonomous):
         self._stamps.clear()
         self._last_wake_trigger = None
         self.last_window_count = 0
+
+    # ------------------------------------------------------------------
+    # 睡眠期未回消息（M17-补丁1 C2）
+    # ------------------------------------------------------------------
+    async def record_pending_message(
+        self,
+        session: str | None,
+        text: str | None,
+        now: datetime | None = None,
+    ) -> bool:
+        """她在睡觉时收到、没回的消息 → 留档，醒来后由 LLM 判断回不回。
+
+        记录条件全部满足才记：功能开着 + 此刻确实在睡 + 非本插件命令 +
+        文本非空。有界：每会话最近 10 条、全局 30 条（旧的先丢）。持久化
+        经 gate.state（JSON），跨重启后醒来仍能判断；任何失败只 DEBUG。
+        """
+        now = now or self._now()
+        if not bool(self._group("sleep").get("pending_reply_enabled", False)):
+            return False
+        if not self._gate.is_asleep_now(now):
+            return False
+        body = str(text or "").strip()
+        if not body or any(k in body for k in OWN_COMMAND_KEYWORDS):
+            return False
+        entry = {
+            "session": str(session or ""),
+            "text": body[:PENDING_TEXT_MAX_CHARS],
+            "at": now.isoformat(timespec="seconds"),
+        }
+        self._pending_messages.append(entry)
+        # 有界：全局上限先裁旧的；再按会话各留最近 N 条
+        if len(self._pending_messages) > PENDING_TOTAL_LIMIT:
+            self._pending_messages = self._pending_messages[-PENDING_TOTAL_LIMIT:]
+        by_session: dict[str, list[dict]] = {}
+        for item in self._pending_messages:
+            by_session.setdefault(str(item.get("session") or ""), []).append(item)
+        trimmed: list[dict] = []
+        for _session, items in by_session.items():
+            trimmed.extend(items[-PENDING_PER_SESSION_LIMIT:])
+        # 保持时间序（trimmed 重建会打乱插入序——按 at 排回）
+        trimmed.sort(key=lambda item: str(item.get("at") or ""))
+        self._pending_messages = trimmed
+        self._dirty = True
+        await self._persist_pending()
+        logger.info(
+            f"[Sleep] 睡眠期未回消息已留档（现 {len(self._pending_messages)} 条，"
+            f"醒来后再决定回不回）"
+        )
+        return True
+
+    async def take_pending_messages(self) -> list[dict]:
+        """取出全部未回消息并清空（自然醒结算消费点；取出即清——
+        一次睡眠窗口只结算一次，无论判断结果如何都不重复打扰）。"""
+        messages = list(self._pending_messages)
+        self._pending_messages = []
+        self._dirty = True
+        await self._persist_pending()
+        return messages
+
+    async def clear_pending_messages(self) -> None:
+        """清空未回消息（新睡眠窗口开始时；"只留最近一次睡眠窗口"）。"""
+        if not self._pending_messages:
+            return
+        self._pending_messages = []
+        self._dirty = True
+        await self._persist_pending()
+
+    async def _persist_pending(self) -> None:
+        if self._gate is None or not self._dirty:
+            return
+        try:
+            await self._gate.state_set(
+                PENDING_MESSAGES_KEY,
+                json.dumps(self._pending_messages, ensure_ascii=False),
+            )
+            self._dirty = False
+        except Exception as e:
+            logger.debug(f"[Sleep] 未回消息落盘失败（不影响消息链路）: {e}")
+
+    async def load_pending_messages(self) -> None:
+        """重启恢复：睡着的这段时间里留档的消息从 gate.state 读回。"""
+        if self._gate is None:
+            return
+        try:
+            raw = await self._gate.state_get(PENDING_MESSAGES_KEY)
+            data = json.loads(raw) if raw else []
+        except Exception:
+            return
+        if isinstance(data, list):
+            self._pending_messages = [
+                item for item in data if isinstance(item, dict)
+            ]
 
     # ------------------------------------------------------------------
     # 清醒待机（任务书 M3 补丁 II 一）
@@ -586,7 +796,9 @@ class SleepManager(SleepManagerAutonomous):
         window_minutes = max(
             self._f(self._group("sleep").get("wake_window_minutes"), 10), 1.0
         )
-        threshold = max(self._i(self._group("sleep").get("wake_n_messages"), 3), 1)
+        # M17-补丁1 C1：阈值用入睡时抽定的值（未抽定回落固定值）——
+        # 同一次睡眠内每条消息面对的是同一个阈值，不重抽
+        threshold = self.current_wake_threshold()
         count = self.last_window_count if count is None else count
         remaining = max(threshold - count, 0)
         return (
