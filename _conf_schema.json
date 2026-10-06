@@ -195,7 +195,7 @@
                     },
                     "recent_topic_penalty": {
                         "description": "近期话题重复惩罚表",
-                        "hint": "窗口内出现 1/2/>=3 次的主题权重分别乘对应系数——去偏执循环的执行层闸。",
+                        "hint": "窗口内出现 1/2/>=3 次的主题权重分别乘对应系数——去偏执循环的执行层闸。 格式：JSON 数组，如 [0.5, 0.3, 0.15]——依次是窗口内出现 1 次/2 次/≥3 次的主题的权重乘数，取值 0~1。",
                         "type": "list",
                         "default": [
                             0.5,
@@ -297,6 +297,62 @@
                         "type": "bool",
                         "default": true,
                         "invisible": true
+                    },
+                    "prompt_decide_params_game": {
+                        "description": "选题提示词：小游戏参数（专家）",
+                        "hint": "hybrid/llm 档选中小游戏活动时给判断模型的 prompt（选个游戏风格）。占位符：{mood_block}=心境摘要。改坏可整段清空恢复默认。",
+                        "type": "text",
+                        "default": "你现在打算写个小游戏自己玩。你现在的状态：{mood_block}。\n顺着状态选一个具体的小游戏风格。只输出 JSON，格式：{\"style\": \"…\"}",
+                        "invisible": true
+                    },
+                    "prompt_decide_params_browse": {
+                        "description": "选题提示词：冲浪/读文章参数（专家）",
+                        "hint": "hybrid/llm 档选中 surf 或 read 时给判断模型的 prompt（选个主题）。占位符：{action}=上网冲浪（搜索）/读一篇文章；{mood_block}=心境摘要；{recent_line}=近期方向提醒（含换行，可为空）；{merge_line}=话题归并指令（可为空）；{json_spec}=输出格式说明。",
+                        "type": "text",
+                        "default": "你现在打算{action}。你现在的状态：{mood_block}。\n{recent_line}顺着状态选一个具体、有生活气息的主题词，选一个你最近没碰过的方向，越新鲜越好。\n{merge_line}{json_spec}",
+                        "invisible": true
+                    },
+                    "prompt_decide_llm_free": {
+                        "description": "选题提示词：全 LLM 决策·自由局（专家）",
+                        "hint": "decision_mode=llm 且掷中自由局配额时的选题 prompt（撤除兴趣牵引）。占位符：{mood_block}=心境摘要（自由局已切兴趣行）；{memory_block}=近期记忆清单；{recent_section}=近期话题段（首尾含换行，可为空）；{activity_lines}=可选活动清单；{exploration_line}=探索强制指令（可为空）；{merge_line}=话题归并指令（可为空）；{json_spec}=输出格式说明。",
+                        "type": "text",
+                        "default": "现在是你的独处时间，没有人在找你，可以自己决定干点什么。\n\n你现在的状态：{mood_block}\n\n最近记得的事：\n{memory_block}\n{recent_section}\n可以做的活动：\n{activity_lines}\n\n{exploration_line}请选一个你现在最想做的活动，并给它合适参数（topic 为主题词，style 为小游戏风格，peek 和 reminisce 不需要参数）。这次凭当下的好奇心自由发挥，不用考虑平时的兴趣方向。\n{merge_line}{json_spec}",
+                        "invisible": true
+                    },
+                    "prompt_decide_llm_interest": {
+                        "description": "选题提示词：全 LLM 决策·兴趣局（专家）",
+                        "hint": "decision_mode=llm 且兴趣局时的选题 prompt（对照基线）。占位符同自由局，但 {mood_block} 是完整心境摘要（含兴趣行）。",
+                        "type": "text",
+                        "default": "现在是你的独处时间，没有人在找你，可以自己决定干点什么。\n\n你现在的状态：{mood_block}\n\n最近记得的事：\n{memory_block}\n{recent_section}\n可以做的活动：\n{activity_lines}\n\n{exploration_line}请选一个你现在最想做的活动，并给它合适参数（topic 为主题词，style 为小游戏风格，peek 和 reminisce 不需要参数）。如果上面列了你最近反复折腾的话题，这次避开它们。\n{merge_line}{json_spec}",
+                        "invisible": true
+                    },
+                    "prompt_intent_surf": {
+                        "description": "活动意图：上网冲浪（专家）",
+                        "hint": "surf 活动 agent 模式给执行模型的意图说明。占位符：{topic_line}=主题方向（决策参数，可为空）；{avoid_line}=近期话题避开指令（可为空）。",
+                        "type": "text",
+                        "default": "你现在打算上网冲浪。{topic_line}{avoid_line}用 web_search 搜一搜，挑一两条结果看看，最后用几句话汇报你看到了什么、有什么想法。",
+                        "invisible": true
+                    },
+                    "prompt_intent_read": {
+                        "description": "活动意图：读文章（专家）",
+                        "hint": "read 活动 agent 模式的意图说明。占位符：{topic_line}=主题方向（可为空）；{avoid_line}=近期话题避开指令（可为空）。",
+                        "type": "text",
+                        "default": "你现在打算读一篇文章。{topic_line}{avoid_line}用 web_search 搜索，挑一条你最想读的，用 fetch_page 认真读完，然后用自己的话总结要点，再说一点你的感想。",
+                        "invisible": true
+                    },
+                    "prompt_intent_game": {
+                        "description": "活动意图：写小游戏（专家）",
+                        "hint": "game 活动 agent 模式的意图说明。占位符：{style_line}=风格想法（可为空）。",
+                        "type": "text",
+                        "default": "你现在打算写个小游戏自己玩。{style_line}用 run_python 现场写一个秒级能跑完的小游戏（只能用 random/math/time/datetime/json/re/itertools/collections，记得 print 出结果），跑一跑，说说结果和你的心得。",
+                        "invisible": true
+                    },
+                    "prompt_intent_free": {
+                        "description": "活动意图：自由活动（专家）",
+                        "hint": "free 活动 agent 模式的意图说明。占位符：{extra}=方向偏好（可为空，自带括号）；{tools_line}=当前可用工具清单；{closing}=收尾指令（随工具有无切换）。",
+                        "type": "text",
+                        "default": "现在是完全的自由活动时间，{extra}。你可以使用这些工具：{tools_line}。{closing}",
+                        "invisible": true
                     }
                 },
                 "invisible": true
@@ -394,6 +450,20 @@
                         "type": "string",
                         "default": "random_miss,open_topic",
                         "invisible": true
+                    },
+                    "prompt_open_topic": {
+                        "description": "话题提取提示词（专家）",
+                        "hint": "open_topic 来源从最近聊天里挑'还没聊完的话题'用的 prompt。占位符：{context_block}=聊天记录节选（每行一条，只含角色与内容）。",
+                        "type": "text",
+                        "default": "下面是你和主人最近的聊天记录（节选）：\n{context_block}\n\n从中找一个\"可以自然接上、继续聊下去\"的话题，用一句短语概括（20 字以内）。\n要求：必须是还没聊完的话题；不能是需要主人回答的追问；不要重复已经聊完了的话题。\n如果没有合适的话题，只输出 NONE。",
+                        "invisible": true
+                    },
+                    "prompt_line": {
+                        "description": "搭话台词生成提示词（专家）",
+                        "hint": "主动搭话台词的生成 prompt。占位符：{now_text}=当前时间（X月X日 HH:MM）；{material}=念头事由；{skip_rule}=终审自查指令（final_review_enabled 控制，可为空）。",
+                        "type": "text",
+                        "default": "当前时间：{now_text}。\n{material}\n\n写一句你主动发给主人的话。要求：\n- 用你自己的口吻，30 字以内\n- 这是主动搭话，不是回答他：不要\"你说\"\"发过来\"这类回应式措辞，不要问主人要任何东西，不要催促\n- 像朋友间随口聊天：不要标题、列表、Markdown、链接，只输出这句话本身{skip_rule}",
+                        "invisible": true
                     }
                 },
                 "invisible": true
@@ -437,7 +507,7 @@
                     },
                     "weights": {
                         "description": "睡意权重",
-                        "hint": "energy/debt/circadian 三项加权。",
+                        "hint": "energy/debt/circadian 三项加权。 格式：JSON 对象，如 {\"energy\": 1.0, \"debt\": 0.8, \"circadian\": 0.6}——energy=精力、debt=睡眠债、circadian=昼夜节律三项的加权。",
                         "type": "object",
                         "items": {
                             "energy": {
@@ -645,7 +715,7 @@
                     },
                     "schedule_trigger_words": {
                         "description": "约定触发词表",
-                        "hint": "消息命中任一词才启动约定提取（本地预筛，零 LLM 成本）。",
+                        "hint": "消息命中任一词才启动约定提取（本地预筛，零 LLM 成本）。 填写格式：一行一个词。",
                         "type": "list",
                         "default": [
                             "起床",
@@ -687,6 +757,27 @@
                         "type": "bool",
                         "default": false,
                         "invisible": true
+                    },
+                    "prompt_farewell": {
+                        "description": "晚安生成提示词（专家）",
+                        "hint": "farewell_mode=llm 时的晚安 prompt（她自行斟酌说不说）。占位符：{now_text}=当前时间（YYYY-MM-DD HH:MM）；{mood_digest}=心境摘要；{chat_block}=当天聊天回顾段。",
+                        "type": "text",
+                        "default": "现在是 {now_text}，你准备去睡了。你现在的状态：{mood_digest}。\n\n{chat_block}\n\n考虑一下今晚要不要跟他道声晚安：如果今天聊得开心、被关心，就自然地道声晚安；如果今天有不愉快、你还在气头上，可以不说；如果你想缓和关系，也可以借这句晚安说点什么。像人一样自己斟酌，不是每次都非说不可。\n如果决定不说，只输出 SKIP；决定说就只输出晚安那句话本身（一两句、口语化，不要任何前缀和引号）。",
+                        "invisible": true
+                    },
+                    "prompt_wake_reply": {
+                        "description": "醒来补回复提示词（专家）",
+                        "hint": "pending_reply_enabled 开启后，睡醒对睡眠期消息的回/不回判断 prompt。占位符：{messages_block}=睡眠期消息清单；{sleep_hours}=睡眠时长；{now_text}=当前时间；{mood_section}=心境段（可为空）。输出协议（SKIP/REPLY/BRIEF）是代码解析依赖的，改协议措辞会导致判读失效。",
+                        "type": "text",
+                        "default": "你刚睡醒。你睡着的时候收到了这些消息（当时你在睡，没回）：\n{messages_block}\n\n你睡了 {sleep_hours} 个小时，现在是 {now_text}。{mood_section}\n\n想想现在要不要回、怎么回：\n- 如果已经不用回了（话题早过去了/只是随口一说/现在突然回反而奇怪）→ 只输出 SKIP\n- 如果值得正经回应 → 第一行写 REPLY，第二行开始写你要发的话\n- 如果轻轻带一句就好 → 第一行写 BRIEF，第二行开始写你要发的话（一句轻描淡写的，比如\"昨晚睡着了，你说的那个我看看哈\"）\n用你自己的口吻，像刚睡醒看到手机消息那样自然。只输出上述内容之一。",
+                        "invisible": true
+                    },
+                    "prompt_dream": {
+                        "description": "梦话生成提示词（专家）",
+                        "hint": "醒来低概率说梦话的 prompt。占位符：{fragments_block}=记忆碎片清单；{style_section}=风格学习语气参考（可为空）。",
+                        "type": "text",
+                        "default": "你刚从睡梦中醒来，还带着睡意。下面是你最近的记忆碎片：\n{fragments_block}\n\n请说一句你刚才做的梦，80 字以内，第一人称，语气朦胧含糊，把碎片搅在一起也没关系，梦本来就是不讲道理的。只输出梦话本身。{style_section}",
+                        "invisible": true
                     }
                 },
                 "invisible": true
@@ -727,7 +818,7 @@
                     },
                     "source_weights": {
                         "description": "来源权重",
-                        "hint": "dialogue=实战对话（评论区、回复串，最能学到跟人交流），article=单作者文章。权重越高越容易被取用。",
+                        "hint": "dialogue=实战对话（评论区、回复串，最能学到跟人交流），article=单作者文章。权重越高越容易被取用。 格式：JSON 对象，只有 dialogue 与 article 两个键，如 {\"dialogue\": 1.0, \"article\": 0.5}，取值 0~2。",
                         "type": "object",
                         "items": {
                             "dialogue": {
@@ -741,6 +832,13 @@
                                 "default": 0.5
                             }
                         }
+                    },
+                    "prompt_distill": {
+                        "description": "风格提炼提示词（专家）",
+                        "hint": "从读到的文本一次完成 AI 判定与六维提炼的 prompt。占位符：{source_note}=来源备注（空时代码兜底'网页'）；{material}=学习材料正文。输出 JSON 协议（kind/source/dims 六键）是解析依赖的，别改结构。",
+                        "type": "text",
+                        "default": "下面是你昨天在网上读到的文本片段（来源备注：{source_note}）。请完成两件事：\n\n一、判断它更可能是【人写的】还是【AI 生成的】。判断依据：\n- AI 特征：结构工整对称、排比铺陈、\"首先/其次/最后\"、无口语碎语、情绪平铺、无具体到细节的个人经历、套话（\"值得注意的是\"\"让我们一起\"\"希望这对你有帮助\"）、标点规范到不像真人、段落长度均匀\n- 人味特征：口语与短句跳跃、错别字/口误/语气词、情绪起伏、跑题与打断、具体生活细节（时间地点人物）、自嘲与黑话\n\n二、只有判定为\"人写的\"才做：从中提炼值得学习的说话风格。六个维度都要看一遍（没有的给空串），其中【思维方式】与【待人接物】是重点——不要只盯着用词，要看这个人怎么想问题、怎么跟人打交道：\n- wording：用词口癖（高频词/语气词）\n- syntax：句式习惯\n- thinking：思维方式（先看什么、怎么得出结论）\n- emotion_style：情绪表达方式\n- interaction：待人接物（怎么接话、怎么打岔、怎么表达不同意）\n- avoid：反面特征（这类文本里不出现的）\n\nsource 字段：dialogue=多人在互相说话（评论区、回复串、问答往来）；article=单作者的长文。拿不准按 article。\n\n严格输出一个 JSON 对象，不要输出任何其他文字：\n{\"kind\": \"human\", \"source\": \"dialogue\", \"dims\": {\"wording\": \"\", \"syntax\": \"\", \"thinking\": \"\", \"emotion_style\": \"\", \"interaction\": \"\", \"avoid\": \"\"}}\nkind 只能是 human / ai / uncertain；kind 是 ai 或 uncertain 时 dims 给空对象。\n\n文本片段：\n{material}",
+                        "invisible": true
                     }
                 }
             },
@@ -829,6 +927,105 @@
                     }
                 },
                 "invisible": true
+            },
+            "judge": {
+                "description": "判断模型（小模型辅助：输入建议 + 输出检查，对抗输出惯性）",
+                "type": "object",
+                "items": {
+                    "mode": {
+                        "description": "判断模型档位",
+                        "hint": "off=关闭（默认，零调用零注入零行为变化）；local=本地小模型推理（尚未实现，选中仅占位，不工作）；api=云端 API（用已配置的provider，建议选个便宜快速的小模型）。",
+                        "type": "string",
+                        "options": [
+                            "off",
+                            "local",
+                            "api"
+                        ],
+                        "default": "off",
+                        "invisible": true
+                    },
+                    "provider_id": {
+                        "description": "判断模型 provider id",
+                        "hint": "api 档使用的 provider（面板用下拉选择；此处也可手填）。留空或填了不存在的 id = 本轮不判断（记 WARNING，不影响聊天）。",
+                        "type": "string",
+                        "default": "",
+                        "invisible": true
+                    },
+                    "local_model_path": {
+                        "description": "本地模型路径（预留）",
+                        "hint": "local 档预留键：本地权重文件路径。本地推理尚未实现，本键暂不生效。",
+                        "type": "string",
+                        "default": "",
+                        "invisible": true
+                    },
+                    "local_backend": {
+                        "description": "本地推理后端（预留）",
+                        "hint": "local 档预留键：推理后端类型（如 llama.cpp / ollama）。本地推理尚未实现，本键暂不生效。",
+                        "type": "string",
+                        "default": "",
+                        "invisible": true
+                    },
+                    "context_messages": {
+                        "description": "输入判断携带的上文条数",
+                        "hint": "判断'这条消息该用什么模式回'时附带的最近聊天条数（0-12，默认 6——五到十条聊天记录就够）。",
+                        "type": "int",
+                        "default": 6,
+                        "invisible": true
+                    },
+                    "min_interval_seconds": {
+                        "description": "输入判断最小间隔（秒）",
+                        "hint": "两次输入判断的最小间隔，间隔内的消息直接跳过判断（防刷屏式连环消息每条都烧一次判断）。默认 20。",
+                        "type": "int",
+                        "default": 20,
+                        "invisible": true
+                    },
+                    "timeout_seconds": {
+                        "description": "判断调用超时（秒）",
+                        "hint": "输入/输出判断的单次调用超时。超时按'本轮不判断'处理，主回复照常走。默认 6——判断模型应该又小又快，超过 6 秒不如不判。",
+                        "type": "int",
+                        "default": 6,
+                        "invisible": true
+                    },
+                    "output_action": {
+                        "description": "输出检查动作",
+                        "hint": "log_only=只记录不干预（默认，先收集几天数据看判得准不准）；rewrite=允许打回重写一次（最多 1 次、有超时、失败放行原回复，只做轻量修正不改写整条）。",
+                        "type": "string",
+                        "options": [
+                            "log_only",
+                            "rewrite"
+                        ],
+                        "default": "log_only",
+                        "invisible": true
+                    },
+                    "record_limit": {
+                        "description": "判断记录保留条数",
+                        "hint": "最近 N 条判断结果（输入摘要/判断输出/是否注入/是否打回）供面板查看，超出自动淘汰最旧的。默认 50。",
+                        "type": "int",
+                        "default": 50,
+                        "invisible": true
+                    },
+                    "prompt_input": {
+                        "description": "输入判断提示词",
+                        "hint": "对主人新消息做'该用什么模式回'判断的 prompt。要求输出 JSON：{\"mode\": \"work|chat\", \"length\": \"short|normal|long\", \"tone\": \"plain|warm|playful\", \"note\": \"一句话提醒\"}。note 只允许提醒语气（如'这条可以短一点答'），不得出现具体措辞指令——小模型只给建议，不指挥输出。",
+                        "type": "text",
+                        "default": "你是聊天助手的幕后小助手，负责判断主人刚发来的这条消息适合用什么方式回应。\n\n最近聊天（旧→新）：\n{context_block}\n\n主人刚发的消息：{message_text}\n\n请只输出一个 JSON 对象，不要输出任何其他文字：\n{\"mode\": \"work|chat\", \"length\": \"short|normal|long\", \"tone\": \"plain|warm|playful\", \"note\": \"≤40字的一句话提醒\"}\n字段含义：mode=这条消息的性质（work=要办事/问信息，chat=闲聊）；length=合适回应长度（short=几个字到一句话，normal=两三句，long=可以展开聊）；tone=合适语气；note=给回复模型的提醒，只允许提醒语气（例如'这条可以短一点答'），禁止指定具体措辞。判断不了就全给中性值（chat/normal/plain），note 给空串。",
+                        "invisible": true
+                    },
+                    "inject_template": {
+                        "description": "输入判断注入模板",
+                        "hint": "把判断结果拼成注入块的模板（追加到请求末尾，用完即弃，不进记忆）。占位符：{mode}/{length}/{tone}=判断结果；{note}=提醒语（空串则该位置自然消失）。",
+                        "type": "text",
+                        "default": "（内部提醒，主人和其他人都看不到这段：回复前先参考这条消息的判断建议——消息性质：{mode}，建议长度：{length}，建议语气：{tone}。{note}这是参考建议，按你自己自然的表达来。）",
+                        "invisible": true
+                    },
+                    "prompt_output": {
+                        "description": "输出检查提示词",
+                        "hint": "聊天模型回复后做质量检查的 prompt。要求输出 JSON：{\"ok\": true} 或 {\"ok\": false, \"note\": \"问题一句话\", \"fixed\": \"轻量修正后的全文\"}。fixed 只允许轻量修正（删重复句/删残缺尾句/收紧超长），禁止改写内容或添加新内容。",
+                        "type": "text",
+                        "default": "你是聊天助手的幕后质检小助手。下面是助手刚发出的回复，请检查它有没有明显的输出惯性毛病。\n\n最近聊天（旧→新）：\n{context_block}\n\n助手刚发的回复：\n{reply_text}\n\n检查点：是不是明显比平时啰嗦（同样的意思车轱辘话说好几遍）；是不是把闲聊回成了公文（列表/标题/汇报腔）；结尾是否残缺（话说一半）；是否重复了上一条回复里刚说过的话。\n\n只输出一个 JSON 对象，不要输出任何其他文字：\n{\"ok\": true} 或 {\"ok\": false, \"note\": \"问题一句话\", \"fixed\": \"轻量修正后的全文\"}\nfixed 的规则：只做轻量修正（删掉重复句/残缺尾句，收紧啰嗦段），保持原回复的语气与内容，禁止改写内容、禁止添加新内容、长度不得超过原文。没有问题就只给 {\"ok\": true}。",
+                        "invisible": true
+                    }
+                }
             }
         }
     }

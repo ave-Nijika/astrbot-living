@@ -162,6 +162,71 @@ main { padding: 18px 20px 60px; max-width: 1080px; margin: 0 auto; }
   font-size: 11px; padding: 0 8px; border-radius: 10px; margin-right: 6px;
 }
 
+/* ---------- M19-补丁1：F 组新控件 + 判断模型新手卡 ---------- */
+.key-control select,
+.enum-select {
+  width: 100%; padding: 7px 9px; border-radius: 7px;
+  border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
+  font-family: inherit; font-size: 13px;
+}
+.key-control select option { background: var(--panel-2); color: var(--text); }
+
+/* F2：agent_activities 多选（6 活动带说明，勾选即存数组） */
+.multi-choices { display: flex; flex-direction: column; gap: 5px; }
+.multi-choice {
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  font-size: 12px; color: var(--text); background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 7px; padding: 6px 9px;
+}
+.multi-choice:hover { border-color: var(--accent); }
+.multi-choice input { accent-color: var(--accent); }
+
+/* F2：fallback_chain 多选 + 顺序编辑器（顺序 = 尝试顺序） */
+.fallback-editor { display: flex; flex-direction: column; gap: 6px; }
+.fallback-row {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 7px; padding: 4px 8px;
+}
+.fallback-row .fallback-name { flex: 1; font-size: 12px; word-break: break-all; }
+.fallback-row button {
+  border: 1px solid var(--border); background: transparent; color: var(--text);
+  border-radius: 5px; cursor: pointer; padding: 2px 8px; font-size: 12px;
+}
+.fallback-row button:hover { border-color: var(--accent); color: var(--accent); }
+.fallback-row button:disabled { opacity: 0.35; cursor: default; }
+.fallback-row button:disabled:hover { border-color: var(--border); color: var(--text); }
+
+/* F3：source_weights 两个固定键的数字输入 */
+.weight-fields { display: flex; flex-direction: column; gap: 6px; }
+.weight-field {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  font-size: 12px; color: var(--muted);
+}
+.weight-field input {
+  width: 90px; padding: 6px 8px; border-radius: 7px;
+  border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
+  font-family: inherit; font-size: 13px;
+}
+
+/* 判断模型新手卡（A5/E3/E1） */
+.judge-card { border-color: var(--accent-soft); }
+.judge-card select { margin-bottom: 8px; }
+.judge-local-note { color: #d8b25a; }
+.judge-provider-wrap { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.judge-provider-wrap .hint { margin: 0; flex-shrink: 0; }
+.judge-status { margin-top: 6px; }
+.judge-records { margin-top: 8px; border-top: 1px dashed var(--border); padding-top: 8px; }
+.judge-record-line {
+  color: var(--muted); font-size: 11px; line-height: 1.6; margin: 2px 0;
+  word-break: break-all;
+}
+.link-button {
+  border: none; background: transparent; color: var(--accent);
+  cursor: pointer; font-size: 12px; padding: 2px 0; text-align: left;
+}
+.link-button:hover { text-decoration: underline; }
+
 /* ---------- 心境与兴趣（M9-补丁1 B5：专家视图专属） ---------- */
 #mood-section { margin-top: 10px; }
 .mood-drawer .drawer-body { padding: 10px 16px 14px; }

@@ -38,6 +38,7 @@ from .core.activities import web_search_enabled as _web_search_enabled
 from .core.fetcher import WebFetcher
 from .core.ghost_event import GHOST_PLATFORM_ID, build_ghost_event
 from .core.initiative import InitiativeEngine
+from .core.judge import OutputJudge
 from .core.lazy_memory import LazyMemory
 from .core.living_loop import LivingLoop
 from .core.living_state import LivingGate
@@ -129,6 +130,10 @@ class LivingPlugin(Star):
         self._self_identity: dict | None = None
         # M9-补丁3：存量身份回填后台任务（引用存实例防 GC，并发去重）
         self._backfill_task: asyncio.Task | None = None
+        # M19-补丁1：判断模型引擎（构造轻量，initialize 装配）；输出侧
+        # log_only 的后台检查任务引用集合（防 GC）
+        self._judge: OutputJudge | None = None
+        self._judge_tasks: set[asyncio.Task] = set()
 
         logger.info(f"[{PLUGIN_NAME}] M3 加载完成（心境+休眠+agent 循环）")
 
@@ -306,6 +311,225 @@ class LivingPlugin(Star):
             logger.debug(f"[LivingLoop] 使用 provider: {provider_id}")
             return text
         return None
+
+    # ------------------------------------------------------------------
+    # 判断模型（M19-补丁1 A/B/C/E 组）
+    # ------------------------------------------------------------------
+    async def _judge_llm_call(
+        self, prompt: str, system_prompt: str | None
+    ) -> str | None:
+        """判断模型的 LLM 调用：固定走 judge.provider_id（A4，不与决策链
+        混用——判断模型应该又小又快，跟决策模型不是一个东西）。provider
+        未选/不存在 → 记 WARNING（60s 节流防刷屏）并返回 None，按"本轮
+        不判断"处理——不得报错、不得阻断聊天。"""
+        try:
+            pid = str(conf_group(self._effective_config(), "judge").get("provider_id") or "").strip()
+        except Exception:
+            pid = ""
+        if not pid:
+            self._judge_warn_throttled("provider 未配置")
+            return None
+        try:
+            resp = await self.context.llm_generate(
+                chat_provider_id=pid,
+                prompt=prompt,
+                system_prompt=system_prompt or None,
+            )
+        except Exception as e:
+            self._judge_warn_throttled(f"provider {pid!r} 调用失败: {summarize_provider_error(e)}")
+            return None
+        text = getattr(resp, "completion_text", None)
+        if not text:
+            try:
+                components = getattr(getattr(resp, "result_chain", None), "chain", None) or []
+                if components:
+                    text = getattr(components[0], "text", None)
+            except Exception:
+                text = None
+        text = str(text or "").strip()
+        if not text or looks_like_llm_error_output(text):
+            return None
+        return text
+
+    def _judge_warn_throttled(self, reason: str) -> None:
+        """provider 配置类 WARNING 的节流（60s 最多一条，其余 DEBUG）——
+        输出侧每条回复都可能触发，不节流会刷爆日志。"""
+        now = datetime.now()
+        last = getattr(self, "_judge_warn_last", None)
+        if last is None or (now - last).total_seconds() >= 60:
+            self._judge_warn_last = now
+            logger.warning(f"[Judge] {reason}（按'本轮不判断'处理）")
+        else:
+            logger.debug(f"[Judge] {reason}")
+
+    def _judge_provider_ids(self) -> list[str]:
+        """已启用 chat provider 的 id 清单（面板下拉数据源，F2/E3）。
+
+        context.get_all_providers() 只返回 chat_completion 类型且已启用的
+        provider（embedding/STT 不在内，与 build_provider_chain 同款口径）；
+        任何异常回落空列表（面板显示"无可用 provider"，不崩）。"""
+        try:
+            providers = self.context.get_all_providers() or []
+            ids = []
+            for provider in providers:
+                try:
+                    pid = str(provider.meta().id)
+                except Exception:
+                    continue
+                if pid:
+                    ids.append(pid)
+            return ids
+        except Exception:
+            return []
+
+    def _wake_prefixes(self) -> list[str]:
+        """全局唤醒/命令前缀（B1 命令跳过规则的判定依据）。读不到按
+        ["/"]（本体默认）处理。"""
+        try:
+            get_config = getattr(self.context, "get_config", None)
+            cfg = get_config() if callable(get_config) else {}
+            raw = (cfg or {}).get("provider_settings", {}).get("wake_prefix")
+            if isinstance(raw, (list, tuple)) and raw:
+                return [str(p) for p in raw if str(p)]
+            if isinstance(raw, str) and raw:
+                return [raw]
+        except Exception:
+            pass
+        return ["/"]
+
+    def _judge_record_task(self, coro) -> None:
+        """fire-and-forget 任务登记（输出侧 log_only 检查不阻塞回复送达；
+        引用存集合防 GC，完成后自动清理）。"""
+        task = asyncio.create_task(coro)
+        self._judge_tasks.add(task)
+        task.add_done_callback(self._judge_tasks.discard)
+
+    @filter.on_llm_request()
+    async def judge_input_on_llm_request(
+        self, event: AstrMessageEvent, req: Any
+    ) -> None:
+        """B 组：输入侧判断（主人发消息时给建议，追加到请求末尾）。
+
+        红线逐条：
+        - 默认 off → 第一行即返回（零调用、零注入、零行为变化）；
+        - local → 一次性 WARNING 明确提示未实现，不注入不降级（A3）；
+        - 只追加 extra_user_content_parts（TextPart.mark_as_temp()，不留痕
+          不写会话历史）——与 M17-补丁1 语气注入同一通道（红线 4）；
+        - 限频/极短/命令前缀跳过（B1）；超时/异常只 DEBUG，主回复照常
+          （B2/B3/红线 6）；
+        - 判断结果用完即弃：本钩子不写任何存储（红线 1）。"""
+        try:
+            judge = self._judge
+            if judge is None:
+                return
+            mode = judge.mode()
+            if mode == "local":
+                judge.warn_local_once()
+                return
+            if mode != "api":
+                return
+            message_text = str(getattr(event, "message_str", "") or "")
+            stripped = message_text.strip()
+            if not stripped:
+                return
+            # B1 命令跳过：命中全局唤醒/命令前缀的消息不判断
+            for prefix in self._wake_prefixes():
+                if prefix and stripped.startswith(prefix):
+                    return
+            skip = judge.should_skip_input(message_text)
+            if skip:
+                logger.debug(f"[Judge] 输入判断跳过（{skip}）")
+                return
+            context_lines = self._judge_context_lines(req)
+            verdict = await judge.judge_input(message_text, context_lines)
+            if verdict is None:
+                return
+            injection = judge.build_input_injection(verdict)
+            if not injection:
+                return
+            from astrbot.core.agent.message import TextPart
+
+            parts = getattr(req, "extra_user_content_parts", None)
+            if parts is None:
+                return  # 本体形态有变时安全退出（不注入、不报错）
+            parts.append(TextPart(text=injection).mark_as_temp())
+            judge.record_input_injected(message_text, verdict)
+            logger.debug("[Judge] 输入判断建议已注入（用完即弃）")
+        except Exception as e:
+            logger.debug(f"[Judge] 输入判断失败（不影响聊天）: {e}")
+
+    def _judge_context_lines(self, req: Any) -> list[str]:
+        """输入/输出判断的上文材料：只取 role/content 两个字段（安全红线：
+        其余元数据一律不带入 prompt 链），尾部 N 条（judge.context_messages）。"""
+        lines: list[str] = []
+        try:
+            from .core.conf_path import conf_group
+
+            limit = self._int_from_config("judge", "context_messages", 6, 12)
+            contexts = getattr(req, "contexts", None) or []
+            for message in list(contexts)[-limit:]:
+                if isinstance(message, dict):
+                    role = str(message.get("role") or "")
+                    content = message.get("content")
+                else:
+                    role = str(getattr(message, "role", "") or "")
+                    content = getattr(message, "content", None)
+                if role == "system":  # system 提示不进判断材料（只看对话）
+                    continue
+                if isinstance(content, list):  # 多模态 parts → 取文本部分
+                    content = " ".join(
+                        str(getattr(part, "text", "") or "")
+                        for part in content
+                    )
+                content = str(content or "").strip().replace("\n", " ")
+                if not content:
+                    continue
+                who = "主人" if role == "user" else "助手"
+                lines.append(f"{who}：{content[:80]}")
+        except Exception as e:
+            logger.debug(f"[Judge] 上文材料整理失败（按无上文继续）: {e}")
+        return lines
+
+    def _int_from_config(self, group: str, key: str, default: int, cap: int) -> int:
+        try:
+            value = int(conf_group(self._effective_config(), group).get(key, default))
+        except Exception:
+            return default
+        return min(max(value, 0), cap)
+
+    @filter.on_llm_response()
+    async def judge_output_on_llm_response(
+        self, event: AstrMessageEvent, response: Any
+    ) -> None:
+        """C 组：输出侧检查（聊天模型回复后过一遍）。
+
+        - log_only（默认）：后台任务检查+记录，回复照常送达（不等判断）；
+        - rewrite：同步打回（钩子内 await），最多重写 1 次 + 超时，失败
+          放行原回复——修改走 response.completion_text setter（同步更新
+          result_chain，与本体消费同一形态）；
+        - 流式 chunk（is_chunk）不判（每 chunk 一判既烧钱又没法整体改）；
+        - 任何异常只 DEBUG，绝不影响回复送达（红线 6）。"""
+        try:
+            judge = self._judge
+            if judge is None or not judge.enabled():
+                return
+            if bool(getattr(response, "is_chunk", False)):
+                return
+            reply = str(getattr(response, "completion_text", "") or "").strip()
+            if len(reply) < 8:  # 极短回复没有"惯性"可言，不烧判断
+                return
+            action = judge.output_action()
+            context_lines = []  # 输出侧暂不带会话上下文（req 已不可得）
+            if action == "rewrite":
+                fixed = await judge.rewrite_output(reply, context_lines)
+                if fixed:
+                    response.completion_text = fixed
+                    logger.info("[Judge] 输出检查打回重写（轻量修正已应用）")
+            else:
+                # log_only：后台检查，不阻塞回复送达
+                self._judge_record_task(judge.check_output(reply, context_lines))
+        except Exception as e:
+            logger.debug(f"[Judge] 输出检查失败（不影响回复）: {e}")
 
     def _platform_prefixes(self) -> set[str]:
         """合法身份前缀集合（补丁 VI 需求 1-2；补丁 XVI 修正：补 type 维度）。
@@ -1159,6 +1383,14 @@ class LivingPlugin(Star):
         self._knobs_task = asyncio.create_task(
             self._run_knob_loop(), name="living-config-knobs"
         )
+        # M19-补丁1：判断模型引擎（A/B/C/E 组）——记录文件在插件数据目录，
+        # 与记忆/图谱/会话存储完全分开（红线 1 的物理隔离）；llm_call 固定
+        # 走 judge.provider_id（不与决策链混用，A4）
+        self._judge = OutputJudge(
+            config_getter=self._effective_config,
+            llm_call=self._judge_llm_call,
+            records_path=os.path.join(self._plugin_data_dir(), "judge_records.json"),
+        )
         # M5 补丁 1：自带配置面板的 REST API（pages/config/ 前端调用）
         self._register_dashboard_routes()
 
@@ -1192,6 +1424,7 @@ class LivingPlugin(Star):
             (f"{prefix}/mood", self._api_mood_get, ["GET"], "心境快照读取"),
             (f"{prefix}/mood/interests", self._api_mood_interests_post, ["POST"], "兴趣权重编辑"),
             (f"{prefix}/browser_status", self._api_browser_status_get, ["GET"], "浏览器能力状态"),
+            (f"{prefix}/judge_records", self._api_judge_records_get, ["GET"], "判断记录读取"),
         ]
         for route, handler, methods, desc in routes:
             register(route, handler, methods, desc)
@@ -1217,12 +1450,28 @@ class LivingPlugin(Star):
             # M18-补丁1 C1：以运行时同源为准（_effective_config 磁盘直读
             # + schema 缺键补默认）——手改 JSON 后面板显示的也是运行时
             # 真实使用的值；保存链路不变（仍写 self.config + save_config）
-            payload = build_config_payload(self._effective_config(), self._panel_schema())
+            # M19-补丁1 F2/E3：providers 下拉数据源（已启用 chat provider id）
+            payload = build_config_payload(
+                self._effective_config(),
+                self._panel_schema(),
+                providers=self._judge_provider_ids(),
+            )
             return {"status": "ok", "data": payload}
         except PanelApiError as e:
             return {"status": "error", "message": str(e)}
         except Exception:
             logger.exception(f"[{PLUGIN_NAME}] 面板读取失败")
+            return {"status": "error", "message": "内部错误"}
+
+    async def _api_judge_records_get(self):
+        """E1：判断记录读取（最近 N 条，新的在前）。"""
+        try:
+            judge = self._judge
+            if judge is None:
+                return {"status": "ok", "data": {"records": []}}
+            return {"status": "ok", "data": {"records": judge.records()}}
+        except Exception:
+            logger.exception(f"[{PLUGIN_NAME}] 判断记录读取失败")
             return {"status": "error", "message": "内部错误"}
 
     async def _api_config_post(self):

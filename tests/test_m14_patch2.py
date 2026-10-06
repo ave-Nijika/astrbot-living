@@ -320,11 +320,14 @@ def test_dead_identifiers_absent_from_core_and_schema():
 
 
 def test_schema_initiative_group_shrunk_to_five_keys():
-    """C5/A3/B3 + F4：3 键随 schema 删除自动消失，剩 5 键。"""
+    """C5/A3/B3 + F4：3 键随 schema 删除自动消失，剩 5 键。
+    M19-补丁1 D2：prompt_open_topic / prompt_line 两个提示词键入组（7 键），
+    其余业务键集合不变。"""
     items = SCHEMA["advanced"]["items"]["initiative"]["items"]
     assert set(items) == {
         "enabled", "base_probability", "unanswered_backoff",
         "final_review_enabled", "sources",
+        "prompt_open_topic", "prompt_line",  # M19-补丁1 D2
     }
     # F2：专家面板键文案审查——每键有 description 与 hint
     for key, item in items.items():

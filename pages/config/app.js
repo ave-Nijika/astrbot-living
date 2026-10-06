@@ -13,8 +13,43 @@ const KNOB_ORDER = [
 const GROUP_LABELS = {
   autonomy: "能力档位", decision: "决策", output_gate: "输出闸门",
   initiative: "主动搭话", sleep: "休眠", style_learning: "风格学习",
-  capabilities: "能力参数", memory: "记忆", model: "模型",
+  capabilities: "能力参数", memory: "记忆", model: "模型", judge: "判断模型",
 };
+
+/* M19-补丁1 F1：枚举字段的中文标签（显示标签、保存原始值）。
+ * 选项本体来自 schema 的 options（F4：有 options 一律渲染下拉）；
+ * 这里只管"值 → 看得懂的中文"。 */
+const OPTION_LABELS = {
+  "decision.decision_mode": { rules: "规则", hybrid: "混合", llm: "大模型" },
+  "sleep.farewell_mode": {
+    probability: "投骰子", llm: "她自己斟酌", off: "不说",
+  },
+  "sleep.wake_source": { all: "所有人", owner_only: "只算主人" },
+  "capabilities.agent_tools_mode": {
+    off: "关闭", persona: "跟随人格", custom: "自定义白名单",
+  },
+  "memory.backend": { auto: "自动", livingmemory: "记忆库", simple: "简易" },
+  "judge.mode": { off: "关闭", local: "本地（未实现）", api: "云端 API" },
+  "judge.output_action": { log_only: "只记录", rewrite: "允许打回重写" },
+};
+
+/* M19-补丁1 F2：agent_activities 的多选选项（6 个活动 + 中文说明——
+ * 主人原话"没有说明用户肯定不知道怎么写"）。 */
+const AGENT_ACTIVITY_CHOICES = [
+  { value: "surf", label: "surf 上网冲浪" },
+  { value: "read", label: "read 读文章" },
+  { value: "game", label: "game 写小游戏" },
+  { value: "peek", label: "peek 看留言" },
+  { value: "reminisce", label: "reminisce 翻记忆" },
+  { value: "free", label: "free 自由活动" },
+];
+
+/* M19-补丁1 F3：source_weights 只有两个固定键——做成两个数字输入比
+ * 裸 JSON 文本框友好（任务书 F3 建议）。 */
+const SOURCE_WEIGHT_FIELDS = [
+  { key: "dialogue", label: "实战对话（评论区/回复串）权重" },
+  { key: "article", label: "单作者文章权重" },
+];
 
 /* 任务书 2.2 的危险项清单（advanced 组内，带醒目警告）。
  * M18-补丁1 D1：补入 daily_impulse_limit——与 token 预算/工具轮数叠加时
@@ -126,6 +161,7 @@ async function load() {
   const data = await bridge.apiGet("config");
   const payload = data && data.data ? data.data : data;
   state.schema = payload.schema;
+  state.providers = payload.providers || []; // M19-补丁1 F2/E3：provider 下拉数据源
   state.values.knobs = { ...(payload.knobs || {}) };
   state.values.advanced = JSON.parse(JSON.stringify(payload.advanced || {}));
   state.loaded = JSON.parse(JSON.stringify(state.values));
@@ -226,7 +262,162 @@ function renderNovice() {
   grid.appendChild(browserCard()); // 浏览器能力说明 + 实时状态
   grid.appendChild(searchToggleCard()); // 联网搜索开关
   grid.appendChild(agentToolsCard()); // 本体工具开关
+  grid.appendChild(judgeCard()); // M19-补丁1 A5/E3：判断模型（三档+状态+记录）
   renderLifeExtra(presetSchema);
+}
+
+/* ---------------- M19-补丁1：判断模型新手卡（A5/E3/E1） ----------------
+ * 读写走 advanced.judge 差量保存流（与 farewellCard 同款）；三档选择 +
+ * provider 下拉（api 档时显示）+ 当前状态行（E3）+ 最近判断记录回看
+ * （E1，独立端点 judge_records，不走配置差量流）。 */
+function judgeCard() {
+  if (!state.values.advanced.judge) state.values.advanced.judge = {};
+  const judgeValues = state.values.advanced.judge;
+  const card = document.createElement("div");
+  card.className = "knob-card judge-card";
+
+  const title = document.createElement("h3");
+  title.textContent = "判断模型";
+  card.appendChild(title);
+
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent =
+    "外挂一个很小的\"大脑\"帮你把关：你发消息时先判断该用什么方式回" +
+    "（详细/简短/带情绪），她回复后再检查一次有没有越回越啰嗦——对抗" +
+    "输出惯性。判断用的模型应该是又小又快的（便宜），跟聊天模型分开。" +
+    "判断结果用完就丢，不会进她的记忆。";
+  card.appendChild(hint);
+
+  const MODES = [
+    ["关闭", "off"],
+    ["本地（未实现）", "local"],
+    ["云端 API", "api"],
+  ];
+  const row = document.createElement("div");
+  row.className = "option-row";
+  const currentMode = judgeValues.mode || "off";
+  for (const [label, value] of MODES) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "option";
+    btn.textContent = label;
+    if (currentMode === value) btn.classList.add("selected");
+    btn.addEventListener("click", () => {
+      judgeValues.mode = value;
+      setDirty(true);
+      row.querySelectorAll(".option").forEach((el) => el.classList.remove("selected"));
+      btn.classList.add("selected");
+      refreshJudgeExtras();
+    });
+    row.appendChild(btn);
+  }
+  card.appendChild(row);
+
+  const localNote = document.createElement("p");
+  localNote.className = "hint judge-local-note";
+  localNote.textContent =
+    "本地小模型推理还没有实现（权重下载等后续版本再说），选中它只是先占个" +
+    "位——判断模型现在不会工作。目前请用「云端 API」档。";
+
+  const providerWrap = document.createElement("div");
+  providerWrap.className = "judge-provider-wrap";
+  const providerLabel = document.createElement("span");
+  providerLabel.className = "hint";
+  providerLabel.textContent = "判断用 provider：";
+  const providerSelect = document.createElement("select");
+  providerSelect.className = "enum-select";
+  const currentValue = judgeValues.provider_id || "";
+  const blank = document.createElement("option");
+  blank.value = "";
+  blank.textContent = "（不判断）";
+  providerSelect.appendChild(blank);
+  const seen = new Set(state.providers || []);
+  for (const pid of state.providers || []) {
+    const opt = document.createElement("option");
+    opt.value = pid;
+    opt.textContent = pid;
+    if (currentValue === pid) opt.selected = true;
+    providerSelect.appendChild(opt);
+  }
+  // 已存值不在列表里（老配置/该 provider 已停用）——原样保留，不规范化
+  if (currentValue && !seen.has(currentValue)) {
+    const opt = document.createElement("option");
+    opt.value = currentValue;
+    opt.textContent = `${currentValue}（当前不可用）`;
+    opt.selected = true;
+    providerSelect.appendChild(opt);
+  }
+  providerSelect.addEventListener("change", () => {
+    judgeValues.provider_id = providerSelect.value;
+    setDirty(true);
+    refreshStatus();
+  });
+  providerWrap.append(providerLabel, providerSelect);
+
+  const statusLine = document.createElement("p");
+  statusLine.className = "hint judge-status";
+  const refreshStatus = () => {
+    const mode = judgeValues.mode || "off";
+    if (mode === "off") statusLine.textContent = "当前状态：关闭（零调用，行为与从前完全一致）";
+    else if (mode === "local") statusLine.textContent = "当前状态：本地（未实现，暂不工作）";
+    else {
+      const pid = judgeValues.provider_id || "";
+      statusLine.textContent = pid
+        ? `当前状态：云端 API（${pid}）`
+        : "当前状态：云端 API（还没选 provider，暂不判断）";
+    }
+  };
+  const refreshJudgeExtras = () => {
+    const mode = judgeValues.mode || "off";
+    localNote.classList.toggle("hidden", mode !== "local");
+    providerWrap.classList.toggle("hidden", mode !== "api");
+    refreshStatus();
+  };
+  refreshJudgeExtras();
+  card.append(localNote, providerWrap, statusLine);
+
+  // E1：最近判断记录回看（按钮拉取，独立端点）
+  const recordsWrap = document.createElement("div");
+  recordsWrap.className = "judge-records hidden";
+  const recordsBtn = document.createElement("button");
+  recordsBtn.type = "button";
+  recordsBtn.className = "link-button";
+  recordsBtn.textContent = "查看最近判断记录";
+  recordsBtn.addEventListener("click", async () => {
+    if (!recordsWrap.classList.contains("hidden")) {
+      recordsWrap.classList.add("hidden");
+      return;
+    }
+    recordsBtn.textContent = "加载中…";
+    try {
+      const data = await bridge.apiGet("judge_records");
+      const body = data && data.data ? data.data : data;
+      const records = (body && body.records) || [];
+      recordsWrap.innerHTML = "";
+      if (!records.length) {
+        const empty = document.createElement("p");
+        empty.className = "hint";
+        empty.textContent = "还没有判断记录（开启 API 档并聊几句之后就有了）。";
+        recordsWrap.appendChild(empty);
+      }
+      for (const rec of records.slice(0, 10)) {
+        const line = document.createElement("p");
+        line.className = "judge-record-line";
+        const tag = rec.side === "input" ? "输入" : rec.side === "output" ? "输出" : "打回";
+        line.textContent =
+          `[${rec.ts}] ${tag}${rec.injected ? "·已注入" : ""}` +
+          `${rec.rewrote ? "·已重写" : ""}：${rec.input_summary} → ${rec.verdict}`;
+        recordsWrap.appendChild(line);
+      }
+      recordsWrap.classList.remove("hidden");
+    } catch (e) {
+      toast(`判断记录读取失败：${e && e.message ? e.message : e}`, true);
+    }
+    recordsBtn.textContent = "查看最近判断记录";
+  });
+  card.append(recordsBtn, recordsWrap);
+  return card;
 }
 
 /* ---------------- M15-补丁1 新手卡 ----------------
@@ -718,6 +909,150 @@ function buildControl(group, key, item, container) {
       set(Number.isNaN(num) ? input.value : (t === "int" ? Math.trunc(num) : num));
     });
     container.appendChild(input);
+  } else if (t === "string" && Array.isArray(item.options) && item.options.length) {
+    // M19-补丁1 F1/F4：schema 带 options 的枚举字段一律下拉（显示中文
+    // 标签、保存原始值）——不再出现"有选项却渲染成空白文本框"。
+    // F4 兼容：若当前值不在选项里（老配置/手改值），保留一个额外选项
+    // 让它原样显示——绝不"顺手规范化"用户已存的值。
+    const select = document.createElement("select");
+    select.className = "enum-select";
+    const labels = OPTION_LABELS[`${group}.${key}`] || {};
+    const choices = item.options.slice();
+    if (value !== undefined && value !== null && !choices.includes(value)) {
+      choices.push(value);
+    }
+    for (const opt of choices) {
+      const optEl = document.createElement("option");
+      optEl.value = opt;
+      optEl.textContent = labels[opt] || opt;
+      if (value === opt) optEl.selected = true;
+      select.appendChild(optEl);
+    }
+    select.addEventListener("change", () => set(select.value));
+    container.appendChild(select);
+  } else if (group === "decision" && key === "agent_activities") {
+    // M19-补丁1 F2：活动白名单改多选（6 个活动带中文说明）
+    const current = Array.isArray(value) ? value : [];
+    const wrap = document.createElement("div");
+    wrap.className = "multi-choices";
+    for (const choice of AGENT_ACTIVITY_CHOICES) {
+      const row = document.createElement("label");
+      row.className = "multi-choice";
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = current.includes(choice.value);
+      box.addEventListener("change", () => {
+        // F4：保存数组（类型与内容形态不变），勾选集合按固定顺序输出
+        const next = AGENT_ACTIVITY_CHOICES
+          .map((c) => c.value)
+          .filter((v) => (v === choice.value ? box.checked : current.includes(v)));
+        set(next);
+        current.length = 0;
+        current.push(...next);
+      });
+      row.append(box, document.createTextNode(choice.label));
+      wrap.appendChild(row);
+    }
+    container.appendChild(wrap);
+  } else if (group === "model" && key === "fallback_chain") {
+    // M19-补丁1 F2：故障转移链 = 多选 + 顺序（顺序有语义：按序尝试）。
+    // 顺序表达方式选"已选列表可上下移动"——比"按勾选先后"更可靠
+    // （checkbox 勾选顺序难以回显）。
+    const stateList = Array.isArray(value) ? [...value] : [];
+    const wrap = document.createElement("div");
+    wrap.className = "fallback-editor";
+    const pool = state.providers.filter((p) => !stateList.includes(p));
+    const addSelect = document.createElement("select");
+    addSelect.className = "enum-select";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = state.providers.length
+      ? "添加 provider…"
+      : "（没有已启用的聊天 provider）";
+    addSelect.appendChild(placeholder);
+    for (const pid of pool) {
+      const optEl = document.createElement("option");
+      optEl.value = pid;
+      optEl.textContent = pid;
+      addSelect.appendChild(optEl);
+    }
+    addSelect.addEventListener("change", () => {
+      if (!addSelect.value) return;
+      stateList.push(addSelect.value);
+      set([...stateList]);
+      renderRows();
+    });
+    const rowsEl = document.createElement("div");
+    const renderRows = () => {
+      rowsEl.innerHTML = "";
+      stateList.forEach((pid, idx) => {
+        const row = document.createElement("div");
+        row.className = "fallback-row";
+        const name = document.createElement("span");
+        name.className = "fallback-name";
+        name.textContent = `${idx + 1}. ${pid}`;
+        const up = document.createElement("button");
+        up.type = "button";
+        up.textContent = "↑";
+        up.disabled = idx === 0;
+        up.title = "上移（更早尝试）";
+        up.addEventListener("click", () => {
+          [stateList[idx - 1], stateList[idx]] = [stateList[idx], stateList[idx - 1]];
+          set([...stateList]);
+          renderRows();
+        });
+        const down = document.createElement("button");
+        down.type = "button";
+        down.textContent = "↓";
+        down.disabled = idx === stateList.length - 1;
+        down.title = "下移（更晚尝试）";
+        down.addEventListener("click", () => {
+          [stateList[idx + 1], stateList[idx]] = [stateList[idx], stateList[idx + 1]];
+          set([...stateList]);
+          renderRows();
+        });
+        const del = document.createElement("button");
+        del.type = "button";
+        del.textContent = "×";
+        del.title = "移出故障转移链";
+        del.addEventListener("click", () => {
+          stateList.splice(idx, 1);
+          set([...stateList]);
+          renderRows();
+        });
+        row.append(name, up, down, del);
+        rowsEl.appendChild(row);
+      });
+    };
+    renderRows();
+    wrap.append(addSelect, rowsEl);
+    container.appendChild(wrap);
+  } else if (group === "style_learning" && key === "source_weights") {
+    // M19-补丁1 F3：权重表只有两个固定键 → 两个数字输入（保存仍为
+    // object，F4 类型不变）。用户键里的额外键原样保留。
+    // （本分支必须在下方通用 list/object 之前——object 类型先被特判。）
+    const current = (value && typeof value === "object" && !Array.isArray(value))
+      ? { ...value } : {};
+    const wrap = document.createElement("div");
+    wrap.className = "weight-fields";
+    for (const field of SOURCE_WEIGHT_FIELDS) {
+      const row = document.createElement("label");
+      row.className = "weight-field";
+      const input = document.createElement("input");
+      input.type = "number";
+      input.step = "any";
+      input.value = current[field.key] ?? "";
+      input.addEventListener("change", () => {
+        const num = Number(input.value);
+        const next = { ...current };
+        if (Number.isNaN(num)) next[field.key] = input.value;
+        else next[field.key] = num;
+        set(next);
+      });
+      row.append(document.createTextNode(field.label), input);
+      wrap.appendChild(row);
+    }
+    container.appendChild(wrap);
   } else if (t === "list" || t === "object") {
     const ta = document.createElement("textarea");
     ta.rows = t === "object" ? 4 : 3;

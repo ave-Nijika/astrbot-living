@@ -63,6 +63,41 @@ _MATERIAL_MAX_CHARS = 1200
 # 单条片段注入时的字符上限（六维里挑出来展示的每条）
 _ITEM_MAX_CHARS = 80
 
+# ---- M19-补丁1 D5：提炼提示词搬上面板（schema 键
+# style_learning.prompt_distill）——默认值与搬之前的硬编码拼接逐字一致
+# （T11 验证）；占位符 {source_note}（来源备注，代码端兜底 '网页'）与
+# {material}（学习材料正文）。判定/解析逻辑不动。
+DEFAULT_PROMPT_DISTILL = (
+    "下面是你昨天在网上读到的文本片段"
+    "（来源备注：{source_note}）。请完成两件事：\n\n"
+    "一、判断它更可能是【人写的】还是【AI 生成的】。判断依据：\n"
+    "- AI 特征：结构工整对称、排比铺陈、\"首先/其次/最后\"、无口语"
+    "碎语、情绪平铺、无具体到细节的个人经历、套话（\"值得注意的是\""
+    "\"让我们一起\"\"希望这对你有帮助\"）、标点规范到不像真人、"
+    "段落长度均匀\n"
+    "- 人味特征：口语与短句跳跃、错别字/口误/语气词、情绪起伏、"
+    "跑题与打断、具体生活细节（时间地点人物）、自嘲与黑话\n\n"
+    "二、只有判定为\"人写的\"才做：从中提炼值得学习的说话风格。"
+    "六个维度都要看一遍（没有的给空串），其中【思维方式】与"
+    "【待人接物】是重点——不要只盯着用词，要看这个人怎么想问题、"
+    "怎么跟人打交道：\n"
+    "- wording：用词口癖（高频词/语气词）\n"
+    "- syntax：句式习惯\n"
+    "- thinking：思维方式（先看什么、怎么得出结论）\n"
+    "- emotion_style：情绪表达方式\n"
+    "- interaction：待人接物（怎么接话、怎么打岔、怎么表达不同意）\n"
+    "- avoid：反面特征（这类文本里不出现的）\n\n"
+    "source 字段：dialogue=多人在互相说话（评论区、回复串、问答"
+    "往来）；article=单作者的长文。拿不准按 article。\n\n"
+    "严格输出一个 JSON 对象，不要输出任何其他文字：\n"
+    '{"kind": "human", "source": "dialogue", "dims": {'
+    '"wording": "", "syntax": "", "thinking": "", '
+    '"emotion_style": "", "interaction": "", "avoid": ""}}\n'
+    "kind 只能是 human / ai / uncertain；kind 是 ai 或 uncertain 时 "
+    "dims 给空对象。\n\n"
+    "文本片段：\n{material}"
+)
+
 _JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
@@ -342,35 +377,18 @@ class StyleLearner:
     # A3+A7：一次调用完成 AI 判定与六维提炼
     # ------------------------------------------------------------------
     def _distill_prompt(self, material: str, source_note: str) -> str:
-        return (
-            "下面是你昨天在网上读到的文本片段"
-            f"（来源备注：{source_note or '网页'}）。请完成两件事：\n\n"
-            "一、判断它更可能是【人写的】还是【AI 生成的】。判断依据：\n"
-            "- AI 特征：结构工整对称、排比铺陈、\"首先/其次/最后\"、无口语"
-            "碎语、情绪平铺、无具体到细节的个人经历、套话（\"值得注意的是\""
-            "\"让我们一起\"\"希望这对你有帮助\"）、标点规范到不像真人、"
-            "段落长度均匀\n"
-            "- 人味特征：口语与短句跳跃、错别字/口误/语气词、情绪起伏、"
-            "跑题与打断、具体生活细节（时间地点人物）、自嘲与黑话\n\n"
-            "二、只有判定为\"人写的\"才做：从中提炼值得学习的说话风格。"
-            "六个维度都要看一遍（没有的给空串），其中【思维方式】与"
-            "【待人接物】是重点——不要只盯着用词，要看这个人怎么想问题、"
-            "怎么跟人打交道：\n"
-            "- wording：用词口癖（高频词/语气词）\n"
-            "- syntax：句式习惯\n"
-            "- thinking：思维方式（先看什么、怎么得出结论）\n"
-            "- emotion_style：情绪表达方式\n"
-            "- interaction：待人接物（怎么接话、怎么打岔、怎么表达不同意）\n"
-            "- avoid：反面特征（这类文本里不出现的）\n\n"
-            "source 字段：dialogue=多人在互相说话（评论区、回复串、问答"
-            "往来）；article=单作者的长文。拿不准按 article。\n\n"
-            "严格输出一个 JSON 对象，不要输出任何其他文字：\n"
-            '{"kind": "human", "source": "dialogue", "dims": {'
-            '"wording": "", "syntax": "", "thinking": "", '
-            '"emotion_style": "", "interaction": "", "avoid": ""}}\n'
-            "kind 只能是 human / ai / uncertain；kind 是 ai 或 uncertain 时 "
-            "dims 给空对象。\n\n"
-            f"文本片段：\n{material}"
+        # M19-补丁1 D5：提示词搬面板（默认逐字一致）；来源备注的空值兜底
+        # '网页' 仍是代码逻辑（占位符值兜底，而不是模板里写条件）
+        from .prompts import read_template, render_template
+
+        return render_template(
+            read_template(self._cfg(), "prompt_distill", DEFAULT_PROMPT_DISTILL),
+            {
+                "source_note": source_note or "网页",
+                "material": material,
+            },
+            name="style_learning.prompt_distill",
+            default=DEFAULT_PROMPT_DISTILL,
         )
 
     def _parse_distill(self, raw: str) -> tuple[str, str, dict] | None:

@@ -63,8 +63,14 @@ def default_tree(schema: dict) -> dict:
     }
 
 
-def build_config_payload(config: Any, schema: dict) -> dict:
-    """组装 GET 返回体：当前值（knobs + advanced）+ 渲染元数据（schema）。"""
+def build_config_payload(
+    config: Any, schema: dict, providers: list[str] | None = None
+) -> dict:
+    """组装 GET 返回体：当前值（knobs + advanced）+ 渲染元数据（schema）。
+
+    M19-补丁1 F2/E3：providers 是已启用 chat provider 的 id 清单（面板
+    判断模型/fallback_chain 下拉的数据源），缺省 None = 空列表——旧调用
+    点（mock 服务器等）零改动。"""
     from .conf_path import preset_group
 
     def section(group_items: dict) -> dict:
@@ -89,6 +95,7 @@ def build_config_payload(config: Any, schema: dict) -> dict:
             CONF_PRESET: {"items": section(schema.get(CONF_PRESET, {}).get("items", {}))},
             CONF_ADVANCED: {"items": section(schema.get(CONF_ADVANCED, {}).get("items", {}))},
         },
+        "providers": list(providers or []),
     }
 
 

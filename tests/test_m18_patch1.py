@@ -9,6 +9,7 @@ C 组：面板 GET 与 _build_agent_tools 统一运行时同源 _effective_confi
 """
 
 import asyncio
+import inspect
 import json
 import sys
 import types
@@ -326,11 +327,17 @@ def test_c2_agent_tools_tier_comes_from_effective_config(tmp_path):
 
 def test_c2_source_single_config_source():
     """C2/C1 源码锚点：_build_agent_tools_async 不再有双来源；面板 GET
-    走 _effective_config；reset 接线基线归位。"""
+    走 _effective_config；reset 接线基线归位。
+    M19-补丁1：面板 GET 的 build_config_payload 换多行调用（追加
+    providers 数据源），锚点同步放宽为"GET 函数内以 _effective_config
+    为数据源"。"""
     src = (WORKDIR / "main.py").read_text(encoding="utf-8")
     assert "config = self.config if isinstance(self.config, dict) else {}" not in src
     assert "config = self._effective_config()" in src
-    assert "build_config_payload(self._effective_config()" in src
+    # _api_config_get 内：payload 数据源是 _effective_config（多行形态）
+    api_get_src = inspect.getsource(_load_plugin_main().LivingPlugin._api_config_get)
+    assert "build_config_payload(" in api_get_src
+    assert "self._effective_config()" in api_get_src
     assert "reset_baseline" in src
 
 

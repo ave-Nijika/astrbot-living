@@ -66,6 +66,21 @@ atexit.register(lambda: os.path.exists(_MOOD_DB_PATH) and os.unlink(_MOOD_DB_PAT
 MOOD = MoodState(db_path=_MOOD_DB_PATH)
 
 
+MOCK_PROVIDERS = ["mock-chat-provider", "mock-judge-provider"]
+
+# M19-补丁1 E1：mock 判断记录（内存态，刷新页面仍在、重启即清）
+MOCK_JUDGE_RECORDS = [
+    {
+        "ts": "2026-10-06 09:00:00",
+        "side": "input",
+        "input_summary": "帮我看看明天天气怎么样",
+        "verdict": "work/short/plain note=这条可以短一点答",
+        "injected": True,
+        "rewrote": False,
+    },
+]
+
+
 def _bootstrap_mood() -> None:
     async def flow():
         await MOOD.load()
@@ -142,7 +157,16 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/plugin/page/bridge-sdk.js":
             self._send(200, MOCK_BRIDGE_JS.encode("utf-8"), CONTENT_TYPES[".js"])
         elif path == "/mock/api/config":
-            self._send_json({"status": "ok", "data": build_config_payload(CONFIG, SCHEMA)})
+            self._send_json(
+                {
+                    "status": "ok",
+                    "data": build_config_payload(
+                        CONFIG, SCHEMA, providers=MOCK_PROVIDERS
+                    ),
+                }
+            )
+        elif path == "/mock/api/judge_records":
+            self._send_json({"status": "ok", "data": {"records": MOCK_JUDGE_RECORDS}})
         elif path == "/mock/api/mood":
             self._send_json({"status": "ok", "data": build_mood_snapshot(MOOD)})
         elif path == EXT_MOOD_PATH:

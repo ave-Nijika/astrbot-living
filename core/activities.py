@@ -44,6 +44,33 @@ SEARCH_DEPENDENT_ACTIVITIES = ("surf", "read")
 # 不该混进她的经历（"我印象里没有"现象链的根因 C 之一）。
 _INTERRUPTION_MARKERS = {"output stopped", "stop output"}
 
+# ---- M19-补丁1 D6：活动意图模板搬上面板（schema 键 decision.prompt_intent_*）
+# ——默认值与搬之前的硬编码拼接逐字一致（T11 验证）。占位符的动态段
+# （主题方向/避开指令/工具清单/风格想法）仍由 agent_intent 按现场条件
+# 生成后注入。任务书 D6 授权"若改动面太大可只做 free + 通用两项"：
+# 实测改动面可控（ActivityContext 加默认 None 字段零波及），四个 agent
+# 活动全部搬（surf/read/game/free），超出最低要求，报告说明。
+DEFAULT_PROMPT_INTENT_SURF = (
+    "你现在打算上网冲浪。{topic_line}{avoid_line}"
+    "用 web_search 搜一搜，挑一两条结果看看，"
+    "最后用几句话汇报你看到了什么、有什么想法。"
+)
+DEFAULT_PROMPT_INTENT_READ = (
+    "你现在打算读一篇文章。{topic_line}{avoid_line}"
+    "用 web_search 搜索，挑一条你最想读的，用 fetch_page 认真读完，"
+    "然后用自己的话总结要点，再说一点你的感想。"
+)
+DEFAULT_PROMPT_INTENT_GAME = (
+    "你现在打算写个小游戏自己玩。{style_line}"
+    "用 run_python 现场写一个秒级能跑完的小游戏"
+    "（只能用 random/math/time/datetime/json/re/itertools/collections，"
+    "记得 print 出结果），跑一跑，说说结果和你的心得。"
+)
+DEFAULT_PROMPT_INTENT_FREE = (
+    "现在是完全的自由活动时间，{extra}。"
+    "你可以使用这些工具：{tools_line}。{closing}"
+)
+
 
 def _informative_partial(text: str) -> bool:
     """超预算中断的半截产出是否含有真实信息（M16-补丁1 C1）。
@@ -123,10 +150,25 @@ class ActivityContext:
     # M15-补丁1 E4：搜索开关的执行侧快照（心跳装配时读）——配置热变更的
     # 窗口里活动可能"已被选中但搜索已关"，此时活动内部优雅降级不报错
     search_enabled: bool = True
+    # M19-补丁1 D6：意图模板的配置通道（config_getter 可调用体）。默认
+    # None = 用代码内默认模板——既有构造点零改动；LivingLoop 装配 ctx 时
+    # 传入，agent_intent 的面板覆盖才生效。
+    config_getter: Any = None
 
     def date_prefix(self) -> str:
         # 不用 strftime 的 %-m：Windows 平台不支持该转义
         return f"{self.now.month}月{self.now.day}日"
+
+    def intent_config(self) -> dict:
+        """活动意图模板的配置组读取（decision 组；任何异常回落空 dict）。"""
+        if self.config_getter is None:
+            return {}
+        try:
+            from .conf_path import conf_group
+
+            return conf_group(self.config_getter() or {}, "decision")
+        except Exception:
+            return {}
 
     def recent_topic_summary(self) -> str:
         """近期话题清单（agent 提示注入用，带出现次数）。"""
@@ -251,6 +293,21 @@ class Activity(ABC):
         """agent 模式的任务描述（子类覆写）；params 是决策层给的偏好。"""
         return self.description
 
+    def _render_intent(
+        self, ctx: ActivityContext, key: str, default: str, values: dict
+    ) -> str:
+        """意图模板渲染（M19-补丁1 D6）：面板 decision.prompt_intent_* 覆盖，
+        空值/无配置通道/渲染异常一律回落代码内默认模板（默认行为零变化）。"""
+        from .prompts import read_template, render_template
+
+        template = read_template(ctx.intent_config(), key, default)
+        return render_template(
+            template,
+            values,
+            name=f"decision.{key}",
+            default=default,
+        )
+
     def _params_hint(self, ctx: ActivityContext, key: str = "topic") -> str:
         value = str((ctx.params or {}).get(key, "") or "").strip()
         return value
@@ -341,10 +398,12 @@ class SurfActivity(Activity):
             if avoid_line
             else ""
         )
-        return (
-            f"你现在打算上网冲浪。{topic_line}{avoid_line}"
-            "用 web_search 搜一搜，挑一两条结果看看，"
-            "最后用几句话汇报你看到了什么、有什么想法。"
+        # M19-补丁1 D6：意图模板搬面板（默认逐字一致）
+        return self._render_intent(
+            ctx,
+            "prompt_intent_surf",
+            DEFAULT_PROMPT_INTENT_SURF,
+            {"topic_line": topic_line, "avoid_line": avoid_line},
         )
 
     async def _run_script(self, ctx: ActivityContext) -> ActivityOutcome:
@@ -395,10 +454,12 @@ class ReadArticleActivity(Activity):
             if avoid_line
             else ""
         )
-        return (
-            f"你现在打算读一篇文章。{topic_line}{avoid_line}"
-            "用 web_search 搜索，挑一条你最想读的，用 fetch_page 认真读完，"
-            "然后用自己的话总结要点，再说一点你的感想。"
+        # M19-补丁1 D6：意图模板搬面板（默认逐字一致）
+        return self._render_intent(
+            ctx,
+            "prompt_intent_read",
+            DEFAULT_PROMPT_INTENT_READ,
+            {"topic_line": topic_line, "avoid_line": avoid_line},
         )
 
     async def _run_script(self, ctx: ActivityContext) -> ActivityOutcome:
@@ -482,11 +543,12 @@ class MiniGameActivity(Activity):
     def agent_intent(self, ctx: ActivityContext) -> str:
         hint = self._params_hint(ctx, "style") or self._params_hint(ctx, "topic")
         style_line = f"风格想法：{hint}。" if hint else "玩法你自己发挥。"
-        return (
-            f"你现在打算写个小游戏自己玩。{style_line}"
-            "用 run_python 现场写一个秒级能跑完的小游戏"
-            "（只能用 random/math/time/datetime/json/re/itertools/collections，"
-            "记得 print 出结果），跑一跑，说说结果和你的心得。"
+        # M19-补丁1 D6：意图模板搬面板（默认逐字一致）
+        return self._render_intent(
+            ctx,
+            "prompt_intent_game",
+            DEFAULT_PROMPT_INTENT_GAME,
+            {"style_line": style_line},
         )
 
     def _pick_template(self, ctx: ActivityContext) -> tuple[str, str]:
@@ -603,9 +665,12 @@ class FreeActivity(Activity):
             closing = "就在心里想一件有意思的小事，最后告诉我你想了什么。"
         hint = self._params_hint(ctx)
         extra = f"（方向偏好：{hint}）" if hint else ""
-        return (
-            f"现在是完全的自由活动时间，{extra}。"
-            f"你可以使用这些工具：{tools_line}。{closing}"
+        # M19-补丁1 D6：意图模板搬面板（默认逐字一致）
+        return self._render_intent(
+            ctx,
+            "prompt_intent_free",
+            DEFAULT_PROMPT_INTENT_FREE,
+            {"extra": extra, "tools_line": tools_line, "closing": closing},
         )
 
     async def run(self, ctx: ActivityContext) -> ActivityOutcome:

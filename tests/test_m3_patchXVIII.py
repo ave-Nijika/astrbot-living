@@ -284,12 +284,33 @@ def test_danger_keys_invisible():
 # ---------------------------------------------------------------------------
 def test_structure_complete_no_key_lost():
     advanced = SCHEMA["advanced"]["items"]
-    assert set(advanced) == set(BASELINE_KEYS)  # 组集合一致（persona 组消失）
+    assert set(advanced) == set(BASELINE_KEYS) | {"judge"}  # M19-补丁1：judge 组入列（组集合只增不减）
+    # M19-补丁1：各组新增键（提示词搬面板）——既有键一个不能少
+    ADDED_KEYS = {
+        "decision": {
+            "prompt_decide_params_game", "prompt_decide_params_browse",
+            "prompt_decide_llm_free", "prompt_decide_llm_interest",
+            "prompt_intent_surf", "prompt_intent_read",
+            "prompt_intent_game", "prompt_intent_free",
+        },
+        "initiative": {"prompt_open_topic", "prompt_line"},
+        "sleep": {"prompt_farewell", "prompt_wake_reply", "prompt_dream"},
+        "style_learning": {"prompt_distill"},
+    }
     for group, expected in BASELINE_KEYS.items():
         actual = set(advanced[group]["items"])
-        assert actual == expected, (
+        assert expected <= actual, (
             f"{group} 组键集合不一致：少 {expected - actual}，多 {actual - expected}"
         )
+        extra = actual - expected - ADDED_KEYS.get(group, set())
+        assert not extra, f"{group} 组出现计划外新键: {extra}"
+    # judge 组 12 键（M19-补丁1 A/B/C 组）
+    assert set(advanced["judge"]["items"]) == {
+        "mode", "provider_id", "local_model_path", "local_backend",
+        "context_messages", "min_interval_seconds", "timeout_seconds",
+        "output_action", "record_limit",
+        "prompt_input", "inject_template", "prompt_output",
+    }
 
 
 # ---------------------------------------------------------------------------

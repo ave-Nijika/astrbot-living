@@ -29,6 +29,7 @@ from typing import Any, Callable
 from astrbot.api import logger
 
 from .conf_path import conf_group
+from .prompts import read_template, render_template
 from .share_rewriter import _strip_wrapping_quotes
 
 # C3：台词硬上限（prompt 要求 30 字，LLM 不听话时在这里兜住）
@@ -37,6 +38,29 @@ INITIATIVE_TEXT_MAX = 120
 AUDIT_TEXT_PREVIEW = 20
 # D2：收敛倍率下限（主人 10-03 定稿：越不理越少，但永远不为零）
 BACKOFF_MULTIPLIER_FLOOR = 0.1
+
+# ---- M19-补丁1 D2：提示词搬上面板（schema 键 initiative.prompt_*）----
+# 默认值与搬之前的硬编码拼接逐字一致（T11 验证）；判定逻辑（SKIP/OOC/
+# 长度检查）不动（红线 8：只把提示词提出来）。
+DEFAULT_PROMPT_OPEN_TOPIC = (
+    "下面是你和主人最近的聊天记录（节选）：\n"
+    "{context_block}\n\n"
+    '从中找一个"可以自然接上、继续聊下去"的话题，'
+    "用一句短语概括（20 字以内）。\n"
+    "要求：必须是还没聊完的话题；不能是需要主人回答的追问；"
+    "不要重复已经聊完了的话题。\n"
+    "如果没有合适的话题，只输出 NONE。"
+)
+DEFAULT_PROMPT_LINE = (
+    "当前时间：{now_text}。\n"
+    "{material}\n\n"
+    "写一句你主动发给主人的话。要求：\n"
+    "- 用你自己的口吻，30 字以内\n"
+    '- 这是主动搭话，不是回答他：不要"你说""发过来"这类回应式措辞，'
+    "不要问主人要任何东西，不要催促\n"
+    "- 像朋友间随口聊天：不要标题、列表、Markdown、链接，"
+    "只输出这句话本身{skip_rule}"
+)
 
 # living_state 表的键名（经 gate.state_get/state_set 存取）
 STATE_KEY_STREAK = "initiative_unanswered_streak"
@@ -321,14 +345,16 @@ class InitiativeEngine:
             lines.append(f"{who}：{content[:60]}")
         if not lines:
             return None
-        prompt = (
-            "下面是你和主人最近的聊天记录（节选）：\n"
-            + "\n".join(lines)
-            + "\n\n从中找一个\"可以自然接上、继续聊下去\"的话题，"
-            "用一句短语概括（20 字以内）。\n"
-            "要求：必须是还没聊完的话题；不能是需要主人回答的追问；"
-            "不要重复已经聊完了的话题。\n"
-            "如果没有合适的话题，只输出 NONE。"
+        # M19-补丁1 D2：提示词搬面板（默认逐字一致）
+        prompt = render_template(
+            read_template(
+                self._cfg(),
+                "prompt_open_topic",
+                DEFAULT_PROMPT_OPEN_TOPIC,
+            ),
+            {"context_block": "\n".join(lines)},
+            name="initiative.prompt_open_topic",
+            default=DEFAULT_PROMPT_OPEN_TOPIC,
         )
         try:
             raw = await self._llm_call(prompt, None)
@@ -389,15 +415,17 @@ class InitiativeEngine:
             if self._conf_bool(cfg, "final_review_enabled", True)
             else ""
         )
-        prompt = (
-            f"当前时间：{now.month}月{now.day}日 {now.hour}:{now.minute:02d}。\n"
-            f"{material}\n\n"
-            "写一句你主动发给主人的话。要求：\n"
-            "- 用你自己的口吻，30 字以内\n"
-            "- 这是主动搭话，不是回答他：不要\"你说\"\"发过来\"这类回应式措辞，"
-            "不要问主人要任何东西，不要催促\n"
-            "- 像朋友间随口聊天：不要标题、列表、Markdown、链接，"
-            "只输出这句话本身" + skip_rule
+        # M19-补丁1 D2：提示词搬面板（默认逐字一致；skip_rule 终审分支
+        # 仍是配置驱动的代码逻辑，终审判定本身不动——红线 8）
+        prompt = render_template(
+            read_template(self._cfg(), "prompt_line", DEFAULT_PROMPT_LINE),
+            {
+                "now_text": f"{now.month}月{now.day}日 {now.hour}:{now.minute:02d}",
+                "material": material,
+                "skip_rule": skip_rule,
+            },
+            name="initiative.prompt_line",
+            default=DEFAULT_PROMPT_LINE,
         )
         try:
             system = await self._system_prompt(mood_digest)

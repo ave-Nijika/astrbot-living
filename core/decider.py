@@ -26,11 +26,55 @@ from typing import Any, Callable
 from astrbot.api import logger
 
 from .activities import Activity
+from .prompts import read_template, render_template
 
 VALID_MODES = ("rules", "hybrid", "llm")
 # hybrid 档 LLM 只给"怎么做"的参数；peek 没有可参数化的部分
 PARAMETERIZABLE = ("surf", "read", "game")
 _PARAM_MAX_LEN = 30  # 参数是主题词/风格，不是文章——截断防 LLM 跑题
+
+# ---- M19-补丁1 D1：选题提示词搬上面板（schema 键 decision.prompt_decide_*）----
+# 默认模板与搬之前的硬编码拼接逐字一致（T11 多分支组合验证）；占位符由
+# 代码条件生成后注入（方向缓存/探索指令/JSON 规格等分支逻辑留在代码，
+# 用户编辑的是文案骨架）。渲染兜底见 core/prompts.py（D-b）。
+DEFAULT_PROMPT_DECIDE_PARAMS_GAME = (
+    "你现在打算写个小游戏自己玩。你现在的状态：{mood_block}。\n"
+    '顺着状态选一个具体的小游戏风格。只输出 JSON，格式：{"style": "…"}'
+)
+DEFAULT_PROMPT_DECIDE_PARAMS_BROWSE = (
+    "你现在打算{action}。你现在的状态：{mood_block}。\n"
+    "{recent_line}"
+    "顺着状态选一个具体、有生活气息的主题词，"
+    "选一个你最近没碰过的方向，越新鲜越好。\n"
+    "{merge_line}"
+    "{json_spec}"
+)
+DEFAULT_PROMPT_DECIDE_LLM_FREE = (
+    "现在是你的独处时间，没有人在找你，可以自己决定干点什么。\n\n"
+    "你现在的状态：{mood_block}\n\n"
+    "最近记得的事：\n{memory_block}\n"
+    "{recent_section}\n"
+    "可以做的活动：\n{activity_lines}\n\n"
+    "{exploration_line}"
+    "请选一个你现在最想做的活动，并给它合适参数（topic 为主题词，"
+    "style 为小游戏风格，peek 和 reminisce 不需要参数）。"
+    "这次凭当下的好奇心自由发挥，不用考虑平时的兴趣方向。\n"
+    "{merge_line}"
+    "{json_spec}"
+)
+DEFAULT_PROMPT_DECIDE_LLM_INTEREST = (
+    "现在是你的独处时间，没有人在找你，可以自己决定干点什么。\n\n"
+    "你现在的状态：{mood_block}\n\n"
+    "最近记得的事：\n{memory_block}\n"
+    "{recent_section}\n"
+    "可以做的活动：\n{activity_lines}\n\n"
+    "{exploration_line}"
+    "请选一个你现在最想做的活动，并给它合适参数（topic 为主题词，"
+    "style 为小游戏风格，peek 和 reminisce 不需要参数）。"
+    "如果上面列了你最近反复折腾的话题，这次避开它们。\n"
+    "{merge_line}"
+    "{json_spec}"
+)
 
 
 def extract_json_object(text: Any) -> dict | None:
@@ -275,6 +319,10 @@ class ActivityDecider:
         except Exception:
             return {}
 
+    def _prompt(self, key: str, default: str) -> str:
+        """面板可编辑提示词（M19-补丁1 D1）：空值回落默认（D-d 同口径）。"""
+        return read_template(self._decision_group(), key, default)
+
     def _int_setting(self, value: Any, default: int) -> int:
         try:
             return int(value)
@@ -359,9 +407,14 @@ class ActivityDecider:
         mood_block = self._mood.digest() if self._mood is not None else "心情平静，精力一般"
         fingerprint: tuple[str, ...] = ()
         if activity.name == "game":
-            prompt = (
-                f"你现在打算写个小游戏自己玩。你现在的状态：{mood_block}。\n"
-                '顺着状态选一个具体的小游戏风格。只输出 JSON，格式：{"style": "…"}'
+            # M19-补丁1 D1：提示词搬面板（默认逐字一致，T11 验证）
+            prompt = render_template(
+                self._prompt(
+                    "prompt_decide_params_game", DEFAULT_PROMPT_DECIDE_PARAMS_GAME
+                ),
+                {"mood_block": mood_block},
+                name="decision.prompt_decide_params_game",
+                default=DEFAULT_PROMPT_DECIDE_PARAMS_GAME,
             )
         else:
             # 补丁 XVII L2.5：近期方向注入 + 归并并入同一次调用（零新增调用）。
@@ -384,13 +437,21 @@ class ActivityDecider:
                 if fingerprint
                 else '只输出 JSON，格式：{"topic": "…"}'
             )
-            prompt = (
-                f"你现在打算{action}。你现在的状态：{mood_block}。\n"
-                f"{recent_line}"
-                "顺着状态选一个具体、有生活气息的主题词，"
-                "选一个你最近没碰过的方向，越新鲜越好。\n"
-                f"{merge_line}"
-                f"{json_spec}"
+            # M19-补丁1 D1：动态分支段（action/方向/归并/JSON 规格）仍由
+            # 代码条件生成后注入模板占位符——模板只承载文案骨架
+            prompt = render_template(
+                self._prompt(
+                    "prompt_decide_params_browse", DEFAULT_PROMPT_DECIDE_PARAMS_BROWSE
+                ),
+                {
+                    "action": action,
+                    "mood_block": mood_block,
+                    "recent_line": recent_line,
+                    "merge_line": merge_line,
+                    "json_spec": json_spec,
+                },
+                name="decision.prompt_decide_params_browse",
+                default=DEFAULT_PROMPT_DECIDE_PARAMS_BROWSE,
             )
         system_prompt = await self._system_prompt()
         raw = await self._safe_llm(prompt, system_prompt)
@@ -460,56 +521,51 @@ class ActivityDecider:
         exploration_line = self._exploration_directive()
         if exploration_line:
             exploration_line = f"{exploration_line}\n"
+        # M19-补丁1 D1：merge/json 分支段由代码条件生成，注入模板占位符
+        merge_line = (
+            "顺带把你最近折腾过的话题归并成不超过 4 个方向。\n"
+            if fingerprint
+            else ""
+        )
+        json_spec = (
+            '只输出 JSON，格式：{"activity": "…", "params": {"topic": "…"}, '
+            '"directions": ["方向×出现次数", "…"]}'
+            if fingerprint
+            else '只输出 JSON，格式：{"activity": "…", "params": {"topic": "…"}}'
+        )
+        prompt_values = {
+            "mood_block": mood_block,
+            "memory_block": memory_block,
+            "recent_section": recent_section,
+            "activity_lines": activity_lines,
+            "exploration_line": exploration_line,
+            "merge_line": merge_line,
+            "json_spec": json_spec,
+        }
         if free_mode:
             # ---- M10-补丁1 B2：自由局 prompt（与兴趣局的全部差异 ----
             # 1) mood_block 已切兴趣行（digest with_interests=False）；
             # 2) recent 段改为正向指令"想一个和它们都不同的新方向"；
             # 3) 结尾避开句换成自由发挥句。活动列表/归并/JSON 照旧。
-            prompt = (
-                "现在是你的独处时间，没有人在找你，可以自己决定干点什么。\n\n"
-                f"你现在的状态：{mood_block}\n\n"
-                f"最近记得的事：\n{memory_block}\n"
-                f"{recent_section}\n"
-                f"可以做的活动：\n{activity_lines}\n\n"
-                f"{exploration_line}"
-                "请选一个你现在最想做的活动，并给它合适参数（topic 为主题词，"
-                'style 为小游戏风格，peek 和 reminisce 不需要参数）。'
-                "这次凭当下的好奇心自由发挥，不用考虑平时的兴趣方向。\n"
-                + (
-                    "顺带把你最近折腾过的话题归并成不超过 4 个方向。\n"
-                    if fingerprint
-                    else ""
-                )
-                + (
-                    '只输出 JSON，格式：{"activity": "…", "params": {"topic": "…"}, '
-                    '"directions": ["方向×出现次数", "…"]}'
-                    if fingerprint
-                    else '只输出 JSON，格式：{"activity": "…", "params": {"topic": "…"}}'
-                )
+            # M19-补丁1 D1：提示词搬面板（默认逐字一致，T11 验证）
+            prompt = render_template(
+                self._prompt(
+                    "prompt_decide_llm_free", DEFAULT_PROMPT_DECIDE_LLM_FREE
+                ),
+                prompt_values,
+                name="decision.prompt_decide_llm_free",
+                default=DEFAULT_PROMPT_DECIDE_LLM_FREE,
             )
         else:
             # ---- 兴趣局：M10-补丁1 起为对照基线，构造语句逐字保持原状 ----
-            prompt = (
-                "现在是你的独处时间，没有人在找你，可以自己决定干点什么。\n\n"
-                f"你现在的状态：{mood_block}\n\n"
-                f"最近记得的事：\n{memory_block}\n"
-                f"{recent_section}\n"
-                f"可以做的活动：\n{activity_lines}\n\n"
-                f"{exploration_line}"
-                "请选一个你现在最想做的活动，并给它合适参数（topic 为主题词，"
-                'style 为小游戏风格，peek 和 reminisce 不需要参数）。'
-                "如果上面列了你最近反复折腾的话题，这次避开它们。\n"
-                + (
-                    "顺带把你最近折腾过的话题归并成不超过 4 个方向。\n"
-                    if fingerprint
-                    else ""
-                )
-                + (
-                    '只输出 JSON，格式：{"activity": "…", "params": {"topic": "…"}, '
-                    '"directions": ["方向×出现次数", "…"]}'
-                    if fingerprint
-                    else '只输出 JSON，格式：{"activity": "…", "params": {"topic": "…"}}'
-                )
+            prompt = render_template(
+                self._prompt(
+                    "prompt_decide_llm_interest",
+                    DEFAULT_PROMPT_DECIDE_LLM_INTEREST,
+                ),
+                prompt_values,
+                name="decision.prompt_decide_llm_interest",
+                default=DEFAULT_PROMPT_DECIDE_LLM_INTEREST,
             )
         system_prompt = await self._system_prompt()
         raw = await self._safe_llm(prompt, system_prompt)

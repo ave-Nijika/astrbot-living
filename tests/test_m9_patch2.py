@@ -198,7 +198,8 @@ def test_assembly_uses_disk_reader():
     assert "config_getter=lambda: self.config" not in src
     # 7 + M14-补丁1 的 InitiativeEngine（主动搭话念头引擎，同一磁盘直读）
     # + M17-补丁1 的 StyleLearner（风格学习引擎，同一磁盘直读）
-    assert src.count("config_getter=self._effective_config") == 9
+    # + M19-补丁1 的 OutputJudge（判断模型引擎，同一磁盘直读）
+    assert src.count("config_getter=self._effective_config") == 10
 
 
 # ---------------------------------------------------------------------------

@@ -40,6 +40,7 @@ from .activities import (
 from .activities import web_search_enabled as _web_search_enabled
 from .ghost_event import build_ghost_event
 from .llm_failover import looks_like_llm_error_output
+from .prompts import read_template, render_template
 from .secrets_redact import redact_secrets
 
 DEFAULT_CHECK_INTERVAL_MIN = 45.0
@@ -54,6 +55,44 @@ DREAM_MAX_CHARS = 120
 # 都远超 4 字；空壳/占位通常 0-3 字。低于下限视为空产物——不调改写器、
 # 不发送（根因：LLM 面对空材料会生成"你倒是发过来"式回应措辞）。
 MIN_SHARE_TEXT_LEN = 4
+
+# ---- M19-补丁1 D3/D4：晚安/补回复/梦话提示词搬上面板（schema 键
+# sleep.prompt_*）——默认值与搬之前的硬编码拼接逐字一致（T11 验证）。
+# 任务书 D4 把"醒来补回复"（sleep.prompt_wake_reply）与梦话
+# （sleep.prompt_dream）一并归入 sleep 组（"或 dream 组"的自由度），
+# 两个键分开：功能不同，混在一个模板里没法各自调。
+DEFAULT_PROMPT_FAREWELL = (
+    "现在是 {now_text}，你准备去睡了。"
+    "你现在的状态：{mood_digest}。\n\n{chat_block}\n\n"
+    "考虑一下今晚要不要跟他道声晚安：如果今天聊得开心、被关心，"
+    "就自然地道声晚安；如果今天有不愉快、你还在气头上，可以不说；"
+    "如果你想缓和关系，也可以借这句晚安说点什么。"
+    "像人一样自己斟酌，不是每次都非说不可。\n"
+    "如果决定不说，只输出 SKIP；决定说就只输出晚安那句话本身"
+    "（一两句、口语化，不要任何前缀和引号）。"
+)
+DEFAULT_PROMPT_WAKE_REPLY = (
+    "你刚睡醒。你睡着的时候收到了这些消息（当时你在睡，没回）：\n"
+    "{messages_block}"
+    "\n\n你睡了 {sleep_hours} 个小时，"
+    "现在是 {now_text}。"
+    "{mood_section}"
+    "\n\n想想现在要不要回、怎么回：\n"
+    "- 如果已经不用回了（话题早过去了/只是随口一说/现在突然回"
+    "反而奇怪）→ 只输出 SKIP\n"
+    "- 如果值得正经回应 → 第一行写 REPLY，第二行开始写你要发的话\n"
+    "- 如果轻轻带一句就好 → 第一行写 BRIEF，第二行开始写你要发的"
+    "话（一句轻描淡写的，比如\"昨晚睡着了，你说的那个我看看哈\"）\n"
+    "用你自己的口吻，像刚睡醒看到手机消息那样自然。"
+    "只输出上述内容之一。"
+)
+DEFAULT_PROMPT_DREAM = (
+    "你刚从睡梦中醒来，还带着睡意。下面是你最近的记忆碎片：\n"
+    "{fragments_block}"
+    "\n\n请说一句你刚才做的梦，80 字以内，第一人称，语气朦胧含糊，"
+    "把碎片搅在一起也没关系，梦本来就是不讲道理的。只输出梦话本身。"
+    "{style_section}"
+)
 
 
 def _to_float(value: Any, default: float) -> float:
@@ -466,6 +505,13 @@ class LivingLoop:
             await self._maybe_dream(now)
         return True, reason, activity_name
 
+    def _sleep_prompt(self, key: str, default: str) -> str:
+        """面板可编辑提示词（M19-补丁1 D3/D4）：sleep 组，空值回落默认
+        （share_rewrite_prompt 同口径）。读取失败一律回落默认。"""
+        return read_template(
+            _conf_group(self._config_getter(), "sleep"), key, default
+        )
+
     async def _send_wake_ack(self, now: datetime) -> None:
         """唤醒确认消息（补丁 II 二）：零延迟回主人一句，纯 sender 零 token。
 
@@ -610,15 +656,16 @@ class LivingLoop:
             chat_block = "今天和主人的最近聊天：\n" + "\n".join(chat_lines)
         else:
             chat_block = "今天还没和主人聊过天。"
-        prompt = (
-            f"现在是 {now.strftime('%Y-%m-%d %H:%M')}，你准备去睡了。"
-            f"你现在的状态：{mood_digest}。\n\n{chat_block}\n\n"
-            "考虑一下今晚要不要跟他道声晚安：如果今天聊得开心、被关心，"
-            "就自然地道声晚安；如果今天有不愉快、你还在气头上，可以不说；"
-            "如果你想缓和关系，也可以借这句晚安说点什么。"
-            "像人一样自己斟酌，不是每次都非说不可。\n"
-            "如果决定不说，只输出 SKIP；决定说就只输出晚安那句话本身"
-            "（一两句、口语化，不要任何前缀和引号）。"
+        # M19-补丁1 D3：提示词搬面板（默认逐字一致）
+        prompt = render_template(
+            self._sleep_prompt("prompt_farewell", DEFAULT_PROMPT_FAREWELL),
+            {
+                "now_text": now.strftime("%Y-%m-%d %H:%M"),
+                "mood_digest": mood_digest,
+                "chat_block": chat_block,
+            },
+            name="sleep.prompt_farewell",
+            default=DEFAULT_PROMPT_FAREWELL,
         )
         try:
             raw = await self._dream_llm_call(prompt, persona or None)
@@ -952,23 +999,18 @@ class LivingLoop:
                 mood_digest = str(digest()) if callable(digest) else ""
             except Exception:
                 mood_digest = ""
-        prompt = (
-            "你刚睡醒。你睡着的时候收到了这些消息（当时你在睡，没回）：\n"
-            + "\n".join(lines)
-            + f"\n\n你睡了 {max(actual_h, 0.0):.1f} 个小时，"
-            f"现在是 {now.month}月{now.day}日 {now.hour}:{now.minute:02d}。"
-        )
-        if mood_digest:
-            prompt += f"你现在的状态：{mood_digest}"
-        prompt += (
-            "\n\n想想现在要不要回、怎么回：\n"
-            "- 如果已经不用回了（话题早过去了/只是随口一说/现在突然回"
-            "反而奇怪）→ 只输出 SKIP\n"
-            "- 如果值得正经回应 → 第一行写 REPLY，第二行开始写你要发的话\n"
-            "- 如果轻轻带一句就好 → 第一行写 BRIEF，第二行开始写你要发的"
-            "话（一句轻描淡写的，比如\"昨晚睡着了，你说的那个我看看哈\"）\n"
-            "用你自己的口吻，像刚睡醒看到手机消息那样自然。"
-            "只输出上述内容之一。"
+        # M19-补丁1 D4：提示词搬面板（默认逐字一致）；心境段是条件段，
+        # 以占位符注入（mood_section 为空串时该位置自然消失）
+        prompt = render_template(
+            self._sleep_prompt("prompt_wake_reply", DEFAULT_PROMPT_WAKE_REPLY),
+            {
+                "messages_block": "\n".join(lines),
+                "sleep_hours": f"{max(actual_h, 0.0):.1f}",
+                "now_text": f"{now.month}月{now.day}日 {now.hour}:{now.minute:02d}",
+                "mood_section": f"你现在的状态：{mood_digest}" if mood_digest else "",
+            },
+            name="sleep.prompt_wake_reply",
+            default=DEFAULT_PROMPT_WAKE_REPLY,
         )
         try:
             raw = await self._dream_llm_call(prompt, None)
@@ -1141,17 +1183,18 @@ class LivingLoop:
         fragments = [f for f in fragments if f]
         if not fragments:
             return
-        prompt = (
-            "你刚从睡梦中醒来，还带着睡意。下面是你最近的记忆碎片：\n"
-            + "\n".join(f"- {f}" for f in fragments)
-            + "\n\n请说一句你刚才做的梦，80 字以内，第一人称，语气朦胧含糊，"
-            "把碎片搅在一起也没关系，梦本来就是不讲道理的。只输出梦话本身。"
-        )
-        # M17-补丁1 A5：梦话也带一点学到的语气（低调注入，库空/关闭/异常
-        # 一律空串静默跳过——红线 1/5）
+        # M19-补丁1 D4：提示词搬面板（默认逐字一致）；风格注入段是 M17 的
+        # 代码逻辑，以占位符注入（空串时该位置自然消失）
         style_hint = self._style_hint(now)
-        if style_hint:
-            prompt += "\n" + style_hint
+        prompt = render_template(
+            self._sleep_prompt("prompt_dream", DEFAULT_PROMPT_DREAM),
+            {
+                "fragments_block": "\n".join(f"- {f}" for f in fragments),
+                "style_section": f"\n{style_hint}" if style_hint else "",
+            },
+            name="sleep.prompt_dream",
+            default=DEFAULT_PROMPT_DREAM,
+        )
         try:
             text = await self._dream_llm_call(prompt, None)
         except Exception as e:
@@ -1277,6 +1320,8 @@ class LivingLoop:
             # M15-补丁1 E4：搜索开关的执行侧快照（surf/read 优雅降级判定用；
             # 传 getter 本体——配置读取异常按"开"处理，不中断活动周期）
             search_enabled=_web_search_enabled(self._config_getter),
+            # M19-补丁1 D6：意图模板的配置通道（decision.prompt_intent_*）
+            config_getter=self._config_getter,
         )
 
         outcome = None
