@@ -39,8 +39,10 @@ def test_get_payload_structure_and_key_counts():
     config = _full_config()
     payload = build_config_payload(config, SCHEMA)
     # M19-补丁1：providers（面板 provider 下拉数据源）入列
-    assert set(payload) == {"knobs", "advanced", "schema", "providers"}
+    # M20-补丁1 F3：agent_tools（本体工具多选数据源）入列
+    assert set(payload) == {"knobs", "advanced", "schema", "providers", "agent_tools"}
     assert payload["providers"] == []
+    assert payload["agent_tools"] == []
 
     knobs = payload["schema"]["preset"]["items"]
     assert sum(1 for k in knobs if k.startswith("preset_")) == 8  # M6-补丁1：preset_sleep_style 随 sleep_mode 移除
@@ -54,12 +56,15 @@ def test_get_payload_structure_and_key_counts():
     # （搜索开关/本体工具）+ M17-补丁1 sleep 4 键（随机吵醒/醒来补回复）
     # + style_learning 6 键（风格学习新组）+ M19-补丁1 judge 新组 12 键 +
     #   提示词搬面板 14 键（decision 8 / initiative 2 / sleep 3 / style 1）
-    assert advanced_count == 111
+    # + M20-补丁1：model +2（allow_chat_fallback / prefix_cache_ttl_minutes）
+    #   - output_gate 1（quiet_hours 删除）+ style_learning 12（I/K/M 参数
+    #   与复盘归纳提示词）
+    assert advanced_count == 124
 
     # 当前值区：knobs 含全部旋钮默认、advanced 全部键（M14-补丁1 起 9 组）
     assert sum(1 for k in payload["knobs"] if k.startswith("preset_")) == 8
-    # M19-补丁1：+26（judge 12 + 提示词搬面板 14）
-    assert sum(len(v) for v in payload["advanced"].values()) == 111
+    # M19-补丁1：+26（judge 12 + 提示词搬面板 14）；M20-补丁1：+13（净）
+    assert sum(len(v) for v in payload["advanced"].values()) == 124
 
 
 # ---------------------------------------------------------------------------

@@ -25,7 +25,7 @@ BASE_CONFIG = {
     "sleep": {"sleep_window": "", "fatigue_rate_per_hour": 4.0,
               "dream_probability": 0.3},
     "output_gate": {"daily_message_limit": 10, "message_min_interval_minutes": 30,
-                    "target_sessions": "", "quiet_hours": ""},
+                    "target_sessions": ""},
 }
 
 

@@ -107,6 +107,7 @@ class LivingAgentLoop:
         life_extra_getter: Callable[..., str] | None = None,
         mood: Any = None,
         tool_builder: Callable[[], ToolSet] | None = None,
+        prefix_getter: Callable[..., Any] | None = None,
     ) -> None:
         self._context = context
         self._config_getter = config_getter
@@ -117,6 +118,11 @@ class LivingAgentLoop:
         self._persona_getter = persona_getter
         self._life_extra_getter = life_extra_getter
         self._mood = mood
+        # M20-补丁1 E 组：前缀对齐判定（main._agent_aligned_prefix 注入）。
+        # async (provider_id) -> dict | None：返回聊天前缀缓存
+        # {system_prompt, contexts} 时本次请求用它对齐（缓存保护）；
+        # None = 保持现有形态。不注入则行为与之前完全一致。
+        self._prefix_getter = prefix_getter
         # M15-补丁1 C0：本轮尝试正在使用的 provider（模态探针的数据源）。
         # _run_with_provider 每次尝试先更新——工具工厂装配 ToolSet 时读到的
         # 总是"这次活动实际在用的模型"
@@ -179,8 +185,16 @@ class LivingAgentLoop:
         last_result: AgentRunResult | None = None
         for index, (provider_id, provider) in enumerate(chain):
             remaining = budget - cumulative_tokens if budget > 0 else budget
+            # M20-补丁1 E 组：前缀对齐判定（provider 与聊天同账号才对齐）。
+            # 任何异常按"不对齐"处理，绝不让缓存保护影响活动主流程
+            align: dict | None = None
+            if self._prefix_getter is not None:
+                try:
+                    align = await self._prefix_getter(provider_id)
+                except Exception:
+                    align = None
             result = await self._run_with_provider(
-                provider, provider_id, intent, remaining, max_steps
+                provider, provider_id, intent, remaining, max_steps, align=align
             )
             cumulative_tokens += result.tokens_used
             last_result = result
@@ -229,8 +243,14 @@ class LivingAgentLoop:
         intent: str,
         budget: float,
         max_steps: int,
+        align: dict | None = None,
     ) -> AgentRunResult:
-        """用指定 provider 跑一轮完整 agent 循环（单次尝试）。"""
+        """用指定 provider 跑一轮完整 agent 循环（单次尝试）。
+
+        M20-补丁1 E 组：align 非 None 时（provider 与聊天同账号），请求
+        改用聊天的最终 system + 会话历史做前缀（逐字一致 → 缓存命中，
+        不冲掉聊天缓存）；原 system_prompt（人格/生活设定/活动指令）整体
+        并入首条 user 消息开头，指令内容一条不丢。"""
         # M15-补丁1 C0：先记录本轮 provider（工具工厂装配时读它做模态判定）
         self.current_provider = provider
         system_prompt = await self._system_prompt(intent)
@@ -240,6 +260,19 @@ class LivingAgentLoop:
             func_tool=await self._get_tools(),
             system_prompt=system_prompt or "",
         )
+        if align is not None:
+            prefix_system = str(align.get("system_prompt") or "")
+            if prefix_system:
+                request.system_prompt = prefix_system
+                request.contexts = list(align.get("contexts") or [])
+                merged = (
+                    f"{system_prompt}\n\n{intent}" if system_prompt else intent
+                )
+                request.prompt = merged
+                logger.debug(
+                    f"[AgentLoop] 前缀对齐生效（provider={provider_id}，"
+                    f"历史 {len(request.contexts)} 条，缓存保护）"
+                )
         runner = ToolLoopAgentRunner()
         await runner.reset(
             provider=provider,

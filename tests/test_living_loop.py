@@ -28,7 +28,6 @@ BASE_CONFIG = {
         "daily_message_limit": 10,
         "message_min_interval_minutes": 30,
         "target_sessions": "",
-        "quiet_hours": "",
     },
 }
 
@@ -115,7 +114,6 @@ CTX_CONFIG = {
         "daily_message_limit": 10,
         "message_min_interval_minutes": 30,
         "target_sessions": MASTER_UMO,
-        "quiet_hours": "",
     },
 }
 

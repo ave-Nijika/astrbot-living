@@ -59,8 +59,7 @@ AUTONOMOUS_CONFIG = {
         "sleep_farewell_message": "",
     },
     "output_gate": {"daily_message_limit": 10, "message_min_interval_minutes": 30,
-                    "target_sessions": "", "quiet_hours": "",
-                    "share_rewrite_enabled": False, "share_rewrite_prompt": "",
+                    "target_sessions": "",                    "share_rewrite_enabled": False, "share_rewrite_prompt": "",
                     "share_max_length": 120},
 }
 

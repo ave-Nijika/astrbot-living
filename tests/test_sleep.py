@@ -29,7 +29,7 @@ CONFIG = {
         "dream_probability": 0.3,
     },
     "output_gate": {"daily_message_limit": 10, "message_min_interval_minutes": 30,
-                    "target_sessions": "", "quiet_hours": ""},
+                    "target_sessions": ""},
 }
 
 IN_WINDOW = datetime(2026, 9, 8, 4, 0, 0)   # 凌晨 4 点：窗内

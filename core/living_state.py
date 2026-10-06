@@ -552,7 +552,12 @@ class LivingGate:
         return self.asleep_in_autonomous(now)
 
     async def should_send_message(self, now: datetime | None = None) -> tuple[bool, str]:
-        """此刻是否允许主动发消息（输出闸门，任务书 M1-E）。"""
+        """此刻是否允许主动发消息（输出闸门，任务书 M1-E）。
+
+        M20-补丁1 G：原第 3 关"静默时段"（output_gate.quiet_hours）已删——
+        主人定论：该不该安静由她的真实作息（睡眠系统）与判断模型决定，
+        不该再有一条跟着钟表走的死规则。其余闸门（每日上限/最小间隔/
+        睡眠静默）零改动。"""
         now = now or datetime.now()
         config = self._config_getter() or {}
         state = await self.get_state(now)
@@ -570,11 +575,6 @@ class LivingGate:
             elapsed = (now - last_message).total_seconds()
             if elapsed < min_interval_min * 60:
                 return False, "msg_interval"
-
-        # 3. 静默时段（与休眠窗口独立）
-        quiet = parse_time_window(output.get("quiet_hours"))
-        if quiet and in_time_window(now, quiet):
-            return False, "quiet_hours"
 
         return True, "ok"
 

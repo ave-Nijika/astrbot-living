@@ -4,7 +4,7 @@
   - 心跳间隔默认 45 分钟，且闸门不过就什么都不做；
   - 活动经历以第一人称自述写入对话上下文与 livingmemory 会话（M13-补丁1
     双落点），不再直塞记忆图谱；只有配置了 output_gate.target_sessions 才可能
-    真正发消息，且每条都过消息闸门（上限/间隔/静默时段）；
+    真正发消息，且每条都过消息闸门（上限/间隔）；
   - 主动出口有两条独立通路：五条分享链路（活动/梦/睡过头/告别/致谢，走
     改写器）+ M14-补丁1 的主动搭话念头系统（self.initiative，人格化台词
     不改写），后者只在清醒分支评估；
@@ -1380,13 +1380,15 @@ class LivingLoop:
         await self._write_activity_experience(activity, narration, activity_id)
         await self._gate.note_activity_finished()
         logger.info(f"[LivingLoop] 活动结束 name={activity.name}")
-        # M17-补丁1 A7：风格学习挂活动结束——read/surf 从本轮实际读到的
-        # 内容取样（fetcher 留档，脚本与 agent 两种执行形态都覆盖），
-        # 一次活动最多学 1 条。任何失败只 DEBUG（红线 5）
+        # M17-补丁1 A7：风格学习挂活动结束——M20-补丁1 L 组扩展：不再限定
+        # read/surf，由"本轮真的读了网页"的证据（fetch/浏览器读取留档，
+        # 时间 >= started_at）决定是否学习；素材库有待处理项时优先处理。
+        # started_at 传 real_start（真实时钟，与留档时间戳同源）；任何失败
+        # 只 DEBUG（红线 5）
         if self._style_learner is not None:
             try:
                 await self._style_learner.on_activity_end(
-                    activity.name, now, activity_id
+                    activity.name, now, activity_id, started_at=real_start
                 )
             except asyncio.CancelledError:
                 raise

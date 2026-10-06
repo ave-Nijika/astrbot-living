@@ -51,6 +51,12 @@ const SOURCE_WEIGHT_FIELDS = [
   { key: "article", label: "单作者文章权重" },
 ];
 
+/* M20-补丁1 F3：initiative.sources 的取值固定（两个来源）——改多选。 */
+const INITIATIVE_SOURCE_CHOICES = [
+  { value: "random_miss", label: "random_miss：没回她消息时，她可能会惦记" },
+  { value: "open_topic", label: "open_topic：从最近的聊天内容里找话题" },
+];
+
 /* 任务书 2.2 的危险项清单（advanced 组内，带醒目警告）。
  * M18-补丁1 D1：补入 daily_impulse_limit——与 token 预算/工具轮数叠加时
  * 同样影响成本（0 = 不限制，叠加其他开关时可能放量）。 */
@@ -99,6 +105,229 @@ const state = {
   dirty: false,
   expanded: loadExpanded(),
 };
+
+/* M20-补丁1 F1/A2/A4：provider 类字段的统一控件。
+ * - 下拉选项从"已启用的 provider"动态生成（数据源 GET /config 的 providers）；
+ * - 留空选项（当前=聊天模型）+ A2 缓存警告 + F1-b 手填兜底（填了不存在
+ *   的 id 明确提示，不静默回退）；
+ * - getter/setter 抽象：expert 的 model.provider_id 写 advanced，novice
+ *   的 preset_model 写 knobs，同一控件两处复用。 */
+function providerPickerControl({ value, onChange, emptyLabel }) {
+  const wrap = document.createElement("div");
+  wrap.className = "provider-picker";
+  const providers = state.providers || [];
+  const MANUAL = "__manual__";
+  const isManual = !!value && !providers.includes(value);
+
+  const select = document.createElement("select");
+  select.className = "enum-select";
+  const emptyOpt = document.createElement("option");
+  emptyOpt.value = "";
+  emptyOpt.textContent = emptyLabel || "（留空 = 与聊天共用模型）";
+  select.appendChild(emptyOpt);
+  for (const pid of providers) {
+    const optEl = document.createElement("option");
+    optEl.value = pid;
+    optEl.textContent = pid;
+    select.appendChild(optEl);
+  }
+  const manualOpt = document.createElement("option");
+  manualOpt.value = MANUAL;
+  manualOpt.textContent = "手动填写 provider id…";
+  select.appendChild(manualOpt);
+  select.value = isManual ? MANUAL : (value || "");
+
+  const manualInput = document.createElement("input");
+  manualInput.type = "text";
+  manualInput.placeholder = "provider id（需与 provider 管理页里的 id 一致）";
+  manualInput.value = isManual ? value : "";
+  if (!isManual) manualInput.classList.add("hidden");
+
+  const status = document.createElement("div");
+  status.className = "control-status";
+  const warn = document.createElement("div");
+  warn.className = "control-warn";
+
+  const refresh = () => {
+    const current = select.value === MANUAL ? manualInput.value.trim() : select.value;
+    if (!current) {
+      status.textContent = "当前生效：聊天模型（共用账号）";
+      warn.textContent = "⚠ 与聊天共用模型：她做活动/搭话/分享的任何一次调用都会打断你聊天的缓存，聊天全部历史将按未命中重新计费。建议单独配一个 provider（最好用不同的 api key）。";
+    } else if (!providers.includes(current)) {
+      status.textContent = `当前生效：${current}（不在已启用列表中）`;
+      warn.textContent = "⚠ 该 provider id 不在已启用的 provider 列表里，调用时会按回退处理并在日志留痕。请核对拼写，或到 provider 管理页启用它。";
+    } else {
+      status.textContent = `当前生效：${current}（独立 provider）`;
+      warn.textContent = "";
+    }
+  };
+
+  select.addEventListener("change", () => {
+    if (select.value === MANUAL) {
+      manualInput.classList.remove("hidden");
+      manualInput.focus();
+      refresh();
+    } else {
+      manualInput.classList.add("hidden");
+      onChange(select.value);
+      refresh();
+    }
+  });
+  manualInput.addEventListener("input", refresh); // 输入中实时校验提示
+  manualInput.addEventListener("change", () => {
+    onChange(manualInput.value.trim());
+    refresh();
+  });
+  refresh();
+  wrap.append(select, manualInput, status, warn);
+  return wrap;
+}
+
+/* M20-补丁1 F3：时间窗（HH:MM-HH:MM）→ 两个时间选择器。
+ * 值不是标准格式（手改过的自定义串）时退回文本框，绝不静默改写已存值。 */
+function timeWindowControl({ value, onChange }) {
+  const wrap = document.createElement("div");
+  wrap.className = "time-window";
+  const text = String(value ?? "");
+  const match = text.match(/^(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})$/);
+  if (text && !match) {
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = text;
+    input.addEventListener("change", () => onChange(input.value.trim()));
+    const hint = document.createElement("div");
+    hint.className = "control-warn";
+    hint.textContent = "⚠ 当前值不是 HH:MM-HH:MM 标准格式，已按原文展示（改动会整体覆盖）。";
+    wrap.append(input, hint);
+    return wrap;
+  }
+  const start = document.createElement("input");
+  start.type = "time";
+  start.value = match ? match[1] : "23:00";
+  const end = document.createElement("input");
+  end.type = "time";
+  end.value = match ? match[2] : "07:00";
+  const commit = () => {
+    if (start.value && end.value) onChange(`${start.value}-${end.value}`);
+  };
+  start.addEventListener("change", commit);
+  end.addEventListener("change", commit);
+  wrap.append(start, document.createTextNode(" 至 "), end);
+  return wrap;
+}
+
+/* M20-补丁1 F2：工作区目录可视化选择——服务端列目录（fs_list 端点，
+ * 只读、限根），点选回填绝对路径。不用浏览器原生 directory input
+ * （拿不到服务器真实路径）。 */
+function workspaceDirControl({ value, onChange }) {
+  const wrap = document.createElement("div");
+  wrap.className = "workspace-picker";
+  const row = document.createElement("div");
+  row.className = "workspace-row";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.placeholder = "留空 = 用插件数据目录下的 workspace/（推荐）";
+  input.value = value ?? "";
+  input.addEventListener("change", () => onChange(input.value.trim()));
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "link-button";
+  btn.textContent = "浏览…";
+  const browserEl = document.createElement("div");
+  browserEl.className = "fs-browser hidden";
+
+  const hide = () => browserEl.classList.add("hidden");
+  const toggle = () => {
+    if (browserEl.classList.contains("hidden")) list(input.value.trim());
+    else hide();
+  };
+
+  function parentWithinRoots(path, roots) {
+    for (const root of roots) {
+      if (path === root) return null; // 已是根，无上级
+      if (path.startsWith(root + "/") || path.startsWith(root + "\\")) {
+        const parent = path.replace(/[\\/]+$/, "").replace(/[\\/][^\\/]*$/, "");
+        if (parent.startsWith(root)) return parent;
+      }
+    }
+    return null;
+  }
+
+  function renderBrowser(data) {
+    browserEl.innerHTML = "";
+    const title = document.createElement("div");
+    title.className = "fs-path";
+    title.textContent = "当前目录：" + data.path;
+    browserEl.appendChild(title);
+    const parent = parentWithinRoots(data.path, data.roots || []);
+    const nav = document.createElement("div");
+    nav.className = "fs-actions";
+    if (parent) {
+      const up = document.createElement("button");
+      up.type = "button";
+      up.className = "link-button";
+      up.textContent = "上一级";
+      up.addEventListener("click", () => list(parent));
+      nav.appendChild(up);
+    }
+    const pickHere = document.createElement("button");
+    pickHere.type = "button";
+    pickHere.className = "link-button";
+    pickHere.textContent = "选择当前目录";
+    pickHere.addEventListener("click", () => {
+      onChange(data.path);
+      input.value = data.path;
+      hide();
+      toast("已选择工作区目录（保存后生效）");
+    });
+    nav.appendChild(pickHere);
+    browserEl.appendChild(nav);
+    if (!(data.dirs || []).length) {
+      const empty = document.createElement("div");
+      empty.className = "hint";
+      empty.textContent = "（该目录下没有子目录）";
+      browserEl.appendChild(empty);
+    }
+    for (const dir of data.dirs || []) {
+      const line = document.createElement("div");
+      line.className = "fs-row";
+      const name = document.createElement("span");
+      name.textContent = "📁 " + dir.name;
+      const enter = document.createElement("button");
+      enter.type = "button";
+      enter.className = "link-button";
+      enter.textContent = "进入";
+      enter.addEventListener("click", () => list(dir.path));
+      line.append(name, enter);
+      browserEl.appendChild(line);
+    }
+  }
+
+  async function list(path) {
+    browserEl.classList.remove("hidden");
+    browserEl.textContent = "读取中…";
+    try {
+      const resp = await bridge.apiPost("fs_list", { path: path || "" });
+      if (resp && resp.status === "error") {
+        browserEl.textContent = "⚠ " + (resp.message || "读取失败");
+        return;
+      }
+      const data = resp && resp.data ? resp.data : resp;
+      if (!data || !data.path) {
+        browserEl.textContent = "⚠ 读取失败：响应为空";
+        return;
+      }
+      renderBrowser(data);
+    } catch (e) {
+      browserEl.textContent = "⚠ 读取失败：" + e;
+    }
+  }
+
+  btn.addEventListener("click", toggle);
+  row.append(input, btn);
+  wrap.append(row, browserEl);
+  return wrap;
+}
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -162,6 +391,7 @@ async function load() {
   const payload = data && data.data ? data.data : data;
   state.schema = payload.schema;
   state.providers = payload.providers || []; // M19-补丁1 F2/E3：provider 下拉数据源
+  state.agent_tools = payload.agent_tools || []; // M20-补丁1 F3：本体工具多选数据源
   state.values.knobs = { ...(payload.knobs || {}) };
   state.values.advanced = JSON.parse(JSON.stringify(payload.advanced || {}));
   state.loaded = JSON.parse(JSON.stringify(state.values));
@@ -220,15 +450,13 @@ function renderNovice() {
     card.appendChild(hint);
 
     if (name === "preset_model") {
-      const input = document.createElement("input");
-      input.type = "text";
-      input.placeholder = "provider id（留空用聊天模型）";
-      input.value = state.values.knobs[name] ?? "";
-      input.addEventListener("input", () => {
-        state.values.knobs[name] = input.value;
-        setDirty(true);
-      });
-      card.appendChild(input);
+      // M20-补丁1 F1/A2：新手卡"它独处时用哪个 AI 大脑"改下拉（更不能
+      // 让新手手打 id）+ 留空缓存警告 + 当前生效显示（providerPickerControl）
+      card.appendChild(providerPickerControl({
+        value: state.values.knobs[name] ?? "",
+        onChange: (v) => { state.values.knobs[name] = v; setDirty(true); },
+        emptyLabel: "（留空 = 与聊天共用模型）",
+      }));
     } else {
       const options = item.options || [];
       const wrap = document.createElement("div");
@@ -259,6 +487,7 @@ function renderNovice() {
   grid.appendChild(wakeRandomCard()); // 随机吵醒（M17-补丁1 C1）
   grid.appendChild(pendingReplyCard()); // 醒来补回复（M17-补丁1 C2）
   grid.appendChild(styleLearningCard()); // 风格学习（M17-补丁1 A5）
+  grid.appendChild(styleDataCard()); // M20-补丁1 J：语料与素材（添加/立即处理）
   grid.appendChild(browserCard()); // 浏览器能力说明 + 实时状态
   grid.appendChild(searchToggleCard()); // 联网搜索开关
   grid.appendChild(agentToolsCard()); // 本体工具开关
@@ -1053,6 +1282,73 @@ function buildControl(group, key, item, container) {
       wrap.appendChild(row);
     }
     container.appendChild(wrap);
+  } else if (group === "model" && key === "provider_id") {
+    // M20-补丁1 F1/A2/A4：自主活动 provider 改下拉 + 手填兜底 + 缓存警告
+    container.appendChild(providerPickerControl({
+      value: value ?? "",
+      onChange: (v) => set(v),
+      emptyLabel: "（留空 = 与聊天共用模型）",
+    }));
+  } else if (group === "autonomy" && key === "workspace_dir") {
+    // M20-补丁1 F2：工作区目录可视化选择（服务端列目录，只读限根）
+    container.appendChild(workspaceDirControl({ value: value ?? "", onChange: (v) => set(v) }));
+  } else if (group === "initiative" && key === "sources") {
+    // M20-补丁1 F3：念头来源改多选（取值固定，逗号串形态保持不变）
+    const current = String(value ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+    const wrap = document.createElement("div");
+    wrap.className = "multi-choices";
+    for (const choice of INITIATIVE_SOURCE_CHOICES) {
+      const row = document.createElement("label");
+      row.className = "multi-choice";
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = current.includes(choice.value);
+      box.addEventListener("change", () => {
+        const selected = INITIATIVE_SOURCE_CHOICES
+          .map((c) => c.value)
+          .filter((v) => (v === choice.value ? box.checked : current.includes(v)));
+        set(selected.join(","));
+        current.length = 0;
+        current.push(...selected);
+      });
+      row.append(box, document.createTextNode(choice.label));
+      wrap.appendChild(row);
+    }
+    container.appendChild(wrap);
+  } else if (group === "capabilities" && key === "agent_tools") {
+    // M20-补丁1 F3：本体工具白名单改多选（选项=本体已注册工具，动态）。
+    // 注册表里没有但已配置的值原样保留显示（F4：不静默规范化用户已存值）
+    const current = String(value ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+    const registry = state.agent_tools || [];
+    const extras = current.filter((v) => !registry.includes(v));
+    const wrap = document.createElement("div");
+    wrap.className = "multi-choices";
+    const names = [...registry, ...extras];
+    if (!names.length) {
+      const hint = document.createElement("div");
+      hint.className = "hint";
+      hint.textContent = "（本体当前没有已注册的工具——custom 档将得到空工具集）";
+      wrap.appendChild(hint);
+    }
+    for (const name of names) {
+      const row = document.createElement("label");
+      row.className = "multi-choice";
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = current.includes(name);
+      box.addEventListener("change", () => {
+        const selected = names.filter((v) => (v === name ? box.checked : current.includes(v)));
+        set(selected.join(","));
+        current.length = 0;
+        current.push(...selected);
+      });
+      row.append(box, document.createTextNode(extras.includes(name) ? `${name}（注册表中没有，请核对）` : name));
+      wrap.appendChild(row);
+    }
+    container.appendChild(wrap);
+  } else if (group === "sleep" && key === "circadian_hint") {
+    // M20-补丁1 F3：昼夜节律提示窗改两个时间选择器（非标准格式退回文本框）
+    container.appendChild(timeWindowControl({ value: value ?? "", onChange: (v) => set(v) }));
   } else if (t === "list" || t === "object") {
     const ta = document.createElement("textarea");
     ta.rows = t === "object" ? 4 : 3;
@@ -1149,6 +1445,11 @@ function renderExpert() {
       buildControl(group, key, item, ctrl);
       row.append(labelEl, ctrl);
       body_el.appendChild(row);
+    }
+
+    // M20-补丁1 J：语料库/素材库管理挂在 style_learning 抽屉末尾
+    if (group === "style_learning") {
+      body_el.appendChild(styleLibraryAdmin());
     }
 
     drawer.append(head, body_el);
@@ -1495,6 +1796,382 @@ function switchView(view) {
 /* ---------------- 入口 ---------------- */
 
 const bridge = await waitBridge();
+
+/* ---------------- M20-补丁1 J：语料库与素材库管理 ----------------
+ * 读写走独立端点（style_data/style_corpus/style_materials/style_process），
+ * 即时提交，不进顶部"保存改动"的配置差量流。红线：这些库与记忆库物理
+ * 隔离，面板的任何写入都不触碰记忆。 */
+
+async function fetchStyleData() {
+  const resp = await bridge.apiGet("style_data");
+  if (resp && resp.status === "error") throw new Error(resp.message || "读取失败");
+  const data = resp && resp.data ? resp.data : resp;
+  return {
+    corpus: (data && data.corpus) || [],
+    materials: (data && data.materials) || [],
+    features: (data && data.features) || [],
+    usage: (data && data.usage) || [],
+    meta: (data && data.meta) || {},
+  };
+}
+
+const STYLE_RESULT_LABELS = {
+  learned: "已提炼入库",
+  verdict_ai: "判定像 AI 写的，没学",
+  verdict_uncertain: "拿不准，没学",
+  no_dims: "没提炼出可学片段",
+  too_short: "内容太短",
+  duplicate: "语料库已有同内容",
+};
+
+function styleResultBadge(material) {
+  const span = document.createElement("span");
+  span.className = "style-badge";
+  if (!material.processed) {
+    span.textContent = "未处理";
+    span.classList.add("pending");
+  } else if (material.result === "learned") {
+    span.textContent = "已处理 → 入库";
+    span.classList.add("ok");
+  } else {
+    span.textContent = "已处理：" + (STYLE_RESULT_LABELS[material.result] || material.result || "未学到");
+    span.classList.add("done");
+  }
+  return span;
+}
+
+function styleAddForm(onChanged) {
+  const wrap = document.createElement("div");
+  wrap.className = "style-add";
+  const ta = document.createElement("textarea");
+  ta.rows = 3;
+  ta.placeholder = "粘贴你希望她学的说话语料（评论区、聊天记录、一段文字…）";
+  const note = document.createElement("input");
+  note.type = "text";
+  note.placeholder = "备注（可选，比如来源）";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "link-button";
+  btn.textContent = "添加素材";
+  btn.addEventListener("click", async () => {
+    if (!ta.value.trim()) { toast("素材内容不能为空", true); return; }
+    btn.disabled = true;
+    try {
+      const resp = await bridge.apiPost("style_materials", {
+        action: "add", text: ta.value, note: note.value,
+      });
+      if (resp && resp.status === "error") { toast(resp.message || "添加失败", true); return; }
+      ta.value = ""; note.value = "";
+      toast("素材已添加（活动结束或点「立即处理」时提炼）");
+      if (onChanged) onChanged();
+    } catch (e) {
+      toast("添加失败：" + e, true);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  wrap.append(ta, note, btn);
+  return wrap;
+}
+
+function styleProcessButton(onChanged) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "link-button";
+  btn.textContent = "立即处理";
+  btn.title = "不等下一次活动，立刻提炼素材库里的待处理素材（30 秒限频）";
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    btn.textContent = "处理中…";
+    try {
+      const resp = await bridge.apiPost("style_process", {});
+      const message = resp && resp.message ? resp.message : "完成";
+      toast(message, resp && resp.status === "error");
+      if (onChanged) onChanged();
+    } catch (e) {
+      toast("处理失败：" + e, true);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "立即处理";
+    }
+  });
+  return btn;
+}
+
+function styleMaterialsList(materials, onChanged) {
+  const wrap = document.createElement("div");
+  wrap.className = "style-list";
+  if (!materials.length) {
+    const empty = document.createElement("p");
+    empty.className = "hint";
+    empty.textContent = "素材库还是空的。把你希望她学的语料粘贴进去（上面的输入框）。";
+    wrap.appendChild(empty);
+    return wrap;
+  }
+  for (const m of materials) {
+    const row = document.createElement("div");
+    row.className = "style-row";
+    const excerpt = document.createElement("div");
+    excerpt.className = "style-excerpt";
+    excerpt.textContent = String(m.text || "").slice(0, 80) + (String(m.text || "").length > 80 ? "…" : "");
+    const meta = document.createElement("div");
+    meta.className = "style-meta";
+    const noteText = m.note ? `备注：${m.note}` : "";
+    meta.append(styleResultBadge(m));
+    if (noteText) {
+      const noteSpan = document.createElement("span");
+      noteSpan.textContent = " " + noteText;
+      meta.appendChild(noteSpan);
+    }
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "link-button danger";
+    del.textContent = "删除";
+    del.addEventListener("click", async () => {
+      const resp = await bridge.apiPost("style_materials", { action: "delete", id: m.id });
+      if (resp && resp.status === "error") { toast(resp.message || "删除失败", true); return; }
+      toast("已删除");
+      if (onChanged) onChanged();
+    });
+    row.append(excerpt, meta, del);
+    wrap.appendChild(row);
+  }
+  return wrap;
+}
+
+function styleCorpusList(corpus, { editable = false, onChanged = null } = {}) {
+  const wrap = document.createElement("div");
+  wrap.className = "style-list";
+  if (!corpus.length) {
+    const empty = document.createElement("p");
+    empty.className = "hint";
+    empty.textContent = "语料库还是空的——她读完网页学到第一条风格后，会出现在这里。";
+    wrap.appendChild(empty);
+    return wrap;
+  }
+  for (const entry of corpus) {
+    const row = document.createElement("div");
+    row.className = "style-row";
+    const dims = entry.dims || {};
+    const dimText = Object.entries(dims)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join("；");
+    const main = document.createElement("div");
+    main.className = "style-excerpt";
+    main.textContent = dimText || "（无内容）";
+    const meta = document.createElement("div");
+    meta.className = "style-meta";
+    const kind = entry.manual ? "人工优选" : (entry.source_kind === "dialogue" ? "实战对话" : "文章");
+    const reviewNote = entry.review_note ? `，最近判定：${entry.review_note}` : "";
+    meta.appendChild(document.createTextNode(
+      `${kind} · 学于 ${(entry.learned_at || "").slice(0, 10)} · 取用 ${entry.used_count || 0} 次 · 重要度 ${entry.importance ?? 1} · 留存度 ${entry.retention ?? 1}${reviewNote}`
+    ));
+    row.append(main, meta);
+    if (editable) {
+      const actions = document.createElement("div");
+      actions.className = "style-actions";
+      const editBtn = document.createElement("button");
+      editBtn.type = "button";
+      editBtn.className = "link-button";
+      editBtn.textContent = "编辑";
+      editBtn.addEventListener("click", () => {
+        if (row.querySelector("textarea")) return; // 已在编辑
+        const ta = document.createElement("textarea");
+        ta.rows = 4;
+        ta.value = JSON.stringify(dims, null, 1);
+        const saveBtn = document.createElement("button");
+        saveBtn.type = "button";
+        saveBtn.className = "link-button";
+        saveBtn.textContent = "保存";
+        saveBtn.addEventListener("click", async () => {
+          let dimsNext;
+          try { dimsNext = JSON.parse(ta.value || "{}"); }
+          catch { toast("不是合法 JSON", true); return; }
+          const resp = await bridge.apiPost("style_corpus", {
+            action: "update", id: entry.id, dims: dimsNext,
+          });
+          if (resp && resp.status === "error") { toast(resp.message || "保存失败", true); return; }
+          toast("已保存");
+          if (onChanged) onChanged();
+        });
+        const cancelBtn = document.createElement("button");
+        cancelBtn.type = "button";
+        cancelBtn.className = "link-button";
+        cancelBtn.textContent = "取消";
+        cancelBtn.addEventListener("click", () => {
+          editor.remove();
+          actions.querySelectorAll("button").forEach((b) => (b.disabled = false));
+        });
+        const editor = document.createElement("div");
+        editor.className = "style-editor";
+        editor.append(ta, saveBtn, cancelBtn);
+        row.appendChild(editor);
+        actions.querySelectorAll("button").forEach((b) => (b.disabled = b !== editBtn ? true : b.disabled));
+        editBtn.disabled = true;
+      });
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "link-button danger";
+      delBtn.textContent = "删除";
+      delBtn.addEventListener("click", async () => {
+        const resp = await bridge.apiPost("style_corpus", { action: "delete", id: entry.id });
+        if (resp && resp.status === "error") { toast(resp.message || "删除失败", true); return; }
+        toast("已删除");
+        if (onChanged) onChanged();
+      });
+      actions.append(editBtn, delBtn);
+      row.appendChild(actions);
+    }
+    wrap.appendChild(row);
+  }
+  return wrap;
+}
+
+function styleFeaturesList(features) {
+  const wrap = document.createElement("div");
+  wrap.className = "style-list";
+  if (!features.length) {
+    const empty = document.createElement("p");
+    empty.className = "hint";
+    empty.textContent = "沉淀层还没有内容——等每日复盘累计足够好评后，会归纳出她的稳定说话方式。";
+    wrap.appendChild(empty);
+    return wrap;
+  }
+  for (const feature of features) {
+    const row = document.createElement("div");
+    row.className = "style-row";
+    const dims = feature.dims || {};
+    const main = document.createElement("div");
+    main.className = "style-excerpt";
+    main.textContent = Object.entries(dims).map(([k, v]) => `${k}: ${v}`).join("；");
+    const meta = document.createElement("div");
+    meta.className = "style-meta";
+    meta.textContent = `沉淀于 ${(feature.created_at || "").slice(0, 10)} · 重要度 ${feature.importance ?? 1}`;
+    row.append(main, meta);
+    wrap.appendChild(row);
+  }
+  return wrap;
+}
+
+function styleClearButton(label, endpoint, onChanged) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "link-button danger";
+  btn.textContent = label;
+  btn.addEventListener("click", async () => {
+    const yes = await confirmModal(`确定要${label}吗？此操作不可恢复。`);
+    if (!yes) return;
+    const resp = await bridge.apiPost(endpoint, { action: "clear", confirm: true });
+    if (resp && resp.status === "error") { toast(resp.message || "操作失败", true); return; }
+    toast(resp.message || "已清空");
+    if (onChanged) onChanged();
+  });
+  return btn;
+}
+
+/* 专家库管理：挂在 style_learning 抽屉末尾（查看/编辑/删除/清空全量） */
+function styleLibraryAdmin() {
+  const box = document.createElement("div");
+  box.className = "key-row style-admin";
+  const render = async () => {
+    box.innerHTML = "";
+    const label = document.createElement("div");
+    label.className = "key-label";
+    const name = document.createElement("span");
+    name.className = "key-name";
+    name.textContent = "语料库 / 素材库管理";
+    const hint = document.createElement("div");
+    hint.className = "hint";
+    hint.textContent = "语料库=她学到的风格片段；素材库=你手动投入的原始语料；调用记录=取用事实（不进记忆）。";
+    label.append(name, hint);
+    const ctrl = document.createElement("div");
+    ctrl.className = "key-control style-admin-body";
+    try {
+      const data = await fetchStyleData();
+      const corpusHead = document.createElement("h4");
+      corpusHead.textContent = `语料库（${data.corpus.length} 条）`;
+      ctrl.append(
+        corpusHead,
+        styleCorpusList(data.corpus, { editable: true, onChanged: render }),
+        styleClearButton("清空语料库", "style_corpus", render),
+        document.createElement("h4"),
+      );
+      ctrl.lastChild.textContent = `素材库（${data.materials.length} 条）`;
+      ctrl.append(
+        styleAddForm(render),
+        styleMaterialsList(data.materials, render),
+        styleProcessButton(render),
+        styleClearButton("清空素材库", "style_materials", render),
+        document.createElement("h4"),
+      );
+      ctrl.lastChild.textContent = `沉淀层（${data.features.length} 条）`;
+      ctrl.append(
+        styleFeaturesList(data.features),
+        document.createElement("h4"),
+      );
+      ctrl.lastChild.textContent = `最近取用（${data.usage.length} 条）`;
+      const usageList = document.createElement("div");
+      usageList.className = "style-list";
+      for (const record of data.usage.slice(0, 20)) {
+        const line = document.createElement("div");
+        line.className = "style-meta";
+        line.textContent = `${(record.ts || "").slice(0, 16)} [${record.trigger}] ${record.entry_ids.join("、")}`;
+        usageList.appendChild(line);
+      }
+      ctrl.append(usageList);
+    } catch (e) {
+      const err = document.createElement("div");
+      err.className = "control-warn";
+      err.textContent = "读取失败：" + e;
+      ctrl.appendChild(err);
+    }
+    box.append(label, ctrl);
+  };
+  render();
+  return box;
+}
+
+/* 新手卡：语料与素材（查看 / 添加 / 立即处理） */
+function styleDataCard() {
+  const card = document.createElement("div");
+  card.className = "knob-card style-card";
+  const title = document.createElement("h3");
+  title.textContent = "语料与素材（她想学谁的说话方式，你说了算）";
+  card.appendChild(title);
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent = "把你想让她学的语料丢进素材库，她下次活动结束（或你点「立即处理」）就会提炼成自己的说话方式。学到的都存在语料库里，随时可看可删。";
+  card.appendChild(hint);
+
+  const body = document.createElement("div");
+  card.appendChild(body);
+  const render = async () => {
+    body.innerHTML = "";
+    body.appendChild(styleAddForm(render));
+    try {
+      const data = await fetchStyleData();
+      const pending = data.materials.filter((m) => !m.processed).length;
+      const head = document.createElement("div");
+      head.className = "style-head-row";
+      const summary = document.createElement("span");
+      summary.textContent = `素材库 ${data.materials.length} 条（待处理 ${pending}） · 语料库 ${data.corpus.length} 条`;
+      head.append(summary, styleProcessButton(render));
+      body.appendChild(head);
+      body.appendChild(styleMaterialsList(data.materials, render));
+      const corpusHead = document.createElement("h4");
+      corpusHead.textContent = `她学到的语料（${data.corpus.length} 条）`;
+      body.appendChild(corpusHead);
+      body.appendChild(styleCorpusList(data.corpus, { editable: false }));
+    } catch (e) {
+      const err = document.createElement("div");
+      err.className = "control-warn";
+      err.textContent = "读取失败：" + e;
+      body.appendChild(err);
+    }
+  };
+  render();
+  return card;
+}
 
 async function boot() {
   $("#tab-novice").addEventListener("click", () => switchView("novice"));

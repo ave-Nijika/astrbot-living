@@ -21,7 +21,7 @@ BASE_CONFIG = {
     "capabilities": {"cooldown_between_activities_hours": 2.0},
     "sleep": {"sleep_window": ""},
     "output_gate": {"daily_message_limit": 10, "message_min_interval_minutes": 30,
-                    "target_sessions": "", "quiet_hours": ""},
+                    "target_sessions": ""},
 }
 
 

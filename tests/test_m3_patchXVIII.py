@@ -41,7 +41,8 @@ BASELINE_KEYS = {
         "single_run_token_budget",
     },
     "output_gate": {
-        "daily_message_limit", "message_min_interval_minutes", "quiet_hours",
+        # M20-补丁1 G：quiet_hours 删除（静默由作息与判断模型决定，组键只减不减）
+        "daily_message_limit", "message_min_interval_minutes",
         "share_max_length", "share_rewrite_enabled", "share_rewrite_prompt",
         "target_sessions",
     },
@@ -70,17 +71,25 @@ BASELINE_KEYS = {
         "web_search_enabled", "agent_tools_mode", "agent_tools",
     },
     "memory": {"backend"},
-    "model": {"fallback_chain", "provider_id"},
+    # M20-补丁1 B/E：allow_chat_fallback（缓存保护开关）+ prefix_cache_ttl_minutes
+    "model": {"fallback_chain", "provider_id", "allow_chat_fallback",
+              "prefix_cache_ttl_minutes"},
     # M14-补丁1：主动搭话念头系统（独立新组，主动出口第二条通路）
     # M14-补丁2：独立间隔/每日上限/固定时窗三键删除（复用共享闸门与睡眠模块）
     "initiative": {
         "base_probability", "enabled", "final_review_enabled", "sources",
         "unanswered_backoff",
     },
-    # M17-补丁1：风格学习（素材库与记忆完全分开的独立新组）
+    # M17-补丁1：风格学习（分层库与记忆完全分开的独立新组）
+    # M20-补丁1 I/K/M：+12 键（素材/复盘/归纳参数 + 2 个提示词键）
     "style_learning": {
         "enabled", "max_inject_chars", "max_items_per_pick",
         "pool_limit", "decay_days", "source_weights",
+        "material_max_chars", "min_material_chars", "item_max_chars",
+        "manual_weight", "feature_importance_cap",
+        "daily_review_enabled", "daily_review_time",
+        "usage_log_limit", "material_pool_limit", "feature_promote_threshold",
+        "prompt_distill", "prompt_review", "prompt_induct",
     },
 }
 

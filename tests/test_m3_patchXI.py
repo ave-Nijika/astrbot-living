@@ -33,8 +33,7 @@ BASE_CONFIG = {
               "sleep_farewell_message": "", "nap_enabled": True,
               "circadian_hint": "23:00-07:00"},
     "output_gate": {"daily_message_limit": 10, "message_min_interval_minutes": 30,
-                    "target_sessions": "", "quiet_hours": "",
-                    "share_rewrite_enabled": False, "share_rewrite_prompt": "",
+                    "target_sessions": "",                    "share_rewrite_enabled": False, "share_rewrite_prompt": "",
                     "share_max_length": 120},
     "autonomy": {"tier": 1, "write_level": 0, "workspace_dir": ""},
 }

@@ -64,13 +64,18 @@ def default_tree(schema: dict) -> dict:
 
 
 def build_config_payload(
-    config: Any, schema: dict, providers: list[str] | None = None
+    config: Any,
+    schema: dict,
+    providers: list[str] | None = None,
+    agent_tools: list[str] | None = None,
 ) -> dict:
     """组装 GET 返回体：当前值（knobs + advanced）+ 渲染元数据（schema）。
 
     M19-补丁1 F2/E3：providers 是已启用 chat provider 的 id 清单（面板
-    判断模型/fallback_chain 下拉的数据源），缺省 None = 空列表——旧调用
-    点（mock 服务器等）零改动。"""
+    判断模型/fallback_chain/自主活动 provider 下拉的数据源），缺省
+    None = 空列表——旧调用点（mock 服务器等）零改动。
+    M20-补丁1 F3：agent_tools 是本体已注册工具名清单
+    （capabilities.agent_tools 多选控件的数据源），同样缺省即空。"""
     from .conf_path import preset_group
 
     def section(group_items: dict) -> dict:
@@ -96,6 +101,7 @@ def build_config_payload(
             CONF_ADVANCED: {"items": section(schema.get(CONF_ADVANCED, {}).get("items", {}))},
         },
         "providers": list(providers or []),
+        "agent_tools": list(agent_tools or []),
     }
 
 
@@ -271,3 +277,77 @@ async def apply_mood_interests(mood: Any, payload: Any) -> dict:
         mood.interests.clear()
     await mood.save()
     return {"interests": mood.get_interests()}
+
+
+# ---------------------------------------------------------------------------
+# 语料库 / 素材库管理（M20-补丁1 J 组）。业务逻辑集中在本模块（handler 只
+# 做"读 body → 调逻辑 → 包装响应"）；红线：任何写入只动 style_*.json，
+# 绝不触碰记忆库。
+# ---------------------------------------------------------------------------
+STYLE_CORPUS_ACTIONS = ("update", "delete", "clear")
+STYLE_MATERIAL_ACTIONS = ("add", "delete", "clear")
+
+
+def apply_style_corpus_action(learner: Any, payload: Any) -> dict:
+    """J1：语料库操作。update（编辑六维）/ delete / clear（需 confirm）。"""
+    if not isinstance(payload, dict):
+        raise PanelApiError("请求体必须是 JSON 对象")
+    action = payload.get("action")
+    if action not in STYLE_CORPUS_ACTIONS:
+        raise PanelApiError(
+            f"未知 action {action!r}，允许：{list(STYLE_CORPUS_ACTIONS)}"
+        )
+    if action == "update":
+        entry_id = str(payload.get("id") or "").strip()
+        dims = payload.get("dims")
+        if not entry_id or not isinstance(dims, dict):
+            raise PanelApiError("参数不完整（需要 id 与 dims）")
+        entry = learner.update_entry(entry_id, dims)
+        if entry is None:
+            raise PanelApiError(f"条目不存在：{entry_id}")
+        return {"message": "已保存", "entry": entry}
+    if action == "delete":
+        entry_id = str(payload.get("id") or "").strip()
+        if not entry_id:
+            raise PanelApiError("参数不完整（需要 id）")
+        if not learner.remove_entry(entry_id):
+            raise PanelApiError(f"条目不存在：{entry_id}")
+        return {"message": "已删除"}
+    # clear
+    if payload.get("confirm") is not True:
+        raise PanelApiError("缺少确认标记（confirm）")
+    count = learner.clear_entries()
+    return {"message": f"已清空 {count} 条"}
+
+
+def apply_style_materials_action(learner: Any, payload: Any) -> dict:
+    """J2：素材库操作。add（只由主人添加）/ delete / clear（需 confirm）。"""
+    if not isinstance(payload, dict):
+        raise PanelApiError("请求体必须是 JSON 对象")
+    action = payload.get("action")
+    if action not in STYLE_MATERIAL_ACTIONS:
+        raise PanelApiError(
+            f"未知 action {action!r}，允许：{list(STYLE_MATERIAL_ACTIONS)}"
+        )
+    if action == "add":
+        text = str(payload.get("text") or "")
+        note = str(payload.get("note") or "")
+        if not text.strip():
+            raise PanelApiError("素材内容不能为空")
+        try:
+            entry = learner.add_material(text, note)
+        except ValueError as e:
+            raise PanelApiError(str(e))
+        return {"message": "已添加", "entry": entry}
+    if action == "delete":
+        material_id = str(payload.get("id") or "").strip()
+        if not material_id:
+            raise PanelApiError("参数不完整（需要 id）")
+        if not learner.remove_material(material_id):
+            raise PanelApiError(f"素材不存在：{material_id}")
+        return {"message": "已删除"}
+    # clear
+    if payload.get("confirm") is not True:
+        raise PanelApiError("缺少确认标记（confirm）")
+    count = learner.clear_materials()
+    return {"message": f"已清空 {count} 条"}

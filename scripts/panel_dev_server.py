@@ -35,12 +35,15 @@ from core.panel_api import (  # noqa: E402
     apply_mood_interests,
     apply_panel_reset,
     apply_panel_save,
+    apply_style_corpus_action,
+    apply_style_materials_action,
     build_config_payload,
     build_mood_snapshot,
     default_tree,
     load_schema,
 )
 from core.mood import MoodState  # noqa: E402
+from core.style_learning import StyleLearner  # noqa: E402
 
 PAGE_DIR = WORKDIR / "pages" / "config"
 SCHEMA = load_schema(WORKDIR)
@@ -57,6 +60,7 @@ EXT_MOOD_INTERESTS_PATH = (
 # 预置几条示例兴趣，重现"旧权重垄断"的可治理场景。
 import asyncio  # noqa: E402
 import atexit  # noqa: E402
+import shutil  # noqa: E402
 
 _MOOD_DB_FD, _MOOD_DB_PATH = tempfile.mkstemp(
     prefix="living_panel_mood_", suffix=".db"
@@ -67,6 +71,45 @@ MOOD = MoodState(db_path=_MOOD_DB_PATH)
 
 
 MOCK_PROVIDERS = ["mock-chat-provider", "mock-judge-provider"]
+MOCK_AGENT_TOOLS = ["web_search", "fetch_page", "run_python", "remember"]
+
+# M20-补丁1 J：mock 语料/素材分层库（内存态 + tmp 落盘，重启即清）
+_STYLE_TMP_FD, _STYLE_TMP_DIR = tempfile.mkstemp(prefix="living_panel_style_")
+os.close(_STYLE_TMP_FD)
+os.unlink(_STYLE_TMP_DIR)
+os.makedirs(_STYLE_TMP_DIR, exist_ok=True)
+atexit.register(lambda: os.path.exists(_STYLE_TMP_DIR) and shutil.rmtree(
+    _STYLE_TMP_DIR, ignore_errors=True
+))
+
+LEARNER = StyleLearner(
+    config_getter=lambda: {
+        "style_learning": {
+            "enabled": True, "max_inject_chars": 300,
+            "max_items_per_pick": 2, "pool_limit": 200, "decay_days": 14,
+        }
+    },
+    llm_call=None,
+    pool_path=os.path.join(_STYLE_TMP_DIR, "style_corpus.json"),
+    materials_path=os.path.join(_STYLE_TMP_DIR, "style_materials.json"),
+    usage_path=os.path.join(_STYLE_TMP_DIR, "feature_usage.json"),
+    features_path=os.path.join(_STYLE_TMP_DIR, "style_features.json"),
+)
+# 预置一条语料 + 一条素材（浏览器实测能看到真实条目）。
+# entries() 先触发磁盘加载（空库），防直塞内存被惰性加载覆盖
+LEARNER.entries()
+LEARNER._pool.append({
+    "id": "20261006120000:abcd1234", "dims": {
+        "thinking": "先问背景再下判断", "interaction": "被夸就顺着接，不推辞",
+        "wording": "爱说“说实话”",
+    },
+    "source_kind": "dialogue", "source_note": "act_1 评论区", "weight": 1.2,
+    "base_weight": 1.0, "learned_at": "2026-10-06T12:00:00",
+    "used_count": 3, "last_used_at": "2026-10-06T13:00:00",
+    "importance": 1.1, "retention": 1.3, "manual": True,
+    "review_note": "主人没反感，聊天氛围正常", "review_good": 2,
+})
+LEARNER.add_material("主人手动丢进来的语料：这事儿吧，说实话得先看数据。", note="评论区精华")
 
 # M19-补丁1 E1：mock 判断记录（内存态，刷新页面仍在、重启即清）
 MOCK_JUDGE_RECORDS = [
@@ -161,12 +204,23 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "status": "ok",
                     "data": build_config_payload(
-                        CONFIG, SCHEMA, providers=MOCK_PROVIDERS
+                        CONFIG, SCHEMA, providers=MOCK_PROVIDERS,
+                        agent_tools=MOCK_AGENT_TOOLS,
                     ),
                 }
             )
         elif path == "/mock/api/judge_records":
             self._send_json({"status": "ok", "data": {"records": MOCK_JUDGE_RECORDS}})
+        elif path == "/mock/api/style_data":
+            self._send_json({"status": "ok", "data": {
+                "corpus": LEARNER.entries(),
+                "materials": LEARNER.materials(),
+                "features": LEARNER.features(),
+                "usage": LEARNER.usage_records(limit=50),
+                "meta": LEARNER.features_meta(),
+            }})
+        elif path == "/mock/api/fs_list":
+            self._send_json({"status": "error", "message": "mock 服务器不支持目录浏览"})
         elif path == "/mock/api/mood":
             self._send_json({"status": "ok", "data": build_mood_snapshot(MOOD)})
         elif path == EXT_MOOD_PATH:
@@ -197,6 +251,32 @@ class Handler(BaseHTTPRequestHandler):
                 })
             except Exception as e:  # PanelApiError 及其他，全部明文反馈
                 self._send_json({"status": "error", "message": str(e)})
+            return
+        if path == "/mock/api/style_corpus":
+            try:
+                result = apply_style_corpus_action(LEARNER, payload)
+                self._send_json({"status": "ok", "message": result["message"],
+                                 "data": result})
+            except PanelApiError as e:
+                self._send_json({"status": "error", "message": str(e)})
+            except Exception as e:
+                self._send_json({"status": "error", "message": str(e)})
+            return
+        if path == "/mock/api/style_materials":
+            try:
+                result = apply_style_materials_action(LEARNER, payload)
+                self._send_json({"status": "ok", "message": result["message"],
+                                 "data": result})
+            except PanelApiError as e:
+                self._send_json({"status": "error", "message": str(e)})
+            except Exception as e:
+                self._send_json({"status": "error", "message": str(e)})
+            return
+        if path == "/mock/api/style_process":
+            self._send_json({
+                "status": "ok", "message": "已处理：判定像 AI 写的，没学（红线：宁可少学）",
+                "data": {"ok": True, "message": "mock"},
+            })
             return
         if path == "/mock/api/config/reset":
             summary = apply_panel_reset(CONFIG, SCHEMA)

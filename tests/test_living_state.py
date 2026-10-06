@@ -25,7 +25,6 @@ BASE_CONFIG = {
         "daily_message_limit": 10,
         "message_min_interval_minutes": 30,
         "target_sessions": "",
-        "quiet_hours": "",
     },
 }
 
@@ -245,11 +244,13 @@ def test_message_gate_interval(tmp_path):
     assert allow is False and reason == "msg_interval"
 
 
-def test_message_gate_quiet_hours(tmp_path):
+def test_message_gate_quiet_hours_removed(tmp_path):
+    """M20-补丁1 G3/G6：quiet_hours 静默时段闸已删除——即使历史配置里
+    还留着值，也不再生效（该时段照常发消息，其余闸门不受影响）。"""
     import copy
 
     config = copy.deepcopy(BASE_CONFIG)
-    config["output_gate"]["quiet_hours"] = "12:00-14:00"
+    config["output_gate"]["quiet_hours"] = "12:00-14:00"  # 历史遗留值
     gate = make_gate(tmp_path, config)
 
     async def flow():
@@ -258,7 +259,7 @@ def test_message_gate_quiet_hours(tmp_path):
         return result
 
     allow, reason = asyncio.run(flow())
-    assert allow is False and reason == "quiet_hours"
+    assert allow is True and reason == "ok"
 
 
 # ---------------------------------------------------------------------------

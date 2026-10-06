@@ -523,7 +523,10 @@ class BrowserSessionRef:
 @pydantic_dataclass
 class BrowserNavigateTool(FunctionTool):
     name: str = "browser_navigate"
-    description: str = "打开网页，返回标题和正文摘要。"
+    description: str = (
+        "打开网页，返回标题和正文摘要。想知道页面上有什么可点的东西，"
+        "再用 browser_read 获取可交互元素清单。"
+    )
     parameters: dict = Field(default_factory=lambda: {
         "type": "object",
         "properties": {"url": {"type": "string", "description": "目标 URL"}},
@@ -544,6 +547,11 @@ class BrowserNavigateTool(FunctionTool):
         title = await page.title()
         text = await page.inner_text("body")
         await self._session_ref.session.save_state()
+        # M20-补丁1 L1：成功读取留档（风格学习的"本轮读了网页"证据）
+        try:
+            self._session_ref.session.note_read(url, title, text)
+        except Exception:
+            pass
         result = "已打开「{}」（{}）".format(title, url)
         body = text[:2000]
         return result + "\n" + body
@@ -552,7 +560,11 @@ class BrowserNavigateTool(FunctionTool):
 @pydantic_dataclass
 class BrowserReadTool(FunctionTool):
     name: str = "browser_read"
-    description: str = "读取当前网页的标题和正文内容。"
+    description: str = (
+        "读取当前网页的标题和正文内容，并附页面上可交互元素的清单"
+        "（链接/按钮/输入框，含可直接用于 browser_click / browser_type "
+        "的选择器）。想点链接或填表单前，先用本工具拿清单。"
+    )
     parameters: dict = Field(default_factory=lambda: {
         "type": "object", "properties": {},
     })
@@ -570,7 +582,21 @@ class BrowserReadTool(FunctionTool):
         page = await self._session_ref.session._ensure_page()
         title = await page.title()
         text = await page.inner_text("body")
-        return "「{}」\n{}".format(title, text[:self._max_text])
+        # M20-补丁1 L1：成功读取留档（风格学习证据）
+        try:
+            self._session_ref.session.note_read(
+                str(getattr(page, "url", "") or ""), title, text
+            )
+        except Exception:
+            pass
+        result = "「{}」\n{}".format(title, text[:self._max_text])
+        # M20-补丁1 N1：附可交互元素清单（采集失败静默省略，不影响正文）
+        from .browser_elements import collect_page_elements
+
+        elements = await collect_page_elements(page)
+        if elements:
+            result = result + "\n\n" + elements
+        return result
 
 
 @pydantic_dataclass
@@ -724,7 +750,16 @@ class BrowserClickTool(FunctionTool):
             )
             return reason
         page = await self._session_ref.session._ensure_page()
-        await page.click(selector, timeout=5000)
+        try:
+            await page.click(selector, timeout=5000)
+        except Exception as e:
+            # M20-补丁1 N3：选择器失效（页面结构变了）→ 明确报错，不静默
+            # 失败——她会据此重新 browser_read 获取最新清单再点
+            logger.info(f"[browser_click] 点击失败 selector={selector[:60]}: {e}")
+            return (
+                f"点击失败：{selector}（选择器可能已失效——页面结构可能变了。"
+                f"请重新用 browser_read 获取最新元素清单再点。）错误详情：{e}"
+            )
         return f"已点击 {selector}"
 
 
@@ -774,5 +809,13 @@ class BrowserTypeTool(FunctionTool):
             )
             return reason
         page = await self._session_ref.session._ensure_page()
-        await page.fill(selector, text)
+        try:
+            await page.fill(selector, text)
+        except Exception as e:
+            # M20-补丁1 N3/N4：输入框选择器失效 → 明确报错（同 browser_click）
+            logger.info(f"[browser_type] 填入失败 selector={selector[:60]}: {e}")
+            return (
+                f"填入失败：{selector}（选择器可能已失效——请重新用 "
+                f"browser_read 获取最新元素清单。）错误详情：{e}"
+            )
         return f"已在 {selector} 填入 {len(text)} 字"

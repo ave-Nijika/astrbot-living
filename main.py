@@ -12,9 +12,10 @@ R0 风险验证结论（2026-09-07 实测，详见 docs/archive/m0_report.md）�
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +59,7 @@ from .core.search import BochaSearcher
 from .core.sender import Sender
 from .core.sleep import SleepManager
 from .core.style_learning import StyleLearner
+from .core.style_review import StyleReviewer
 
 PLUGIN_NAME = "astrbot_plugin_living"
 
@@ -134,6 +136,12 @@ class LivingPlugin(Star):
         # log_only 的后台检查任务引用集合（防 GC）
         self._judge: OutputJudge | None = None
         self._judge_tasks: set[asyncio.Task] = set()
+        # M20-补丁1 E 组：聊天请求最终前缀缓存（umo → {system_prompt,
+        # contexts, provider_id, at}）。只在 on_llm_request 钩子里写，
+        # living 自己的调用在回退到聊天模型时读它做前缀对齐（缓存保护）
+        self._chat_prefix_cache: dict[str, dict] = {}
+        # M20-补丁1 P1：每日复盘后台任务
+        self._style_review_task: asyncio.Task | None = None
 
         logger.info(f"[{PLUGIN_NAME}] M3 加载完成（心境+休眠+agent 循环）")
 
@@ -267,19 +275,43 @@ class LivingPlugin(Star):
         列表 role/content 形态——与 AstrBot 真实聊天链路
         `req.contexts = json.loads(conversation.history)` 同构）。decider/
         梦的既有双参调用零变化。
+
+        M20-补丁1 E 组：链上每个 provider 尝试前先做前缀对齐判定——
+        本次 provider 与聊天模型同一个账号（provider_id 为空回退命中，或
+        显式配成同一个）时，system/contexts 用聊天请求的最终形态逐字
+        代替（缓存命中，不再冲掉聊天缓存），原有 system 指令并入 user
+        消息开头；不同账号保持现有形态（对齐只会白付长输入）。
         """
         chain = await build_provider_chain(self.context, lambda: self.config)
         if not chain:
             return None
         for provider_id, _provider in chain:
+            align: dict | None = None
+            try:
+                align = await self._aligned_prefix(provider_id)
+            except Exception:
+                align = None
+            call_prompt = prompt
+            call_system = system_prompt or None
+            call_contexts = contexts or None
+            if align is not None:
+                call_prompt = self._merge_prompt_with_system(prompt, system_prompt)
+                call_system = str(align.get("system_prompt") or "") or None
+                call_contexts = list(align.get("contexts") or [])
+                logger.debug(
+                    f"[Failover] 前缀对齐生效（provider={provider_id}，"
+                    f"system {len(call_system or '')} 字 + 历史 "
+                    f"{len(call_contexts)} 条，缓存保护）"
+                )
             try:
                 resp = await self.context.llm_generate(
                     chat_provider_id=provider_id,
-                    prompt=prompt,
-                    system_prompt=system_prompt or None,
+                    prompt=call_prompt,
+                    system_prompt=call_system,
                     # M12-补丁1 B2：分享改写的真实聊天上下文透传（None 时
-                    # 不改变请求形态——decider/梦的既有调用零变化）
-                    contexts=contexts or None,
+                    # 不改变请求形态——decider/梦的既有调用零变化）；
+                    # 对齐生效时用聊天前缀的历史（与聊天共享缓存前缀）
+                    contexts=call_contexts,
                 )
             except Exception as e:
                 if is_retryable_llm_error(e):
@@ -321,7 +353,11 @@ class LivingPlugin(Star):
         """判断模型的 LLM 调用：固定走 judge.provider_id（A4，不与决策链
         混用——判断模型应该又小又快，跟决策模型不是一个东西）。provider
         未选/不存在 → 记 WARNING（60s 节流防刷屏）并返回 None，按"本轮
-        不判断"处理——不得报错、不得阻断聊天。"""
+        不判断"处理——不得报错、不得阻断聊天。
+
+        M20-补丁1 E 组：若 judge.provider_id 被配成与聊天同一个 provider
+        （同账号），同样做前缀对齐——否则判断调用会把聊天缓存冲掉。
+        配了独立 provider（正常形态）时保持现有短调用形态。"""
         try:
             pid = str(conf_group(self._effective_config(), "judge").get("provider_id") or "").strip()
         except Exception:
@@ -329,11 +365,25 @@ class LivingPlugin(Star):
         if not pid:
             self._judge_warn_throttled("provider 未配置")
             return None
+        align: dict | None = None
+        try:
+            align = await self._aligned_prefix(pid)
+        except Exception:
+            align = None
+        call_prompt = prompt
+        call_system = system_prompt or None
+        call_contexts = None
+        if align is not None:
+            call_prompt = self._merge_prompt_with_system(prompt, system_prompt)
+            call_system = str(align.get("system_prompt") or "") or None
+            call_contexts = list(align.get("contexts") or [])
+            logger.debug("[Judge] 前缀对齐生效（judge provider 与聊天同账号）")
         try:
             resp = await self.context.llm_generate(
                 chat_provider_id=pid,
-                prompt=prompt,
-                system_prompt=system_prompt or None,
+                prompt=call_prompt,
+                system_prompt=call_system,
+                contexts=call_contexts,
             )
         except Exception as e:
             self._judge_warn_throttled(f"provider {pid!r} 调用失败: {summarize_provider_error(e)}")
@@ -382,6 +432,24 @@ class LivingPlugin(Star):
         except Exception:
             return []
 
+    def _agent_tool_names(self) -> list[str]:
+        """本体已注册的工具名清单（M20-补丁1 F3：capabilities.agent_tools
+        多选控件的数据源；与 _llm_tool_manager 同一来源）。异常回落空列表
+        （前端退化为手填，不崩）。"""
+        try:
+            mgr = self._llm_tool_manager()
+            if mgr is None:
+                return []
+            toolset = mgr.get_full_tool_set()
+            names = []
+            for tool in list(toolset):
+                name = str(getattr(tool, "name", "") or "")
+                if name and getattr(tool, "active", True):
+                    names.append(name)
+            return sorted(set(names))
+        except Exception:
+            return []
+
     def _wake_prefixes(self) -> list[str]:
         """全局唤醒/命令前缀（B1 命令跳过规则的判定依据）。读不到按
         ["/"]（本体默认）处理。"""
@@ -403,6 +471,122 @@ class LivingPlugin(Star):
         task = asyncio.create_task(coro)
         self._judge_tasks.add(task)
         task.add_done_callback(self._judge_tasks.discard)
+
+    # ------------------------------------------------------------------
+    # 聊天前缀缓存与前缀对齐（M20-补丁1 E 组，缓存保护核心）
+    # ------------------------------------------------------------------
+    @filter.on_llm_request(priority=-1)
+    async def chat_prefix_cache_on_llm_request(
+        self, event: AstrMessageEvent, req: Any
+    ) -> None:
+        """缓存本次聊天请求的"最终前缀形态"（system_prompt + contexts）。
+
+        - priority=-1：本体在钩子触发**之前**已把 persona/skills 拼进
+          system_prompt（astr_main_agent._decorate_llm_request）；其余
+          插件（含 prompt-preset）默认 priority=0。数值小的后执行，-1
+          保证我们拿到的是"最终版"（E2 推荐路径）；
+        - 只读快照：deepcopy 后存内存，**不修改请求本身**（红线 1 不动
+          聊天链路）；temp 注入（M17/M19 的 extra_user_content_parts）
+          不在 system/contexts 里，不会混入缓存；
+        - 多会话按 umo 分开存，LRU 上限 4 个会话（E2）；
+        - 任何异常只 DEBUG——缓存是锦上添花，绝不能影响聊天（E5）。"""
+        try:
+            umo = str(getattr(event, "unified_msg_origin", "") or "")
+            if not umo:
+                return
+            system_prompt = str(getattr(req, "system_prompt", "") or "")
+            contexts = getattr(req, "contexts", None) or []
+            provider_id = ""
+            try:
+                getter = getattr(self.context, "get_using_provider_async", None)
+                if callable(getter):
+                    provider = await getter(umo)
+                    if provider is not None:
+                        provider_id = str(provider.meta().id)
+            except Exception:
+                provider_id = ""
+            self._chat_prefix_cache[umo] = {
+                "system_prompt": system_prompt,
+                "contexts": copy.deepcopy(list(contexts)),
+                "provider_id": provider_id,
+                "at": datetime.now(),
+            }
+            # LRU：只留最近 4 个会话（按时间丢弃最旧的）
+            if len(self._chat_prefix_cache) > 4:
+                oldest = min(
+                    self._chat_prefix_cache,
+                    key=lambda k: self._chat_prefix_cache[k]["at"],
+                )
+                if oldest != umo:
+                    self._chat_prefix_cache.pop(oldest, None)
+        except Exception as e:
+            logger.debug(f"[living] 聊天前缀缓存失败（不影响聊天）: {e}")
+
+    def _prefix_cache_ttl_seconds(self) -> float:
+        """model.prefix_cache_ttl_minutes（默认 360 分钟；0=不过期）。
+
+        缓存只是防陈旧的安全阀：每次聊天都会刷新快照，"最近一次"几乎
+        总是当前前缀；超时的快照宁可不用（退回现有形态，与旧行为一致）。"""
+        try:
+            raw = conf_group(self._effective_config(), "model").get(
+                "prefix_cache_ttl_minutes", 360
+            )
+            value = int(raw)
+        except Exception:
+            return 360.0 * 60.0
+        if value <= 0:
+            return 0.0
+        return min(value, 24 * 60) * 60.0
+
+    async def _aligned_prefix(self, provider_id: str) -> dict | None:
+        """E1：判定本次调用是否与聊天同一 provider，是则返回前缀缓存。
+
+        - 同账号判定（E1）：provider_id 必须等于缓存里记录的"聊天 provider
+          id"——model.provider_id 为空（回退到聊天模型）时链尾自然命中聊天
+          provider；显式配成同一个时也命中；
+        - 不同账号的 provider 不对齐：带上聊天前缀只会白付长输入、拿不到
+          缓存（比逐 provider 比对更准，见报告 E 组）；
+        - 取不到（还没聊过天/超时/换会话）返回 None → 调用退回现有形态
+          （E5：不报错、不空转）。"""
+        cache = getattr(self, "_chat_prefix_cache", None)
+        if not cache:
+            return None
+        entries = sorted(
+            cache.values(), key=lambda e: e.get("at") or datetime.min, reverse=True
+        )
+        ttl = self._prefix_cache_ttl_seconds()
+        now = datetime.now()
+        for entry in entries:
+            chat_pid = str(entry.get("provider_id") or "")
+            if not chat_pid or chat_pid != str(provider_id or ""):
+                continue
+            if ttl > 0:
+                at = entry.get("at")
+                if not isinstance(at, datetime):
+                    return None
+                if (now - at).total_seconds() > ttl:
+                    return None
+            return entry
+        return None
+
+    @staticmethod
+    def _merge_prompt_with_system(prompt: str, system_prompt: str | None) -> str:
+        """对齐时原有 system 指令并入 user 消息开头（不丢任何指令内容）。
+
+        system 槽位要让给聊天的最终 system（前缀逐字一致是硬要求，E3），
+        living 自己的指令从 system 搬到 user 消息开头，语义不变。"""
+        system = str(system_prompt or "").strip()
+        text = str(prompt or "")
+        if not system:
+            return text
+        return f"{system}\n\n{text}" if text else system
+
+    async def _agent_aligned_prefix(self, provider_id: str) -> dict | None:
+        """agent 循环的前缀对齐判定（经 agent_loop 的 prefix_getter 注入）。"""
+        try:
+            return await self._aligned_prefix(provider_id)
+        except Exception:
+            return None
 
     @filter.on_llm_request()
     async def judge_input_on_llm_request(
@@ -855,16 +1039,16 @@ class LivingPlugin(Star):
     # ------------------------------------------------------------------
     # 风格注入（M17-补丁1 A5）：四路说话入口共用的低调用料
     # ------------------------------------------------------------------
-    def _style_hint_silent(self) -> str:
-        """同步风格注入块 getter（ShareRewriter 挂载点）。
+    def _style_hint_silent(self, trigger: str = "分享") -> str:
+        """同步风格注入块 getter（ShareRewriter / 主动搭话挂载点）。
 
         库空/关闭/异常一律空串——注入是锦上添花，任何故障都静默跳过
-        （红线 1/5），绝不影响分享改写主链路。"""
+        （红线 1/5），绝不影响主链路。trigger 记入调用记录库（K1）。"""
         learner = getattr(self, "_style_learner", None)
         if learner is None:
             return ""
         try:
-            return str(learner.inject_block() or "").strip()
+            return str(learner.inject_block(trigger=trigger) or "").strip()
         except Exception as e:
             logger.debug(f"[{PLUGIN_NAME}] 风格提示生成失败（跳过）: {e}")
             return ""
@@ -881,7 +1065,7 @@ class LivingPlugin(Star):
         except Exception:
             persona = None
         persona = str(persona or "").strip()
-        style = self._style_hint_silent()[:120]
+        style = str(self._style_hint_silent(trigger="搭话") or "")[:120]
         if not style:
             return persona or None
         budget = max(500 - len(style) - 2, 200)
@@ -907,7 +1091,7 @@ class LivingPlugin(Star):
             learner = getattr(self, "_style_learner", None)
             if learner is None or not learner.enabled():
                 return
-            hint = str(learner.inject_block() or "").strip()
+            hint = str(learner.inject_block(trigger="对话") or "").strip()
             if not hint:
                 return
             from astrbot.core.agent.message import TextPart
@@ -953,6 +1137,65 @@ class LivingPlugin(Star):
         else:
             self._browser_session.write_level = write_level
         return self._browser_session
+
+    def _browser_recent_reads(self) -> list[dict]:
+        """浏览器最近读取留档（M20-补丁1 L1：风格学习的"本轮读了网页"
+        证据来源之一）。会话未创建/异常返回空。"""
+        session = getattr(self, "_browser_session", None)
+        if session is None:
+            return []
+        try:
+            return session.recent_reads() or []
+        except Exception:
+            return []
+
+    async def _recent_chat_lines(self) -> list[str]:
+        """K3 复盘材料：最近的聊天摘录（只取 role/content，脱敏截断）。
+
+        借 LivingLoop 既有的目标会话解析与历史读取（不复制第二份）；
+        取不到返回空——复盘照跑（只少一份反应信号，不报错）。"""
+        try:
+            loop = self.loop
+            if loop is None:
+                return []
+            sessions = loop._resolve_target_sessions()
+            contexts = await loop._load_chat_contexts(sessions)
+            from .core.secrets_redact import redact_secrets
+
+            lines = []
+            for message in list(contexts)[-12:]:
+                if not isinstance(message, dict):
+                    continue
+                role = str(message.get("role") or "")
+                content = str(message.get("content") or "").strip()
+                content = content.replace("\n", " ")
+                if not content:
+                    continue
+                who = "主人" if role == "user" else "她"
+                lines.append(f"{who}：{redact_secrets(content)[:80]}")
+            return lines
+        except Exception as e:
+            logger.debug(f"[{PLUGIN_NAME}] 复盘聊天摘录获取失败（跳过）: {e}")
+            return []
+
+    async def _style_review_loop(self) -> None:
+        """每日复盘循环（M20-补丁1 K3）：到点后台跑一次，失败只记日志
+        （不重试当日）。每 10 分钟检查一次——daily_review_time 改动最多
+        10 分钟后生效，无需重启。"""
+        while True:
+            try:
+                reviewer = getattr(self, "_style_reviewer", None)
+                if reviewer is not None:
+                    now = datetime.now()
+                    if reviewer.due(now):
+                        summary = await reviewer.run_review(now)
+                        logger.info(f"[{PLUGIN_NAME}] 每日复盘完成: {summary}")
+                await asyncio.sleep(600)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(f"[{PLUGIN_NAME}] 每日复盘循环异常（继续）: {e}")
+                await asyncio.sleep(300)
 
     def _build_agent_tools(self):
         """按当前 autonomy 配置组装生活工具集（M15-补丁1 起支持 async——
@@ -1237,6 +1480,23 @@ class LivingPlugin(Star):
             await self.gate.load_state()
         except Exception as e:
             logger.warning(f"[{PLUGIN_NAME}] 待机状态恢复失败（按无待机继续）: {e}")
+        # M20-补丁1 G4：quiet_hours 已废弃——历史配置里若还留着值，明确
+        # 告知（不静默吞掉）；键本身不再被任何路径读取（G6 grep 零命中）
+        try:
+            legacy_quiet = str(
+                conf_group(self._effective_config(), "output_gate").get(
+                    "quiet_hours", ""
+                )
+                or ""
+            ).strip()
+            if legacy_quiet:
+                logger.info(
+                    f"[{PLUGIN_NAME}] 检测到历史配置 output_gate.quiet_hours="
+                    f"{legacy_quiet!r}：该键已废弃，静默现由她的真实作息"
+                    f"（睡眠系统）与判断模型决定，此配置不再生效，可从配置中删除"
+                )
+        except Exception:
+            pass
         # M5-补丁4：起床约定（ScheduleManager）——提取/存储/压力查询，
         # 复用决策 LLM 装配（与 _dream_llm_call 同一注入模式）
         self._schedule = ScheduleManager(
@@ -1259,18 +1519,24 @@ class LivingPlugin(Star):
             await self.sleep_manager.load_pending_messages()
         except Exception as e:
             logger.warning(f"[{PLUGIN_NAME}] 睡眠侧状态恢复失败（按默认继续）: {e}")
-        # M17-补丁1 A 组：风格学习引擎——素材库 style_pool.json 在插件
-        # 数据目录，与记忆/图谱/会话存储完全分开（红线 2，不参与记忆召回）；
-        # 学习材料来自 fetcher 的最近抓取留档（read/surf 脚本与 agent 两种
-        # 执行形态统一覆盖，A7）
+        # M17-补丁1 A 组：风格学习引擎——分层库（语料/素材/调用记录/沉淀层）
+        # 全部在插件数据目录，与记忆/图谱/会话存储完全分开（红线：不参与
+        # 记忆召回）；学习材料来自 fetcher 留档与浏览器读取留档（read/surf
+        # 脚本与 agent 两种执行形态统一覆盖，M20-补丁1 L 组）
         self._style_learner = StyleLearner(
             config_getter=self._effective_config,
             llm_call=self._decision_llm_call,
-            pool_path=os.path.join(self._plugin_data_dir(), "style_pool.json"),
+            # M20-补丁1 I1：库改名 style_corpus.json（旧 style_pool.json
+            # 首次读取时自动迁移）
+            pool_path=os.path.join(self._plugin_data_dir(), "style_corpus.json"),
             sample_getter=self.fetcher.recent_samples,
             search_enabled_getter=lambda: _web_search_enabled(
                 self._effective_config()
             ),
+            materials_path=os.path.join(self._plugin_data_dir(), "style_materials.json"),
+            usage_path=os.path.join(self._plugin_data_dir(), "feature_usage.json"),
+            features_path=os.path.join(self._plugin_data_dir(), "style_features.json"),
+            browser_reads_getter=self._browser_recent_reads,
         )
         agent_loop = LivingAgentLoop(
             context=self.context,
@@ -1279,6 +1545,9 @@ class LivingPlugin(Star):
             life_extra_getter=lambda: str(self._preset("life_extra", "") or ""),
             mood=self.mood,
             tool_builder=self._build_agent_tools,
+            # M20-补丁1 E 组：agent 活动的请求也做前缀对齐（回退到聊天
+            # 模型时带上聊天最终 system+历史，不再冲掉聊天缓存）
+            prefix_getter=self._agent_aligned_prefix,
         )
         # M15-补丁1 C0：模态探针经 self._agent_loop 读"本轮 provider"；
         # tool_builder 在 _run_with_provider 内调用时该值已就位
@@ -1391,6 +1660,18 @@ class LivingPlugin(Star):
             llm_call=self._judge_llm_call,
             records_path=os.path.join(self._plugin_data_dir(), "judge_records.json"),
         )
+        # M20-补丁1 K 组：每日复盘（跑在判断模型上；judge.provider_id 未
+        # 配置时 _judge_llm_call 返回 None → 复盘自动跳过并记日志）。后台
+        # 循环任务独立于主循环（红线 4：不占用主人对话路径）
+        self._style_reviewer = StyleReviewer(
+            learner=self._style_learner,
+            llm_call=self._judge_llm_call,
+            config_getter=self._effective_config,
+            reactions_getter=self._recent_chat_lines,
+        )
+        self._style_review_task = asyncio.create_task(
+            self._style_review_loop(), name="living-style-review"
+        )
         # M5 补丁 1：自带配置面板的 REST API（pages/config/ 前端调用）
         self._register_dashboard_routes()
 
@@ -1425,6 +1706,11 @@ class LivingPlugin(Star):
             (f"{prefix}/mood/interests", self._api_mood_interests_post, ["POST"], "兴趣权重编辑"),
             (f"{prefix}/browser_status", self._api_browser_status_get, ["GET"], "浏览器能力状态"),
             (f"{prefix}/judge_records", self._api_judge_records_get, ["GET"], "判断记录读取"),
+            (f"{prefix}/fs_list", self._api_fs_list_post, ["POST"], "工作区目录浏览（只读）"),
+            (f"{prefix}/style_data", self._api_style_data_get, ["GET"], "语料与素材数据读取"),
+            (f"{prefix}/style_corpus", self._api_style_corpus_post, ["POST"], "语料库管理"),
+            (f"{prefix}/style_materials", self._api_style_materials_post, ["POST"], "素材库管理"),
+            (f"{prefix}/style_process", self._api_style_process_post, ["POST"], "素材立即处理"),
         ]
         for route, handler, methods, desc in routes:
             register(route, handler, methods, desc)
@@ -1455,6 +1741,7 @@ class LivingPlugin(Star):
                 self._effective_config(),
                 self._panel_schema(),
                 providers=self._judge_provider_ids(),
+                agent_tools=self._agent_tool_names(),
             )
             return {"status": "ok", "data": payload}
         except PanelApiError as e:
@@ -1598,6 +1885,190 @@ class LivingPlugin(Star):
         except Exception:
             logger.exception(f"[{PLUGIN_NAME}] 浏览器状态探测失败")
             return {"status": "ok", "data": {"installed": False}}
+
+    # ------------------------------------------------------------------
+    # 工作区目录浏览选择器（M20-补丁1 F2，服务端列目录）
+    # ------------------------------------------------------------------
+    def _fs_allowed_roots(self) -> list[str]:
+        """目录浏览允许的根：AstrBot 数据目录 / 本插件数据目录 / 本体
+        workspaces 目录。只读列目录 + 根外路径一律拒绝——面板在管理员
+        会话内，但也不该借它遍历系统敏感路径（任务书 F2 安全要求）。"""
+        roots: list[str] = []
+        for getter in (
+            "get_astrbot_data_path",
+            "get_astrbot_workspaces_path",
+        ):
+            try:
+                module = __import__(
+                    "astrbot.core.utils.astrbot_path",
+                    fromlist=[getter],
+                )
+                value = str(Path(str(getattr(module, getter)())).resolve())
+                if value:
+                    roots.append(value)
+            except Exception:
+                pass
+        try:
+            roots.append(str(Path(self._plugin_data_dir()).resolve()))
+        except Exception:
+            pass
+        out: list[str] = []
+        for root in roots:
+            if root not in out:
+                out.append(root)
+        return out
+
+    def _fs_resolve_browsable(self, raw: str) -> tuple[str | None, str, list[str]]:
+        """把请求路径解析为允许浏览的目录。返回 (path|None, 错误文本, 根清单)。
+
+        空路径 = 第一个根；相对路径按根解析失败处理（明确报错，不静默
+        回落——F4）；解析后不在任何根内也拒绝。"""
+        roots = self._fs_allowed_roots()
+        text = str(raw or "").strip()
+        if not text:
+            return (roots[0] if roots else None), "" , roots
+        try:
+            resolved = Path(text).resolve()
+        except Exception as e:
+            return None, f"路径无法解析：{e}", roots
+        resolved_str = str(resolved)
+        for root in roots:
+            try:
+                if resolved_str == root or str(resolved).startswith(root + os.sep):
+                    return resolved_str, "", roots
+            except Exception:
+                continue
+        return None, f"路径 {resolved_str} 不在允许浏览的范围内（仅限 AstrBot 数据目录及其子目录）", roots
+
+    async def _api_fs_list_post(self):
+        """服务端目录浏览（F2）：只读列出指定目录下的子目录。
+
+        不用浏览器原生 <input webkitdirectory>——那拿不到服务器真实
+        绝对路径（AstrBot 可能部署在远端）。目录不存在/无权限 → 明确
+        返回错误文本（不得静默回落）。"""
+        from astrbot.api.web import request as web_request
+
+        try:
+            payload = await web_request.json(default={})
+            raw = str((payload or {}).get("path", "") or "")
+            path, error, roots = self._fs_resolve_browsable(raw)
+            if error or not path:
+                return {"status": "error", "message": error or "路径不可用"}
+            try:
+                entries = sorted(
+                    (
+                        e
+                        for e in os.listdir(path)
+                        if not e.startswith(".")
+                        and os.path.isdir(os.path.join(path, e))
+                    )
+                )
+            except FileNotFoundError:
+                return {"status": "error", "message": f"目录不存在：{path}"}
+            except PermissionError:
+                return {"status": "error", "message": f"无权限读取目录：{path}"}
+            except Exception as e:
+                return {"status": "error", "message": f"读取目录失败：{e}"}
+            return {
+                "status": "ok",
+                "data": {
+                    "path": path,
+                    "dirs": [
+                        {"name": name, "path": os.path.join(path, name)}
+                        for name in entries
+                    ],
+                    "roots": roots,
+                },
+            }
+        except Exception:
+            logger.exception(f"[{PLUGIN_NAME}] 目录浏览失败")
+            return {"status": "error", "message": "内部错误"}
+
+    # ------------------------------------------------------------------
+    # 语料库/素材库面板 API（M20-补丁1 J 组）
+    # ------------------------------------------------------------------
+    async def _api_style_data_get(self):
+        """J4：语料/素材/沉淀层/调用记录读取（面板只读展示）。"""
+        try:
+            learner = getattr(self, "_style_learner", None)
+            if learner is None:
+                return {"status": "ok", "data": {
+                    "corpus": [], "materials": [], "features": [],
+                    "usage": [], "meta": {},
+                }}
+            return {"status": "ok", "data": {
+                "corpus": learner.entries(),
+                "materials": learner.materials(),
+                "features": learner.features(),
+                "usage": learner.usage_records(limit=50),
+                "meta": learner.features_meta(),
+            }}
+        except Exception:
+            logger.exception(f"[{PLUGIN_NAME}] 语料数据读取失败")
+            return {"status": "error", "message": "内部错误"}
+
+    async def _api_style_corpus_post(self):
+        """J1：语料库管理（编辑六维 / 删除 / 清空）。只动语料库文件，
+        绝不触碰记忆库（红线）。"""
+        from astrbot.api.web import request as web_request
+
+        from .core.panel_api import PanelApiError, apply_style_corpus_action
+
+        try:
+            learner = getattr(self, "_style_learner", None)
+            if learner is None:
+                return {"status": "error", "message": "风格学习模块未初始化"}
+            payload = await web_request.json(default={})
+            result = apply_style_corpus_action(learner, payload)
+            logger.info(f"[{PLUGIN_NAME}] 面板语料库操作: {result.get('message')}")
+            return {"status": "ok", "message": result.get("message", ""), "data": result}
+        except PanelApiError as e:
+            return {"status": "error", "message": str(e)}
+        except Exception:
+            logger.exception(f"[{PLUGIN_NAME}] 语料库操作失败")
+            return {"status": "error", "message": "内部错误"}
+
+    async def _api_style_materials_post(self):
+        """J2：素材库管理（添加 / 删除 / 清空）。添加是插件唯一写素材库
+        的路径（I2：只由主人添加，插件自己绝不写）。"""
+        from astrbot.api.web import request as web_request
+
+        from .core.panel_api import (
+            PanelApiError,
+            apply_style_materials_action,
+        )
+
+        try:
+            learner = getattr(self, "_style_learner", None)
+            if learner is None:
+                return {"status": "error", "message": "风格学习模块未初始化"}
+            payload = await web_request.json(default={})
+            result = apply_style_materials_action(learner, payload)
+            logger.info(f"[{PLUGIN_NAME}] 面板素材库操作: {result.get('message')}")
+            return {"status": "ok", "message": result.get("message", ""), "data": result}
+        except PanelApiError as e:
+            return {"status": "error", "message": str(e)}
+        except Exception:
+            logger.exception(f"[{PLUGIN_NAME}] 素材库操作失败")
+            return {"status": "error", "message": "内部错误"}
+
+    async def _api_style_process_post(self):
+        """J3：立即处理（不等活动，立刻提炼素材库待处理项）。
+        与活动触发共用同一条提炼路径；限频在 process_now 内（30s）。"""
+        try:
+            learner = getattr(self, "_style_learner", None)
+            if learner is None:
+                return {"status": "error", "message": "风格学习模块未初始化"}
+            result = await learner.process_now()
+            logger.info(f"[{PLUGIN_NAME}] 面板立即处理: {result.get('message')}")
+            return {
+                "status": "ok" if result.get("ok") else "error",
+                "message": result.get("message", ""),
+                "data": result,
+            }
+        except Exception:
+            logger.exception(f"[{PLUGIN_NAME}] 立即处理失败")
+            return {"status": "error", "message": "内部错误"}
 
     async def _run_knob_loop(self) -> None:
         """旋钮监视循环：先记基线（不写入），之后每 5s 处理增量。
@@ -2415,7 +2886,7 @@ class LivingPlugin(Star):
             self.loop = None
         for stale_task_name in (
             "_selfheal_task", "_interest_cooldown_task", "_knobs_task",
-            "_backfill_task",
+            "_backfill_task", "_style_review_task",
         ):
             stale_task = getattr(self, stale_task_name, None)
             if stale_task is None or stale_task.done():

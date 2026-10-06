@@ -369,20 +369,48 @@ def test_t8_activity_end_learns_at_most_one():
 
 
 def test_t8_other_activities_do_not_learn():
-    learner, llm = make_learner(HUMAN_DISTILL, samples=[sample()])
+    """M20-补丁1 L1 修订：学习不再限定 read/surf——判据是"本轮有没有
+    读网证据"。没有证据（sample_getter 为 None）→ 不学、零调用。"""
+    learner, llm = make_learner(HUMAN_DISTILL)
     assert asyncio.run(learner.on_activity_end("game", NOW, "act_1")) is None
     assert llm.calls == []
     assert learner.entries() == []
 
 
-def test_t8_search_off_skips_with_debug(caplog):
-    """搜索关闭 → 学习不发生，DEBUG 说明（A7）。"""
-    learner, llm = make_learner(HUMAN_DISTILL, samples=[sample()], search_on=False)
-    with caplog.at_level(logging.DEBUG, logger="astrbot"):
+def test_t8_other_activity_with_evidence_learns():
+    """M20-补丁1 L1：任何活动（如 game）只要有本轮读网证据就触发学习。"""
+    learner, llm = make_learner(HUMAN_DISTILL, samples=[sample()])
+    entry = asyncio.run(learner.on_activity_end("game", NOW, "act_1"))
+    assert entry is not None
+    assert len(llm.calls) == 1
+
+
+def test_t8_no_evidence_skips_with_debug(caplog):
+    """M20-补丁1 L2：原"搜索关闭就不学"放宽为"没读到新内容就不学"
+    （判据=本轮 fetch/浏览器留档证据，与搜索开关解耦）。"""
+    import logging as _logging
+
+    learner, llm = make_learner(HUMAN_DISTILL, search_on=False)  # 无样本=无证据
+    with caplog.at_level(_logging.DEBUG, logger="astrbot"):
         entry = asyncio.run(learner.on_activity_end("read", NOW, "act_1"))
     assert entry is None
     assert llm.calls == []
-    assert any("搜索已关闭" in r.message for r in caplog.records)
+    assert any("没有读到新内容" in r.message for r in caplog.records)
+
+
+def test_t8_stale_samples_not_evidence():
+    """M20-补丁1 L4：留档时间早于活动开始的旧样本不算"本轮证据"。
+
+    （started_at 之后才有留档才算——防上一轮活动的材料被本轮重复提炼。）"""
+    stale = sample()
+    stale["at"] = "2026-10-01T08:00:00"
+    learner, llm = make_learner(HUMAN_DISTILL, samples=[stale])
+    started = datetime(2026, 10, 6, 14, 0, 0)
+    entry = asyncio.run(
+        learner.on_activity_end("surf", started, "act_1", started_at=started)
+    )
+    assert entry is None
+    assert llm.calls == []
 
 
 def test_t8_thin_or_code_material_skipped():
@@ -770,7 +798,8 @@ def test_t16_hook_appends_without_overwriting():
     main_module = load_plugin_main()
     learner = types.SimpleNamespace(
         enabled=lambda: True,
-        inject_block=lambda: "（说话语气参考：多用短句）",
+        # M20-补丁1 K1：inject_block 增加 trigger 关键字（调用记录）
+        inject_block=lambda *args, **kwargs: "（说话语气参考：多用短句）",
     )
     plugin_self = types.SimpleNamespace(_style_learner=learner)
     req = types.SimpleNamespace(
@@ -887,7 +916,8 @@ def test_loop_style_learner_trigger_on_activity_end():
         def __init__(self):
             self.calls = []
 
-        async def on_activity_end(self, name, now, activity_id):
+        # M20-补丁1 L：living_loop 传入 started_at（活动开始真实时间）
+        async def on_activity_end(self, name, now, activity_id, started_at=None):
             self.calls.append((name, activity_id))
 
     learner = SpyLearner()

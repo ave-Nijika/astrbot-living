@@ -7,6 +7,9 @@
 
 from __future__ import annotations
 
+import json
+from collections import deque
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
@@ -19,6 +22,10 @@ except ImportError:
     HAS_PLAYWRIGHT = False
 
 MAX_PAGE_TEXT = 3000
+
+# M20-补丁1 L1/N：最近读取留档（学习触发证据 + 面板可见），有界
+RECENT_READS_KEEP = 8
+RECENT_READ_TEXT_CHARS = 4000  # 每条正文存档上限（学习材料只需开头一段）
 
 
 def chromium_installed() -> Optional[bool]:
@@ -50,6 +57,9 @@ class BrowserSession:
         self._pw = None
         self._browser = None
         self._page = None
+        # M20-补丁1 L1：最近读取留档（browser_navigate / browser_read 成功
+        # 时记一条；风格学习用它判定"本轮真的读了网页"，有界 8 条）
+        self._recent_reads: deque[dict] = deque(maxlen=RECENT_READS_KEEP)
 
     @property
     def write_level(self) -> int:
@@ -58,6 +68,25 @@ class BrowserSession:
     @write_level.setter
     def write_level(self, v: int) -> None:
         self._write_level = max(0, min(3, int(v)))
+
+    def note_read(self, url: str, title: str, text: str) -> None:
+        """记录一次成功的页面读取（M20-补丁1 L1 证据 / N2 闭环留痕）。
+        纯内存操作，任何失败不影响工具调用本身。"""
+        try:
+            self._recent_reads.append(
+                {
+                    "url": str(url or "")[:300],
+                    "title": str(title or "")[:120],
+                    "text": str(text or "")[:RECENT_READ_TEXT_CHARS],
+                    "at": datetime.now().isoformat(timespec="seconds"),
+                }
+            )
+        except Exception:
+            pass
+
+    def recent_reads(self) -> list[dict]:
+        """最近读取留档（新的在前；风格学习/测试用）。"""
+        return list(reversed(self._recent_reads))
 
     async def _ensure_page(self):
         if self._page is not None:
@@ -72,12 +101,11 @@ class BrowserSession:
     async def save_state(self):
         if self._page is None or self._browser is None:
             return
-        from pathlib import Path
         state_file = Path(self._workspace) / "browser_state.json"
         try:
             state = {"cookies": await self._page.context.cookies()}
             state_file.write_text(
-                __import__("json").dumps(state, ensure_ascii=False), encoding="utf-8"
+                json.dumps(state, ensure_ascii=False), encoding="utf-8"
             )
         except Exception:
             pass

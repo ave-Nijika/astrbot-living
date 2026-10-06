@@ -31,7 +31,7 @@ BASE_CONFIG = {
     "sleep": {"sleep_window": "", "fatigue_rate_per_hour": 4.0,
               "dream_probability": 0.0},
     "output_gate": {"daily_message_limit": 10, "message_min_interval_minutes": 30,
-                    "target_sessions": MASTER_UMO, "quiet_hours": ""},
+                    "target_sessions": MASTER_UMO},
 }
 
 NARRATION = "9月29日我读了媒介理论的文章，聊到时间循环结构"

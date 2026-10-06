@@ -24,7 +24,7 @@ BASE_CONFIG = {
     "sleep": {"sleep_window": "", "fatigue_rate_per_hour": 4.0,
               "dream_probability": 0.0},
     "output_gate": {"daily_message_limit": 10, "message_min_interval_minutes": 30,
-                    "target_sessions": "", "quiet_hours": ""},
+                    "target_sessions": ""},
     "model": {"provider_id": "", "fallback_chain": []},
 }
 
@@ -137,7 +137,7 @@ def _patch_runs(loop, behaviors):
     """behaviors: [(provider_id, AgentRunResult 或 异常), ...] 按调用序弹。"""
     calls = []
 
-    async def fake_run_with(provider, provider_id, intent, budget, max_steps):
+    async def fake_run_with(provider, provider_id, intent, budget, max_steps, align=None):
         calls.append(provider_id)
         behavior = behaviors.pop(0)
         if isinstance(behavior, Exception):
@@ -396,7 +396,7 @@ MASTER_UMO = "aiocqhttp:FriendMessage:10001"
 CTX_CONFIG = {
     **BASE_CONFIG,
     "output_gate": {"daily_message_limit": 10, "message_min_interval_minutes": 30,
-                    "target_sessions": MASTER_UMO, "quiet_hours": ""},
+                    "target_sessions": MASTER_UMO},
 }
 
 

@@ -34,8 +34,7 @@ BASE_CONFIG = {
               "dream_probability": 0.0},
     "output_gate": {
         "daily_message_limit": 10, "message_min_interval_minutes": 30,
-        "target_sessions": "", "quiet_hours": "",
-        "share_rewrite_enabled": True,
+        "target_sessions": "",        "share_rewrite_enabled": True,
         # 默认空串 → _prompt_template() 走 DEFAULT_PROMPT_TEMPLATE
         "share_rewrite_prompt": "",
         "share_max_length": 120,

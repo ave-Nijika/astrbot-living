@@ -381,13 +381,6 @@
                         "default": "",
                         "invisible": true
                     },
-                    "quiet_hours": {
-                        "description": "静默时段（可选）",
-                        "hint": "格式 'HH:MM-HH:MM'，该时段不发主动消息。与休眠无关。",
-                        "type": "string",
-                        "default": "",
-                        "invisible": true
-                    },
                     "share_rewrite_enabled": {
                         "description": "分享角色化改写",
                         "hint": "开启后主动分享前用 LLM 把工作报告改写成聊天口吻（关闭则直发原文，与旧版一致）。改写失败自动降级原文。",
@@ -805,8 +798,8 @@
                         "default": 2
                     },
                     "pool_limit": {
-                        "description": "素材库容量上限（条）",
-                        "hint": "风格片段最多存多少条，超出时按权重×新鲜度×使用率淘汰综合分最低的。",
+                        "description": "语料库容量上限（条）",
+                        "hint": "提炼出的风格片段（语料库）最多存多少条，超出时按权重×新鲜度×使用率淘汰综合分最低的。",
                         "type": "int",
                         "default": 200
                     },
@@ -838,6 +831,90 @@
                         "hint": "从读到的文本一次完成 AI 判定与六维提炼的 prompt。占位符：{source_note}=来源备注（空时代码兜底'网页'）；{material}=学习材料正文。输出 JSON 协议（kind/source/dims 六键）是解析依赖的，别改结构。",
                         "type": "text",
                         "default": "下面是你昨天在网上读到的文本片段（来源备注：{source_note}）。请完成两件事：\n\n一、判断它更可能是【人写的】还是【AI 生成的】。判断依据：\n- AI 特征：结构工整对称、排比铺陈、\"首先/其次/最后\"、无口语碎语、情绪平铺、无具体到细节的个人经历、套话（\"值得注意的是\"\"让我们一起\"\"希望这对你有帮助\"）、标点规范到不像真人、段落长度均匀\n- 人味特征：口语与短句跳跃、错别字/口误/语气词、情绪起伏、跑题与打断、具体生活细节（时间地点人物）、自嘲与黑话\n\n二、只有判定为\"人写的\"才做：从中提炼值得学习的说话风格。六个维度都要看一遍（没有的给空串），其中【思维方式】与【待人接物】是重点——不要只盯着用词，要看这个人怎么想问题、怎么跟人打交道：\n- wording：用词口癖（高频词/语气词）\n- syntax：句式习惯\n- thinking：思维方式（先看什么、怎么得出结论）\n- emotion_style：情绪表达方式\n- interaction：待人接物（怎么接话、怎么打岔、怎么表达不同意）\n- avoid：反面特征（这类文本里不出现的）\n\nsource 字段：dialogue=多人在互相说话（评论区、回复串、问答往来）；article=单作者的长文。拿不准按 article。\n\n严格输出一个 JSON 对象，不要输出任何其他文字：\n{\"kind\": \"human\", \"source\": \"dialogue\", \"dims\": {\"wording\": \"\", \"syntax\": \"\", \"thinking\": \"\", \"emotion_style\": \"\", \"interaction\": \"\", \"avoid\": \"\"}}\nkind 只能是 human / ai / uncertain；kind 是 ai 或 uncertain 时 dims 给空对象。\n\n文本片段：\n{material}",
+                        "invisible": true
+                    },
+                    "material_max_chars": {
+                        "description": "单条材料长度上限（字符）",
+                        "hint": "送进提炼提示词的学习材料最多带多少字（控制 token，不追全文）。超出部分截断。",
+                        "type": "int",
+                        "default": 1200,
+                        "invisible": true
+                    },
+                    "min_material_chars": {
+                        "description": "材料最小长度（字符）",
+                        "hint": "学习材料低于该字数就不提炼（太短/纯代码撑不起六维观察）。",
+                        "type": "int",
+                        "default": 80,
+                        "invisible": true
+                    },
+                    "item_max_chars": {
+                        "description": "单条片段单维上限（字符）",
+                        "hint": "注入时每条片段每个维度的展示字符上限。",
+                        "type": "int",
+                        "default": 80,
+                        "invisible": true
+                    },
+                    "manual_weight": {
+                        "description": "人工优选权重倍率",
+                        "hint": "主人手动投入的素材提炼出的语料，权重=来源权重×该倍率。只比普通语料高一点点即可（内部上限 1.5，不设 2 倍以上——防止某条独霸注入）。",
+                        "type": "float",
+                        "default": 1.2,
+                        "invisible": true
+                    },
+                    "feature_importance_cap": {
+                        "description": "重要度上限倍率",
+                        "hint": "复盘判好的条目重要度会略升，但绝不超过基础权重的该倍率、也不超过同类条目中位数的 1.5 倍（防僵化：不能因为被夸过一次就独霸注入）。",
+                        "type": "float",
+                        "default": 1.5,
+                        "invisible": true
+                    },
+                    "daily_review_enabled": {
+                        "description": "每日复盘开关",
+                        "hint": "每天凌晨用判断模型复盘一次：最近用过的语料哪些好哪些不好，调整留存度与重要度；累计够多好评后归纳出沉淀层（稳定的一面）。判断模型未配置时自动跳过。总开关（风格学习）关闭时不跑。",
+                        "type": "bool",
+                        "default": true,
+                        "invisible": true
+                    },
+                    "daily_review_time": {
+                        "description": "每日复盘时间",
+                        "hint": "格式 HH:MM（24 小时制）。默认凌晨 4 点，趁你睡觉时她在后台自己复盘。",
+                        "type": "string",
+                        "default": "04:00",
+                        "invisible": true
+                    },
+                    "usage_log_limit": {
+                        "description": "调用记录条数上限",
+                        "hint": "调用记录库（feature_usage.json）最多保留多少条取用事实（复盘输入）。只记「什么时间用了哪些片段」，不记聊天内容。",
+                        "type": "int",
+                        "default": 500,
+                        "invisible": true
+                    },
+                    "material_pool_limit": {
+                        "description": "素材库容量上限（条）",
+                        "hint": "你手动投入的原始素材最多存多少条。素材库只由你添加，插件不会改写或删除你的数据，满了请先清理。",
+                        "type": "int",
+                        "default": 100,
+                        "invisible": true
+                    },
+                    "feature_promote_threshold": {
+                        "description": "沉淀归纳阈值",
+                        "hint": "自上次归纳以来累计判好的条目数达到该值，才触发一次沉淀归纳（把反复被取用且被判定好的特征沉淀成她自己的说话方式）。",
+                        "type": "int",
+                        "default": 3,
+                        "invisible": true
+                    },
+                    "prompt_review": {
+                        "description": "每日复盘提示词（专家）",
+                        "hint": "复盘判定调用的 prompt。占位符：{entries_block}=被取用条目清单；{reactions_block}=近期聊天摘录。输出 JSON 协议（entries[].id/verdict/reason，verdict 只能 good/bad/neutral）是解析依赖，别改结构。",
+                        "type": "text",
+                        "default": "下面是「她」说话风格库里最近被取用过的条目，以及她最近和主人的聊天摘录。请逐条判断：这条说话方式在最近的相处里效果如何？\n\n判断依据（从聊天摘录里找信号，找不到就给 neutral，不要猜）：\n- good：主人没有表示反感、聊天氛围正常、或有正面反应\n- bad：主人表达过「别这样说话」「你怎么突然这个腔调」之类的调整要求，或这条语气出现后明显冷场\n- neutral：没有足够信息判断\n\n严格输出一个 JSON 对象，不要输出任何其他文字：\n{\"entries\": [{\"id\": \"条目id\", \"verdict\": \"good\", \"reason\": \"一句话\"}]}\n只允许对下面给出的条目 id 给判断，不要发明新 id；verdict 只能是 good / bad / neutral。\n\n最近被取用的条目：\n{entries_block}\n\n最近的聊天摘录（只看反应，不要复述）：\n{reactions_block}",
+                        "invisible": true
+                    },
+                    "prompt_induct": {
+                        "description": "沉淀归纳提示词（专家）",
+                        "hint": "沉淀归纳调用的 prompt。占位符：{entries_block}=高评分条目清单。输出 JSON 协议（features[].note/dims 六键）是解析依赖，别改结构。",
+                        "type": "text",
+                        "default": "下面是「她」说话风格库里评分较高、反复被取用的条目。请把它们沉淀成少数几条稳定的「她自己的说话方式」——不是复制原文，而是把共同点归纳成通用特征。\n\n要求：\n- 每条特征六个维度都看一遍（没有内容的给空串）：wording 用词 / syntax 句式 / thinking 思维方式 / emotion_style 情绪表达 / interaction 待人接物 / avoid 别这样\n- 最多 4 条，每条单维内容不超过 40 字\n- 只输出 JSON：{\"features\": [{\"note\": \"一句话概括\", \"dims\": {\"wording\": \"\", \"syntax\": \"\", \"thinking\": \"\", \"emotion_style\": \"\", \"interaction\": \"\", \"avoid\": \"\"}}]}\n\n高评分条目：\n{entries_block}",
                         "invisible": true
                     }
                 }
@@ -913,16 +990,30 @@
                 "items": {
                     "provider_id": {
                         "description": "自主活动专用 Provider ID",
-                        "hint": "强烈建议配置一个与聊天模型不同的 provider，避免自主活动烧聊天模型的额度。留空则回退到默认聊天模型。",
+                        "hint": "留空 = 与聊天共用同一个模型和账号。该账号的缓存只有一套：她做活动、选活动、搭话、分享等任何一次调用都会冲掉聊天的缓存，之后你和她聊天的全部历史将按未命中重新计费。强烈建议单独配一个 provider（最好用不同的 api key / 账号）。配了独立 provider 时她走自己的提示词形态，与聊天互不影响。",
                         "type": "string",
                         "default": "",
                         "invisible": true
                     },
                     "fallback_chain": {
                         "description": "模型故障转移链",
-                        "hint": "按顺序尝试的 provider id 列表；链尾会自动兜底全部已启用的聊天模型。默认聊天模型 404/限流/超时时自动切换，全部失败才算活动失败。",
+                        "hint": "按顺序尝试的 provider id 列表；链尾默认会自动兜底全部已启用的聊天模型（关闭下方\"失败时允许回退到聊天模型\"则不兜底）。默认聊天模型 404/限流/超时时自动切换，全部失败才算活动失败。",
                         "type": "list",
                         "default": [],
+                        "invisible": true
+                    },
+                    "allow_chat_fallback": {
+                        "description": "失败时允许回退到聊天模型",
+                        "hint": "开（默认，保持旧行为）：模型故障转移链走完后仍可回退到全部已启用的聊天模型——代价是失败时也会冲掉聊天的缓存。关（缓存保护）：只重试故障转移链里配置的 provider，全部失败就按本轮调用失败处理（宁可她这次活动失败，也不冲你聊天的缓存）。",
+                        "type": "bool",
+                        "default": true,
+                        "invisible": true
+                    },
+                    "prefix_cache_ttl_minutes": {
+                        "description": "聊天前缀缓存时效（分钟）",
+                        "hint": "回退到聊天模型时，她的调用会带上与聊天完全相同的 system 与会话历史（前缀对齐，命中缓存、不再冲缓存）。该前缀取自最近一次聊天请求，超过此时效就不用（退回旧形态）。0 = 不过期。一般不用改。",
+                        "type": "int",
+                        "default": 360,
                         "invisible": true
                     }
                 },
@@ -946,7 +1037,7 @@
                     },
                     "provider_id": {
                         "description": "判断模型 provider id",
-                        "hint": "api 档使用的 provider（面板用下拉选择；此处也可手填）。留空或填了不存在的 id = 本轮不判断（记 WARNING，不影响聊天）。",
+                        "hint": "api 档使用的 provider（面板用下拉选择；此处也可手填）。留空或填了不存在的 id = 本轮不判断（记 WARNING，不影响聊天）。注意：这个 provider 也必须与聊天模型分开（不同的 api key / 账号），否则每次判断调用同样会冲掉聊天的缓存。",
                         "type": "string",
                         "default": "",
                         "invisible": true

@@ -19,8 +19,7 @@ BASE_CONFIG = {
               "dream_probability": 0.0},
     "output_gate": {
         "daily_message_limit": 10, "message_min_interval_minutes": 30,
-        "target_sessions": "", "quiet_hours": "",
-        "share_rewrite_enabled": True,
+        "target_sessions": "",        "share_rewrite_enabled": True,
         "share_rewrite_prompt": "把活动记录改写成聊天：{report}（心情：{mood}）",
         "share_max_length": 120,
     },

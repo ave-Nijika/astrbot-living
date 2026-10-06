@@ -26,7 +26,7 @@ BASE_CONFIG = {
               "sleep_mute_replies": True, "wake_source": "all",
               "sleep_debt_decay_per_day": 30.0},
     "output_gate": {"daily_message_limit": 10, "message_min_interval_minutes": 30,
-                    "target_sessions": "", "quiet_hours": ""},
+                    "target_sessions": ""},
     "model": {"provider_id": "", "fallback_chain": []},
     "persona": {"life_extra": ""},
     "memory": {"backend": "simple"},
