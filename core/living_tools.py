@@ -23,7 +23,7 @@ from astrbot.core.agent.tool import FunctionTool, ToolSet, ToolExecResult
 
 import mcp.types as mcp_types
 
-from .autonomy import check_action_kind
+from .autonomy import check_action_kind, is_write_allowed
 from .browser_tools import MAX_PAGE_TEXT, chromium_installed
 
 FETCH_TEXT_CHARS = 1500  # 喂给 LLM 的正文上限：够读，不至于撑爆上下文

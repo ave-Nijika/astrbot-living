@@ -205,10 +205,53 @@ _LLM_ERROR_OUTPUT_PATTERNS = (
     "http 4",
 )
 
+# 模型拒答文本的特征（M22-补丁1 C 组：VM 实测拒答被当搭话发给主人）。
+# 只收"长组合句式 + 自称 AI"两类强特征——裸短词（"我不能""抱歉""无法"、
+# "I can't"）在正常发言里太常见（"我不能出门""抱歉我来晚了"），一律不收，
+# 宁可少拦也别误杀（C3 评估结论，详见 M22 报告）。
+_REFUSAL_OUTPUT_PATTERNS = (
+    # 中文拒答句式
+    "无法满足",
+    "抱歉，我不能",
+    "抱歉，我无法",
+    "对不起，我不能",
+    "对不起，我无法",
+    "无法协助",
+    "违反了内容政策",
+    "违反了使用政策",
+    "作为一个ai",
+    "作为一名ai",
+    "作为ai，",
+    "作为ai助手",
+    "作为一个人工智能",
+    # 英文拒答句式（裸 "I can't" 不收："I can't wait" 是正常发言）
+    "as an ai",
+    "i'm an ai",
+    "i am an ai",
+    "i can't assist",
+    "i cannot assist",
+    "i can't help with",
+    "i cannot help with",
+    "i can't fulfill",
+    "i cannot fulfill",
+    "i'm unable to",
+    "i am unable to",
+    "unable to comply",
+    "cannot comply",
+    "content policy",
+)
+
 
 def looks_like_llm_error_output(text: Any) -> bool:
-    """判断一段"产出"文本是否其实是 LLM 错误信息（任务书问题 2 的过滤依据）。"""
+    """判断一段"产出"文本是否其实是 LLM 错误信息或模型拒答（任务书问题 2
+    的记忆污染过滤 + M22-补丁1 C 组的拒答外泄防护共用依据）。
+
+    弯撇号（U+2019，LLM 常见输出）归一为直撇号后再匹配，否则 "I'm"
+    的弯引号形态会漏过英文句式特征。"""
     if not text:
         return False
-    lowered = str(text).lower()
-    return any(pattern in lowered for pattern in _LLM_ERROR_OUTPUT_PATTERNS)
+    lowered = str(text).lower().replace("\u2019", "'")
+    return any(
+        pattern in lowered
+        for pattern in _LLM_ERROR_OUTPUT_PATTERNS + _REFUSAL_OUTPUT_PATTERNS
+    )

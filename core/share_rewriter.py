@@ -143,9 +143,12 @@ class ShareRewriter:
 
     # ------------------------------------------------------------------
     def _group(self, name: str) -> dict:
+        """配置组读取（M22-补丁1 起代理到 conf_path：advanced 嵌套优先、
+        平铺兜底——此前自实现只读顶层，advanced 下的全部配置读不到）。"""
+        from .conf_path import conf_group
+
         try:
-            value = (self._config_getter() or {}).get(name, {})
-            return value if isinstance(value, dict) else {}
+            return conf_group(self._config_getter() or {}, name)
         except Exception:
             return {}
 

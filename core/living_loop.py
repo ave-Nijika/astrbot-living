@@ -1203,6 +1203,13 @@ class LivingLoop:
         dream = str(text or "").strip()[:DREAM_MAX_CHARS]
         if not dream:
             return
+        # M22-补丁1 C 组：拒答文本不进记忆、不分享（memory.add 在发送之
+        # 前，Sender 拦截兜不到这一步，需单独拦）。
+        if looks_like_llm_error_output(dream):
+            logger.warning(
+                f"[LivingLoop] 梦话疑似模型拒答/错误文本，丢弃不入记忆: {dream[:60]!r}"
+            )
+            return
         date_key = f"{now.month}月{now.day}日"
         # 补丁 XX：梦同样要带身份与 topic（否则图谱里是孤立节点）
         identity = await self._bot_identity()
@@ -1591,6 +1598,14 @@ class LivingLoop:
             return
         text = str(text or "").strip()
         if not text:
+            return
+        # M22-补丁1 C 组：拒答/错误文本不进对话历史、不进会话存储（落库前
+        # 拦截）。正常流程里发送层（Sender.send）已拦、走不到这里；本处兜
+        # 住"不经发送直接落库"的调用形态，双保险。
+        if looks_like_llm_error_output(text):
+            logger.warning(
+                f"[LivingLoop] {label}：疑似模型拒答/错误文本，不入库: {text[:60]!r}"
+            )
             return
         if dedup_key in self._experience_written:
             return
