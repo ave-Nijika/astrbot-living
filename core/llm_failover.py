@@ -209,12 +209,26 @@ _LLM_ERROR_OUTPUT_PATTERNS = (
 # 只收"长组合句式 + 自称 AI"两类强特征——裸短词（"我不能""抱歉""无法"、
 # "I can't"）在正常发言里太常见（"我不能出门""抱歉我来晚了"），一律不收，
 # 宁可少拦也别误杀（C3 评估结论，详见 M22 报告）。
+#
+# M22 核验收尾（凛）：原版 # 抱歉，我不能 / 对不起，我不能 / i'm unable to /
+# i am unable to 四条过宽——"抱歉，我不能陪你熬夜了""对不起，我不能吃辣"
+# "I'm unable to go today" 这类正常发言会被静默丢弃（发不出也进不了历史）。
+# 收窄为"拒绝动词 + 拒答搭配"形态：把 我不能 限定到 继续/协助/满足/回答/提供，
+# 英文去掉裸 unable to，改收 unable to assist / unable to comply（comply 原已在）。
 _REFUSAL_OUTPUT_PATTERNS = (
     # 中文拒答句式
     "无法满足",
-    "抱歉，我不能",
+    "抱歉，我不能继续",
+    "抱歉，我不能协助",
+    "抱歉，我不能满足",
+    "抱歉，我不能回答",
+    "抱歉，我不能提供",
     "抱歉，我无法",
-    "对不起，我不能",
+    "对不起，我不能继续",
+    "对不起，我不能协助",
+    "对不起，我不能满足",
+    "对不起，我不能回答",
+    "对不起，我不能提供",
     "对不起，我无法",
     "无法协助",
     "违反了内容政策",
@@ -224,7 +238,8 @@ _REFUSAL_OUTPUT_PATTERNS = (
     "作为ai，",
     "作为ai助手",
     "作为一个人工智能",
-    # 英文拒答句式（裸 "I can't" 不收："I can't wait" 是正常发言）
+    # 英文拒答句式（裸 "I can't" / "I'm unable to" 不收："I can't wait"
+    # "I'm unable to go today" 是正常发言）
     "as an ai",
     "i'm an ai",
     "i am an ai",
@@ -234,9 +249,8 @@ _REFUSAL_OUTPUT_PATTERNS = (
     "i cannot help with",
     "i can't fulfill",
     "i cannot fulfill",
-    "i'm unable to",
-    "i am unable to",
     "unable to comply",
+    "unable to assist",
     "cannot comply",
     "content policy",
 )
