@@ -290,8 +290,9 @@ def test_t8_panel_save_then_get_returns_new_value_immediately(tmp_path):
 
 def test_c2_agent_tools_tier_comes_from_effective_config(tmp_path):
     """C2 行为：_build_agent_tools_async 按磁盘上的 autonomy.tier 挂载
-    （此前用 self.config——面板保存后不同步的旧值）。tier=3 → local_shell
-    挂载；磁盘没写的 tier 回落默认 1 → 不挂。"""
+    （此前用 self.config——面板保存后不同步的旧值）。M23-补丁1 起 shell
+    独占第 4 档：tier=4（write_level=2）→ local_shell 挂载；tier=3 →
+    不挂（老配置升级后自动失去 shell，安全默认）；默认 tier 1 → 不挂。"""
     plugin, _main, cfg_path = make_plugin(tmp_path)
     plugin.searcher = types.SimpleNamespace(close=lambda: asyncio.sleep(0))
     plugin.fetcher = types.SimpleNamespace()
@@ -310,18 +311,29 @@ def test_c2_agent_tools_tier_comes_from_effective_config(tmp_path):
 
     async def flow():
         cfg_path.write_text(
+            json.dumps(
+                {"preset": {}, "advanced": {"autonomy": {"tier": 4, "write_level": 2}}}
+            ),
+            encoding="utf-8",
+        )
+        tools4 = await plugin._build_agent_tools_async()
+        cfg_path.write_text(
             json.dumps({"preset": {}, "advanced": {"autonomy": {"tier": 3}}}),
             encoding="utf-8",
         )
         tools3 = await plugin._build_agent_tools_async()
-        names3 = {t.name for t in tools3.tools}
         cfg_path.write_text(json.dumps({"preset": {}, "advanced": {}}),
                             encoding="utf-8")
         tools_default = await plugin._build_agent_tools_async()
-        return names3, {t.name for t in tools_default.tools}
+        return (
+            {t.name for t in tools4.tools},
+            {t.name for t in tools3.tools},
+            {t.name for t in tools_default.tools},
+        )
 
-    names3, names_default = asyncio.run(flow())
-    assert "local_shell" in names3  # tier 3
+    names4, names3, names_default = asyncio.run(flow())
+    assert "local_shell" in names4  # tier 4 + write_level 2
+    assert "local_shell" not in names3  # tier 3：升级后不含 shell
     assert "local_shell" not in names_default  # 默认 tier 1
 
 

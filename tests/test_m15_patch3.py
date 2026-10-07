@@ -180,5 +180,7 @@ def test_tool_manifest_honors_search_switch():
     off = build_tool_manifest(0, 0, has_search=False)
     assert "web_search" not in off
     assert "fetch_page" in off and "run_python" in off and "remember" in off
-    # 其余档位清单不受影响
-    assert "local_shell" in build_tool_manifest(3, 3, has_search=False)
+    # 其余档位清单不受影响（M23-补丁1：shell 只在 tier>=4 且
+    # write_level>=2 时列入）
+    assert "local_shell" in build_tool_manifest(4, 2, has_search=False)
+    assert "local_shell" not in build_tool_manifest(3, 3, has_search=False)

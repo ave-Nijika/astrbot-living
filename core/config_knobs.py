@@ -61,6 +61,10 @@ KNOB_PRESETS: dict[str, dict[str, dict[str, dict[str, Any]]]] = {
         "watch": {"autonomy": {"tier": 1}},
         "home": {"autonomy": {"tier": 2}},
         "full": {"autonomy": {"tier": 3}},
+        # M23-补丁1 A5：第 4 档独立成选项——shell 独占最高档。给命令行
+        # 必须是用户显式点选明确标注的选项（面板按钮文案"命令行"），
+        # 不存在任何被动升到 tier=4 的路径
+        "shell": {"autonomy": {"tier": 4}},
     },
     "preset_write_level": {
         "read": {"autonomy": {"write_level": 0}},

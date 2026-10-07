@@ -33,6 +33,17 @@ const OPTION_LABELS = {
   "judge.output_action": { log_only: "只记录", rewrite: "允许打回重写" },
 };
 
+/* M23-补丁1 A5：能力档旋钮的中文按钮标签（存的值仍是 watch/home/full/shell）。
+ * 第 4 档必须让人一眼看到"命令行"——给命令行这件事无处隐藏。 */
+const KNOB_OPTION_LABELS = {
+  preset_capability_tier: {
+    watch: "看",
+    home: "玩",
+    full: "做（不含命令行）",
+    shell: "命令行（本机权限）",
+  },
+};
+
 /* M19-补丁1 F2：agent_activities 的多选选项（6 个活动 + 中文说明——
  * 主人原话"没有说明用户肯定不知道怎么写"）。 */
 const AGENT_ACTIVITY_CHOICES = [
@@ -465,7 +476,8 @@ function renderNovice() {
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "option";
-        btn.textContent = opt;
+        // M23-补丁1 A5：有能力档中文标签映射时显示中文（值不变）
+        btn.textContent = (KNOB_OPTION_LABELS[name] || {})[opt] || opt;
         if (state.values.knobs[name] === opt) btn.classList.add("selected");
         btn.addEventListener("click", () => {
           state.values.knobs[name] = opt;
@@ -489,6 +501,7 @@ function renderNovice() {
   grid.appendChild(styleLearningCard()); // 风格学习（M17-补丁1 A5）
   grid.appendChild(styleDataCard()); // M20-补丁1 J：语料与素材（添加/立即处理）
   grid.appendChild(browserCard()); // 浏览器能力说明 + 实时状态
+  grid.appendChild(workspaceCard()); // 她的文件夹（M23-补丁1 B4）：路径 + 状态
   grid.appendChild(searchToggleCard()); // 联网搜索开关
   grid.appendChild(agentToolsCard()); // 本体工具开关
   grid.appendChild(judgeCard()); // M19-补丁1 A5/E3：判断模型（三档+状态+记录）
@@ -867,6 +880,52 @@ async function refreshBrowserStatus(el) {
       : "浏览器能力：未安装（浏览器工具不可用）";
   } catch (e) {
     el.textContent = ""; // 状态取不到就不显示，说明块仍在
+  }
+}
+
+/* 她的文件夹（M23-补丁1 B4）：工作区实际路径与状态实时展示。
+ * 让人一眼知道自己的 workspace_dir 配置有没有生效（就绪/不存在/被文件
+ * 占用/创建失败），失败时带原因，不静默。 */
+function workspaceCard() {
+  const card = document.createElement("div");
+  card.className = "knob-card workspace-card";
+  const h = document.createElement("h3");
+  h.textContent = "她的文件夹";
+  card.appendChild(h);
+  const p = document.createElement("p");
+  p.className = "hint";
+  p.textContent =
+    "这是她的专属工作区：能力档「玩」及以上时，她的文件读写、小程序都" +
+    "在这个目录里；开到「命令行」档时那也是命令的默认工作目录。路径来自" +
+    "专家配置 autonomy.workspace_dir，留空则用插件数据目录下的默认位置，" +
+    "插件启动时会自动创建。如果下面显示创建失败，检查路径是否合法、磁盘" +
+    "是否可写。";
+  card.appendChild(p);
+  const status = document.createElement("p");
+  status.className = "hint workspace-status";
+  status.textContent = "她的文件夹：读取中…";
+  card.appendChild(status);
+  refreshWorkspaceStatus(status);
+  return card;
+}
+
+async function refreshWorkspaceStatus(el) {
+  try {
+    const res = await bridge.apiGet("workspace_status");
+    const data = res && res.data ? res.data : res;
+    if (!data || !data.path) {
+      el.textContent = "";
+      return;
+    }
+    const stateText =
+      data.state === "ready"
+        ? "已就绪"
+        : data.state === "missing"
+          ? "不存在"
+          : data.message || data.state;
+    el.textContent = `她的文件夹：${data.path}（${stateText}）`;
+  } catch (e) {
+    el.textContent = ""; // 状态取不到就不显示
   }
 }
 

@@ -136,6 +136,8 @@ class LivingPlugin(Star):
         # log_only 的后台检查任务引用集合（防 GC）
         self._judge: OutputJudge | None = None
         self._judge_tasks: set[asyncio.Task] = set()
+        # M23-补丁1 B 组：启动自愈结果（{path,state,message}，面板展示用）
+        self._workspace_ensure_result: dict | None = None
         # M20-补丁1 E 组：聊天请求最终前缀缓存（umo → {system_prompt,
         # contexts, provider_id, at}）。只在 on_llm_request 钩子里写，
         # living 自己的调用在回退到聊天模型时读它做前缀对齐（缓存保护）
@@ -1108,11 +1110,112 @@ class LivingPlugin(Star):
     # 自主能力接线（补丁 XIII：档位配置热读 + 浏览器会话复用）
     # ------------------------------------------------------------------
     def _living_workspace(self) -> str:
-        """"它的家"：自主活动工作区目录（配置优先，缺省用插件数据目录）。"""
+        """"她的家"：自主活动工作区目录（配置优先）。
+
+        M23-补丁1 B2：缺省值从"相对进程工作目录的 data/plugin_data/..."
+        改为基于 AstrBot 数据目录的绝对路径（get_astrbot_plugin_data_path，
+        即 <AstrBot数据目录>/data/plugin_data/<插件名>_home）——启动目录
+        不同不再落到别处；叶子目录名与旧默认一致，此前一直从 AstrBot 根
+        启动的部署位置不变。本体路径 API 异常时才退回旧的相对路径。
+        """
         configured = str(self._cfg("autonomy", "workspace_dir", "") or "").strip()
         if configured:
             return configured
-        return str(Path("data") / "plugin_data" / f"{PLUGIN_NAME}_home")
+        try:
+            from astrbot.core.utils.astrbot_path import (
+                get_astrbot_plugin_data_path,
+            )
+
+            return str(
+                Path(get_astrbot_plugin_data_path()) / f"{PLUGIN_NAME}_home"
+            )
+        except Exception:
+            return str(Path("data") / "plugin_data" / f"{PLUGIN_NAME}_home")
+
+    def _ensure_workspace(self) -> dict:
+        """工作区自愈（M23-补丁1 B1/B3）：确保实际生效的工作区目录存在。
+
+        - 幂等：mkdir(parents=True, exist_ok=True)，绝不覆盖/清空既有内容；
+        - 配置路径被文件占用 → ERROR 明确报错，不覆盖、不静默回落默认位置；
+        - 创建失败 → WARNING 不阻断启动（工作区工具在目录就绪前会按各自
+          的错误路径明确报错）；
+        - 返回 {path, state, message}：state ∈ ready/not_a_directory/failed，
+          存实例供面板 workspace_status 端点展示与测试断言。
+        """
+        path = self._living_workspace()
+        p = Path(path)
+        try:
+            if p.is_dir():
+                logger.info(f"[{PLUGIN_NAME}] 工作区目录就绪: {path}")
+                return {"path": path, "state": "ready", "message": "已就绪"}
+            if p.exists():
+                logger.error(
+                    f"[{PLUGIN_NAME}] 工作区路径不是一个目录（不会覆盖它），"
+                    f"请改用其他路径: {path}"
+                )
+                return {
+                    "path": path,
+                    "state": "not_a_directory",
+                    "message": "该路径是一个文件，不能作为工作区目录",
+                }
+            p.mkdir(parents=True, exist_ok=True)
+            logger.info(f"[{PLUGIN_NAME}] 工作区目录已创建: {path}")
+            return {
+                "path": path,
+                "state": "ready",
+                "message": "已就绪（启动时自动创建）",
+            }
+        except Exception as e:
+            logger.warning(
+                f"[{PLUGIN_NAME}] 工作区目录创建失败（不阻断启动）: {path} — {e}"
+            )
+            return {
+                "path": path,
+                "state": "failed",
+                "message": f"创建失败：{e}",
+                "error": str(e),
+            }
+
+    def _workspace_status(self) -> dict:
+        """工作区目录实时状态（M23-补丁1 B4：面板一眼看清配置是否生效）。
+
+        state ∈ ready/missing/not_a_directory/failed；启动自愈失败过且目录
+        仍不存在时如实报 failed（带原因），不粉饰。"""
+        path = self._living_workspace()
+        p = Path(path)
+        if p.is_dir():
+            return {"path": path, "state": "ready", "message": "已就绪"}
+        if p.exists():
+            return {
+                "path": path,
+                "state": "not_a_directory",
+                "message": "该路径是一个文件，不能作为工作区目录",
+            }
+        last = getattr(self, "_workspace_ensure_result", None) or {}
+        if last.get("state") == "failed":
+            return {
+                "path": path,
+                "state": "failed",
+                "message": f"启动时创建失败：{last.get('error', '未知原因')}",
+            }
+        return {"path": path, "state": "missing", "message": "目录不存在"}
+
+    def _log_tier_semantics_note(self) -> None:
+        """A6：老配置 tier=3 的档位语义迁移说明（每次启动一条 INFO）。
+
+        M23-补丁1 起 shell 独占第 4 档：tier=3 的既有用户升级后自动失去
+        本地命令行——有意为之的安全默认（红线 2：不得无提示地继续持有
+        shell）。只说明去向，不替用户改档。"""
+        try:
+            tier = read_tier(self._effective_config())
+        except Exception:
+            return
+        if tier == 3:
+            logger.info(
+                f"[{PLUGIN_NAME}] 能力档位说明：tier=3 自本版起不再包含本地"
+                "命令行——该能力已移至第 4 档（tier=4）。如需命令行，请在"
+                "面板「能力档」选「命令行」，或把 autonomy.tier 设为 4"
+            )
 
     def _get_browser_session(self, write_level: int):
         """浏览器会话复用（同一会话跨活动共享 → 登录态保持）。
@@ -1461,6 +1564,16 @@ class LivingPlugin(Star):
         if self.loop is not None:
             await self.loop.stop()
 
+        # M23-补丁1 B 组：工作区目录自愈——她的"家"要真的存在（幂等，
+        # 失败只记日志不阻断启动；结果供面板 workspace_status 展示）
+        try:
+            self._workspace_ensure_result = self._ensure_workspace()
+        except Exception as e:
+            logger.warning(f"[{PLUGIN_NAME}] 工作区自愈异常（不阻断启动）: {e}")
+
+        # M23-补丁1 A6：老配置 tier=3 的档位语义迁移说明（不得静默）
+        self._log_tier_semantics_note()
+
         try:
             # 跨日结算用配置的睡眠债消退速率（热读，取自当前配置）
             await self.mood.load(
@@ -1705,6 +1818,7 @@ class LivingPlugin(Star):
             (f"{prefix}/mood", self._api_mood_get, ["GET"], "心境快照读取"),
             (f"{prefix}/mood/interests", self._api_mood_interests_post, ["POST"], "兴趣权重编辑"),
             (f"{prefix}/browser_status", self._api_browser_status_get, ["GET"], "浏览器能力状态"),
+            (f"{prefix}/workspace_status", self._api_workspace_status_get, ["GET"], "工作区目录状态"),
             (f"{prefix}/judge_records", self._api_judge_records_get, ["GET"], "判断记录读取"),
             (f"{prefix}/fs_list", self._api_fs_list_post, ["POST"], "工作区目录浏览（只读）"),
             (f"{prefix}/style_data", self._api_style_data_get, ["GET"], "语料与素材数据读取"),
@@ -1885,6 +1999,15 @@ class LivingPlugin(Star):
         except Exception:
             logger.exception(f"[{PLUGIN_NAME}] 浏览器状态探测失败")
             return {"status": "ok", "data": {"installed": False}}
+
+    async def _api_workspace_status_get(self):
+        """工作区目录状态（M23-补丁1 B4）：实际生效路径 + 就绪状态。
+        只读探测，不在请求路径里做创建（创建只发生在启动自愈）。"""
+        try:
+            return {"status": "ok", "data": self._workspace_status()}
+        except Exception:
+            logger.exception(f"[{PLUGIN_NAME}] 工作区状态读取失败")
+            return {"status": "error", "message": "内部错误"}
 
     # ------------------------------------------------------------------
     # 工作区目录浏览选择器（M20-补丁1 F2，服务端列目录）

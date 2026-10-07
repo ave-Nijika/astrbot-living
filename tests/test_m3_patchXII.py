@@ -81,7 +81,9 @@ def test_tier0_vs_tier3_different_tools():
     from core.browser_tools import BrowserSession
     session = BrowserSession(workspace="/tmp")
     ts0 = _build(tier=0)
-    ts3 = _build(tier=3, browser_session=session)
+    # M23-补丁1：tier 3 不再含 shell（独占第 4 档）——tier 0/3 的差异由
+    # 工作区三件套（workspace 非空即挂，不依赖 Chromium 探测）体现
+    ts3 = _build(tier=3, browser_session=session, workspace="/tmp")
     assert _tool_names(ts0) != _tool_names(ts3)
 
 

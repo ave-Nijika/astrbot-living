@@ -250,9 +250,12 @@ def build_living_tools(
     tier 决定挂载哪些工具，write_level 决定写操作权限，
     workspace 限制文件操作目录。每次活动周期重建（配置热读）。
 
+    M23-补丁1 A1 起的档位阶梯（shell 独占最高档）：
     tier 0: 仅自带 4 工具
-    tier >= 1: + 浏览器只读工具（navigate/read/screenshot）
-    tier >= 2: + 工作区写入工具
+    tier >= 1: + 浏览器工具（Chromium 探测通过时）
+    tier >= 2: + 工作区文件三件套
+    tier 3: 同 2（文件能力的顶，不含命令行——老 tier=3 的 shell 已上移）
+    tier >= 4: + 本机 shell（且需 write_level >= 2，见 C1）
 
     M15-补丁1 E2：web_search_enabled=False 时 web_search 不挂载（独立
     关掉博查搜索；fetch_page 与其他能力不受影响）。C0：image_probe/
@@ -318,9 +321,21 @@ def build_living_tools(
         tools.append(WorkspaceWriteTool().bind(workspace, write_level))
         tools.append(WorkspaceListTool().bind(workspace))
 
-    # tier >= 3: 本机 shell（受限命令黑名单 + 红线路径拒绝）
-    if tier >= 3:
+    # M23-补丁1 A1：shell 独占第 4 档——tier 3 不再含本机命令行（老配置
+    # tier=3 升级后自动失去 shell，有意为之的安全默认，main.initialize
+    # 有对应的启动说明日志）。
+    # M23-补丁1 C1（方案甲：挂载时判断）：write_level >= 2 才挂载——shell
+    # 与"写工作区文件"同属能改动本机的能力，同级闸门；选挂载时判断而非
+    # 执行时拒绝，因为挂载清单（build_tool_manifest）能如实反映"现在
+    # 给没给"，延续 M15/M20"清单=实际挂载"口径；挂了再拒会让清单谎报
+    # 能力，还让她白耗工具轮数去撞墙。
+    if tier >= 4 and write_level >= 2:
         tools.append(LocalShellTool().bind(workspace, write_level))
+    elif tier >= 4:
+        logger.info(
+            f"tier=4 但 write_level={write_level}(<2)：本地命令行不挂载"
+            "（与写文件同级，需轻写入档及以上）"
+        )
 
     return ToolSet(tools=tools)
 
@@ -457,7 +472,8 @@ _SHELL_BLACKLIST = re.compile(
 
 @pydantic_dataclass
 class LocalShellTool(FunctionTool):
-    """本机 shell（tier 3 自由档）：受限执行，命令黑名单 + 超时杀树。"""
+    """本机 shell（M23-补丁1 起为 tier 4 命令行档独占，需 write_level>=2）：
+    受限执行，命令黑名单 + 超时杀树。工具本体行为不变（黑名单/cwd/超时）。"""
 
     name: str = "local_shell"
     description: str = (

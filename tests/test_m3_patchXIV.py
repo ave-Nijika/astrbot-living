@@ -56,20 +56,25 @@ def _names(toolset):
 
 
 def test_tier_progression():
-    """档位递进：tier=1/2/3 的工具名集合严格递进（3 ⊇ 2 ⊇ 1）。"""
+    """档位递进：tier=1/2/3/4 的工具名集合按档递进（M23-补丁1 起 tier 3
+    与 2 挂载相同——文件能力的顶；4 ⊋ 3 含 shell）。"""
     ws = str(Path(__file__).parent / "ws_test")
 
     ts1 = _build(tier=1, workspace=ws)
     ts2 = _build(tier=2, workspace=ws)
     ts3 = _build(tier=3, workspace=ws)
+    ts4 = _build(tier=4, write_level=2, workspace=ws)
 
     def _tool_names(toolset):
         return {t.name for t in toolset.tools}
     names1 = _tool_names(ts1)
     names2 = _tool_names(ts2)
     names3 = _tool_names(ts3)
+    names4 = _tool_names(ts4)
 
-    assert names1 < names2 < names3
+    assert names1 < names2
+    assert names2 == names3  # M23-补丁1：tier 3 不再挤 shell，与 2 相同
+    assert names3 < names4
 
 
 def _tool_names(toolset):
@@ -77,21 +82,24 @@ def _tool_names(toolset):
 
 
 def test_tier_progression_strict():
-    """档位递进：3 ⊇ 2 ⊇ 1。"""
+    """档位递进：1 ⊆ 2 ⊆ 3 ⊆ 4（M23-补丁1：shell 只在第 4 档）。"""
     ws = str(Path(__file__).parent / "ws_test")
     ts1 = _build(tier=1, workspace=ws)
     ts2 = _build(tier=2, workspace=ws)
     ts3 = _build(tier=3, workspace=ws)
+    ts4 = _build(tier=4, write_level=2, workspace=ws)
 
     n1 = {t.name for t in ts1.tools}
     n2 = {t.name for t in ts2.tools}
     n3 = {t.name for t in ts3.tools}
+    n4 = {t.name for t in ts4.tools}
 
-    assert n1 <= n2 <= n3
+    assert n1 <= n2 <= n3 <= n4
     # tier 2 独有：workspace 工具
     assert "workspace_read" in n2 - n1 or "workspace_read" in n2
-    # tier 3 独有：local_shell
-    assert "local_shell" in n3 - n1
+    # M23-补丁1 A1：tier 3 不再独有 shell；shell 只在 tier 4
+    assert "local_shell" not in n3
+    assert "local_shell" in n4 - n3
 
 
 def test_tier2_workspace_read_write():
@@ -129,20 +137,23 @@ def test_workspace_write_needs_level_2(tmp_path):
     assert is_write_allowed(str(tmp_path / "ws" / "f.txt"), ws, 2) is True
 
 
-def test_tier3_local_shell_exists():
-    """tier=3 的 ToolSet 含 local_shell。"""
+def test_tier4_local_shell_exists():
+    """M23-补丁1 A1：tier=4（write_level>=2）的 ToolSet 含 local_shell；
+    tier=3 不含（shell 独占第 4 档）。"""
     ws = str(Path(__file__).parent / "ws_test")
-    ts = _build(tier=3, workspace=ws)
-    names = {t.name for t in ts.tools}
-    assert "local_shell" in names
+    ts4 = _build(tier=4, write_level=2, workspace=ws)
+    assert "local_shell" in {t.name for t in ts4.tools}
+    ts3 = _build(tier=3, workspace=ws)
+    assert "local_shell" not in {t.name for t in ts3.tools}
 
 
-def test_tier3_local_shell_executes_safe_command():
-    """tier=3 local_shell 可执行安全命令（工作区内）。"""
+def test_tier4_local_shell_executes_safe_command():
+    """tier=4 local_shell 可执行安全命令（工作区内）。工具本体行为不变
+    （黑名单/cwd/超时，M23-补丁1 红线 4）。"""
     import tempfile
 
     ws = tempfile.mkdtemp()
-    ts = _build(tier=3, workspace=ws)
+    ts = _build(tier=4, write_level=2, workspace=ws)
     shell_tool = next(t for t in ts.tools if t.name == "local_shell")
     shell_tool._workspace = ws
 
@@ -150,10 +161,10 @@ def test_tier3_local_shell_executes_safe_command():
     assert "hello" in result
 
 
-def test_tier3_local_shell_rejects_dangerous(tmp_path):
+def test_tier4_local_shell_rejects_dangerous(tmp_path):
     """破坏性命令被黑名单拦截。"""
     ws = str(Path(__file__).parent / "ws_test")
-    ts = _build(tier=3, workspace=ws)
+    ts = _build(tier=4, write_level=2, workspace=ws)
     shell_tool = next(t for t in ts.tools if t.name == "local_shell")
     shell_tool._workspace = ws
 

@@ -268,7 +268,9 @@ def test_wake_now_exits_autonomous_sleep(tmp_path):
 def test_tier_clamp():
     assert clamp_tier(0) == 0
     assert clamp_tier(3) == 3
-    assert clamp_tier(5) == 3
+    # M23-补丁1 A2：上限 3 → 4（shell 独占第 4 档）
+    assert clamp_tier(4) == 4
+    assert clamp_tier(5) == 4
     assert clamp_tier(-1) == 0
     assert clamp_tier("abc") == 1
     assert clamp_tier(None) == 1
@@ -321,8 +323,15 @@ def test_tool_manifest_by_tier():
     m2 = build_tool_manifest(2, 2, has_browser=True, has_workspace=True)
     assert "workspace_read" in m2 and "workspace_list" in m2
     assert "local_shell" not in m2
+    # M23-补丁1 A1/A3：tier 3 不再含 shell（文件能力的顶），shell 独占
+    # 第 4 档且需 write_level>=2（C1/C2 与实际挂载同条件）
     m3 = build_tool_manifest(3, 3, has_browser=True, has_workspace=True)
-    assert "local_shell" in m3
+    assert "local_shell" not in m3
+    m4 = build_tool_manifest(4, 2, has_browser=True, has_workspace=True)
+    assert "local_shell" in m4
+    assert "local_shell" not in build_tool_manifest(
+        4, 1, has_browser=True, has_workspace=True
+    )
     # has_workspace=False 时清单不预告工作区工具（与实际挂载条件一致）
     m2_now = build_tool_manifest(2, 2, has_browser=True, has_workspace=False)
     assert "workspace_read" not in m2_now

@@ -9,7 +9,13 @@ from __future__ import annotations
 
 from typing import Any
 
-TIER_NAMES = {0: "静养", 1: "观看", 2: "居家", 3: "自由"}
+# 档位阶梯（M23-补丁1 A1 起 shell 独占最高档，老 tier=3 不再含命令行）：
+#   0 静养 = 仅自带四件套（搜索/抓取/沙箱/记忆）
+#   1 观看 = + 浏览器五件套
+#   2 居家 = + 工作区文件三件套（读/写/列）
+#   3 自由 = 同 2（文件能力的顶，不含命令行）
+#   4 命令行 = + 本机命令行（等价于把这台电脑交给她，须 write_level>=2）
+TIER_NAMES = {0: "静养", 1: "观看", 2: "居家", 3: "自由", 4: "命令行"}
 WRITE_LEVEL_NAMES = {0: "只读", 1: "浏览交互", 2: "轻写入", 3: "全权"}
 
 # 红线路径前缀：无论档位多高一律拒绝写入
@@ -20,8 +26,9 @@ _PROTECTED_PREFIXES = (
 
 
 def clamp_tier(value, default: int = 1) -> int:
+    """档位合法域 0-4（M23-补丁1 A2：上限 3 → 4，shell 独占第 4 档）。"""
     try:
-        return max(0, min(3, int(value)))
+        return max(0, min(4, int(value)))
     except (TypeError, ValueError):
         return default
 
@@ -81,11 +88,14 @@ def build_tool_manifest(
     main._build_agent_tools 的档位日志使用）。
 
     名称必须与 build_living_tools 的实际挂载一致（一致性由
-    tests/test_m3_patchXV.py 的接线测试守护）：browser 五件套含
-    click/type，工作区三件套含 list。M15-补丁3 A3 顺手（grep 同源问题）：
-    has_search=False（capabilities.web_search_enabled=false）时不列
-    web_search——否则搜索关闭下"清单 vs 实际挂载"天天假报不一致（与
-    M15-补丁2 给 has_browser 做的 fail-closed 同口径）。
+    tests/test_m3_patchXV.py 与 tests/test_m23_patch1.py 的接线测试守护）：
+    browser 五件套含 click/type，工作区三件套含 list。M15-补丁3 A3 顺手
+    （grep 同源问题）：has_search=False（capabilities.web_search_enabled=
+    false）时不列 web_search——否则搜索关闭下"清单 vs 实际挂载"天天假报
+    不一致（与 M15-补丁2 给 has_browser 做的 fail-closed 同口径）。
+    M23-补丁1 A3/C2：local_shell 只在 tier>=4 且 write_level>=2 时列入，
+    与 build_living_tools 的挂载条件逐字同款（shell 独占第 4 档 + 写权限
+    闸门都是挂载时判断，清单才不会谎报能力）。
     """
     names: list[str] = []
     if has_search:
@@ -98,7 +108,7 @@ def build_tool_manifest(
         ]
     if tier >= 2 and has_workspace:
         names += ["workspace_read", "workspace_write", "workspace_list"]
-    if tier >= 3:
+    if tier >= 4 and write_level >= 2:
         names += ["local_shell"]
     return names
 

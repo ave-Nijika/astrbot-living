@@ -197,11 +197,13 @@ def test_t3_fail_closed_when_probe_none(fake_session, monkeypatch, caplog):
 def test_t3_fail_closed_keeps_other_tools(fake_session, monkeypatch):
     """不挂浏览器不影响其他能力（fail-closed 只收窄浏览器五件套）。"""
     monkeypatch.setattr("core.living_tools.chromium_installed", lambda: False)
+    # M23-补丁1：shell 独占第 4 档且需 write_level>=2（C1 挂载闸门），
+    # 用 tier=4 + write_level=2 验证"浏览器缺席、其余照旧"
     ts = build_living_tools(
-        tier=3,
+        tier=4,
         browser_session=fake_session,
         workspace=str(fake_session._workspace),
-        write_level=0,
+        write_level=2,
     )
     names = {t.name for t in ts.tools}
     assert names.isdisjoint(set(BROWSER_FIVE))
