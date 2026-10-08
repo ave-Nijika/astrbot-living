@@ -1,0 +1,431 @@
+{
+    "version": 1,
+    "doc": "M25-补丁1 面板信息架构：一级栏目（sections）与二级功能（groups）的定义。为什么不放在 _conf_schema.json 顶层——AstrBot 本体加载插件时把整个 schema 文件交给 AstrBotConfig._parse_schema（astrbot/core/config/astrbot_config.py:139-163），它对顶层每个键强制读 v['type']，无 type 的顶层键会让插件加载直接崩溃（astrbot/core/star/star_manager.py:1159-1165 无过滤传入）。因此布局放独立文件，由 core/panel_api.load_schema() 读入后以 schema['_layout'] 内存合并（盘上 schema 顶层保持 preset/advanced 两键不变）。键级 section/requires 元数据在 _conf_schema.json 键定义内（本体只读 type/default，多余字段被无视，安全）。",
+    "sections": [
+        {
+            "id": "A",
+            "title": "她的大脑",
+            "subtitle": "上游配不好，下面全线哑火（日常最少碰）",
+            "collapsed": true,
+            "groups": [
+                {
+                    "id": "A1",
+                    "title": "自主活动用的大脑",
+                    "summary": "留空 = 与聊天共用模型（可用，但每次调用都冲聊天缓存）",
+                    "requires": []
+                },
+                {
+                    "id": "A2",
+                    "title": "把关用的小大脑",
+                    "summary": "外挂小大脑：输入建议 + 输出检查，对抗输出惯性",
+                    "switch": "judge.mode",
+                    "unimplemented": {
+                        "value": "local",
+                        "label": "未实现",
+                        "hint": "本地小模型推理尚未实现，选中仅占位、不工作（core/judge.py:110-117：只有 api 档真正工作）。"
+                    },
+                    "requires": [
+                        {
+                            "key": "judge.provider_id",
+                            "op": "nonEmpty",
+                            "label": "判断模型 provider",
+                            "failHint": "还没选 provider——本轮不判断（记 WARNING，不影响聊天）。在本组配上 provider。",
+                            "anchor": "main.py:364（_judge_llm_call 只读 provider_id）"
+                        }
+                    ],
+                    "offValue": "off"
+                },
+                {
+                    "id": "A3",
+                    "title": "把关怎么把守",
+                    "summary": "输入判断的频率/上文/超时与输出检查动作",
+                    "requires": [
+                        {
+                            "key": "judge.mode",
+                            "op": "eq",
+                            "value": "api",
+                            "label": "判断模型档位 = 云端 API",
+                            "failHint": "判断模型不在 api 档（core/judge.py:110-117 只有 api 档真正工作），这些内容不参与任何调用。",
+                            "anchor": "core/judge.py:110-117",
+                            "explicit": true
+                        }
+                    ]
+                },
+                {
+                    "id": "A4",
+                    "title": "把关的提示词",
+                    "summary": "输入判断 / 注入模板 / 输出检查的 prompt",
+                    "requires": [
+                        {
+                            "key": "judge.mode",
+                            "op": "eq",
+                            "value": "api",
+                            "label": "判断模型档位 = 云端 API",
+                            "failHint": "判断模型不在 api 档（core/judge.py:110-117 只有 api 档真正工作），这些内容不参与任何调用。",
+                            "anchor": "core/judge.py:110-117",
+                            "explicit": true
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "id": "B",
+            "title": "她的手脚",
+            "subtitle": "能力档位与工具边界",
+            "collapsed": false,
+            "groups": [
+                {
+                    "id": "B1",
+                    "title": "能力档位",
+                    "summary": "tier 分档：命令行独占第 4 档（M23-补丁1）",
+                    "requires": []
+                },
+                {
+                    "id": "B2",
+                    "title": "工具与边界",
+                    "summary": "联网搜索关掉后，冲浪/读文章会从活动池退场",
+                    "requires": []
+                }
+            ]
+        },
+        {
+            "id": "C",
+            "title": "她独处时干什么",
+            "subtitle": "心跳节奏、兴趣口味、活动池与预算护栏",
+            "collapsed": false,
+            "groups": [
+                {
+                    "id": "C1",
+                    "title": "心跳与节奏",
+                    "summary": "冲动检查频率与无聊曲线",
+                    "requires": []
+                },
+                {
+                    "id": "C2",
+                    "title": "兴趣与口味",
+                    "summary": "兴趣衰减、近期话题惩罚与探索配额",
+                    "requires": []
+                },
+                {
+                    "id": "C3",
+                    "title": "活动池",
+                    "summary": "当前可跑的活动随联网搜索开关变化（core/activities.py:106-120）",
+                    "requires": []
+                },
+                {
+                    "id": "C4",
+                    "title": "预算与护栏",
+                    "summary": "单次活动的 token / 轮数 / 时长硬闸",
+                    "requires": []
+                },
+                {
+                    "id": "C5",
+                    "title": "提示词",
+                    "summary": "选题与各活动意图的 prompt（改坏可清空恢复默认）",
+                    "requires": []
+                }
+            ]
+        },
+        {
+            "id": "D",
+            "title": "她什么时候开口",
+            "subtitle": "能到她 QQ 的通路：分享链与搭话过闸门，晚安/唤醒确认/补回复直发",
+            "collapsed": false,
+            "groups": [
+                {
+                    "id": "D1",
+                    "title": "输出闸门",
+                    "summary": "管 4 条过闸门出口（活动分享/梦话/睡过头交代/主动搭话）；晚安、唤醒确认、醒来补回复是直发，不受此限",
+                    "requires": []
+                },
+                {
+                    "id": "D2",
+                    "title": "活动分享",
+                    "summary": "含梦话、睡过头交代（三条共用 _maybe_share 入口）",
+                    "switch": "output_gate.share_rewrite_enabled",
+                    "requires": []
+                },
+                {
+                    "id": "D3",
+                    "title": "主动搭话",
+                    "summary": "纯粹因为想找你说话而开口；配额与间隔和分享共用 D1 闸门",
+                    "switch": "initiative.enabled",
+                    "requires": []
+                }
+            ]
+        },
+        {
+            "id": "E",
+            "title": "她的作息",
+            "subtitle": "睡眠需求、小睡、睡前睡中互动与起床约定",
+            "collapsed": false,
+            "groups": [
+                {
+                    "id": "E1",
+                    "title": "睡眠需求",
+                    "summary": "睡意曲线的参数与权重",
+                    "requires": []
+                },
+                {
+                    "id": "E2",
+                    "title": "小睡",
+                    "summary": "白天打盹的时长与次数上限",
+                    "switch": "sleep.nap_enabled",
+                    "requires": []
+                },
+                {
+                    "id": "E3",
+                    "title": "睡与醒的互动",
+                    "summary": "吵醒阈值、起床气与睡眠期静默；唤醒确认是直发出口",
+                    "requires": []
+                },
+                {
+                    "id": "E4",
+                    "title": "睡前晚安",
+                    "summary": "直发出口——不受 D1 每日限额约束；想让她闭嘴改这里的档位，不用动 D1",
+                    "switch": "sleep.farewell_mode",
+                    "requires": [],
+                    "offValue": "off"
+                },
+                {
+                    "id": "E5",
+                    "title": "睡中与补回复",
+                    "summary": "梦话经 _maybe_share 走分享链；醒来补回复走自主大脑（A1），不吃判断模型",
+                    "requires": []
+                },
+                {
+                    "id": "E6",
+                    "title": "起床约定",
+                    "summary": "感知并遵守你说的起床时间；睡过头的「交代」走 D2 分享链（0.5 概率），受 D1 限额约束",
+                    "switch": "sleep.schedule_reminder_enabled",
+                    "requires": []
+                }
+            ]
+        },
+        {
+            "id": "F",
+            "title": "她学我说话",
+            "subtitle": "风格学习：总闸不开，下面整区休眠",
+            "collapsed": false,
+            "groups": [
+                {
+                    "id": "F1",
+                    "title": "总闸与注入",
+                    "summary": "风格学习总开关与注入上限",
+                    "switch": "style_learning.enabled",
+                    "requires": []
+                },
+                {
+                    "id": "F2",
+                    "title": "语料与素材",
+                    "summary": "素材总结的生效链：① 总闸 ② 自主大脑",
+                    "requires": [
+                        {
+                            "key": "style_learning.enabled",
+                            "op": "truthy",
+                            "label": "风格学习总闸",
+                            "failHint": "素材投入后只是攒着，不会被总结。去 F1 开总闸。",
+                            "anchor": "core/style_review.py:88-96"
+                        },
+                        {
+                            "key": "model.provider_id",
+                            "op": "nonEmpty",
+                            "soft": true,
+                            "label": "自主大脑可用",
+                            "fallbackNote": "留空 → 回退聊天模型（可用，但烧聊天额度）",
+                            "anchor": "core/activities.py:106-120（素材来自 surf/read 读到的网页，搜索关闭则素材来源断）"
+                        }
+                    ]
+                },
+                {
+                    "id": "F3",
+                    "title": "每日复盘",
+                    "summary": "凌晨用判断模型复盘语料好坏；三件套：总闸 × 复盘开关 × provider",
+                    "switch": "style_learning.daily_review_enabled",
+                    "chainNote": "注：复盘路径不检查 judge.mode——只看 provider 配没配（main.py:364、core/style_review.py:88-96）。provider 没配时整轮跳过是保护逻辑（不复盘好过烧错模型），不是故障。",
+                    "requires": [
+                        {
+                            "key": "style_learning.enabled",
+                            "op": "truthy",
+                            "label": "风格学习总闸",
+                            "failHint": "总闸不开，复盘不会跑。去 F1 开总闸。",
+                            "anchor": "core/style_review.py:88-96"
+                        },
+                        {
+                            "key": "judge.provider_id",
+                            "op": "nonEmpty",
+                            "label": "判断模型 provider",
+                            "failHint": "复盘会整轮跳过。这是保护逻辑（不复盘好过烧错模型），不是故障。去 A2 配 provider。",
+                            "anchor": "main.py:364"
+                        }
+                    ]
+                },
+                {
+                    "id": "F4",
+                    "title": "提示词",
+                    "summary": "提炼 / 复盘 / 沉淀归纳的 prompt",
+                    "requires": [
+                        {
+                            "key": "style_learning.enabled",
+                            "op": "truthy",
+                            "label": "风格学习总闸",
+                            "failHint": "总闸不开，这些提示词不会被用到。去 F1 开总闸。",
+                            "anchor": "core/style_review.py:88-96"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "id": "G",
+            "title": "她的记忆",
+            "subtitle": "记忆后端与兴趣管理（运行时数据）",
+            "collapsed": false,
+            "groups": [
+                {
+                    "id": "G1",
+                    "title": "记忆后端",
+                    "summary": "auto 优先探测 LivingMemory，不可用降级内置 SQLite",
+                    "requires": []
+                }
+            ]
+        },
+        {
+            "id": "Z",
+            "title": "其他参数",
+            "subtitle": "布局未收录的键自动落在这里（配套 d 兜底，不丢键）",
+            "collapsed": false,
+            "fallback": true,
+            "groups": [
+                {
+                    "id": "Z1",
+                    "title": "未归类键",
+                    "requires": []
+                }
+            ]
+        }
+    ],
+    "novice": {
+        "doc": "配套 a：新手面板第一层只留 8 张旋钮 + life_extra（旋钮按 preset 键的 section 一级 id 归组）；13 张功能卡进「细项」折叠区，按一级栏目归组。cards 是 app.js 里的卡片工厂函数名。",
+        "cardGroups": [
+            {
+                "section": "A",
+                "cards": [
+                    "judgeCard"
+                ]
+            },
+            {
+                "section": "B",
+                "cards": [
+                    "browserCard",
+                    "workspaceCard",
+                    "searchToggleCard",
+                    "agentToolsCard"
+                ]
+            },
+            {
+                "section": "D",
+                "cards": [
+                    "initiativeCard"
+                ]
+            },
+            {
+                "section": "E",
+                "cards": [
+                    "scheduleCard",
+                    "farewellCard",
+                    "chatGuardCard",
+                    "wakeRandomCard",
+                    "pendingReplyCard"
+                ]
+            },
+            {
+                "section": "F",
+                "cards": [
+                    "styleLearningCard",
+                    "styleDataCard"
+                ]
+            }
+        ]
+    },
+    "exits": {
+        "doc": "C8 全局状态行：她现在会主动做的事（七条出口）。4 条过闸门（活动分享/梦话/睡过头交代共用 _maybe_share：core/living_loop.py:1908；主动搭话：core/initiative.py:529）+ 3 条直发（晚安 core/living_loop.py:608/681、唤醒确认 :536、补回复 :1050）。runtime 分享计数无既有端点，不展示（零新后端）。",
+        "items": [
+            {
+                "id": "share",
+                "label": "分享",
+                "note": "过 D1 闸门"
+            },
+            {
+                "id": "dream",
+                "label": "梦话",
+                "note": "走分享，过 D1 闸门",
+                "cond": {
+                    "key": "sleep.dream_probability",
+                    "op": "truthy"
+                }
+            },
+            {
+                "id": "oversleep",
+                "label": "睡过头交代",
+                "note": "0.5 概率走分享，过 D1 闸门"
+            },
+            {
+                "id": "initiative",
+                "label": "搭话",
+                "note": "过 D1 闸门",
+                "cond": {
+                    "key": "initiative.enabled",
+                    "op": "truthy"
+                }
+            },
+            {
+                "id": "farewell",
+                "label": "晚安",
+                "note": "直发，不受限额",
+                "cond": {
+                    "op": "anyOf",
+                    "of": [
+                        {
+                            "key": "sleep.farewell_mode",
+                            "op": "eq",
+                            "value": "probability"
+                        },
+                        {
+                            "key": "sleep.farewell_mode",
+                            "op": "eq",
+                            "value": "llm"
+                        }
+                    ]
+                }
+            },
+            {
+                "id": "wake_ack",
+                "label": "唤醒确认",
+                "note": "直发",
+                "cond": {
+                    "key": "sleep.wake_ack_message",
+                    "op": "nonEmpty"
+                }
+            },
+            {
+                "id": "pending_reply",
+                "label": "醒来补回复",
+                "note": "直发；走自主大脑",
+                "cond": {
+                    "key": "sleep.pending_reply_enabled",
+                    "op": "truthy"
+                },
+                "requires": [
+                    {
+                        "key": "model.provider_id",
+                        "op": "nonEmpty",
+                        "label": "自主大脑（独立 provider）",
+                        "failHint": "自主大脑未配——会与聊天共用模型（烧聊天额度）。去 A1 改。"
+                    }
+                ]
+            }
+        ]
+    }
+}

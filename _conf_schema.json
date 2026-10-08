@@ -13,7 +13,8 @@
                     "active"
                 ],
                 "default": "normal",
-                "invisible": true
+                "invisible": true,
+                "section": ["C", "C1", 101]
             },
             "preset_talk_frequency": {
                 "description": "它主动找你说话的频率",
@@ -25,7 +26,8 @@
                     "often"
                 ],
                 "default": "normal",
-                "invisible": true
+                "invisible": true,
+                "section": ["D", "D3", 101]
             },
             "preset_capability_tier": {
                 "description": "它有多少手脚",
@@ -38,7 +40,8 @@
                     "shell"
                 ],
                 "default": "watch",
-                "invisible": true
+                "invisible": true,
+                "section": ["B", "B1", 101]
             },
             "preset_write_level": {
                 "description": "它在网上能做到什么程度",
@@ -51,7 +54,8 @@
                     "full"
                 ],
                 "default": "read",
-                "invisible": true
+                "invisible": true,
+                "section": ["B", "B1", 102]
             },
             "preset_topic_taste": {
                 "description": "它聊天的口味",
@@ -63,7 +67,8 @@
                     "diverse"
                 ],
                 "default": "balanced",
-                "invisible": true
+                "invisible": true,
+                "section": ["C", "C2", 101]
             },
             "preset_free_activity": {
                 "description": "允许它自由发挥",
@@ -74,7 +79,8 @@
                     "off"
                 ],
                 "default": "on",
-                "invisible": true
+                "invisible": true,
+                "section": ["C", "C3", 101]
             },
             "preset_decision_mode": {
                 "description": "让它想事情花多少心思",
@@ -86,21 +92,24 @@
                     "rich"
                 ],
                 "default": "normal",
-                "invisible": true
+                "invisible": true,
+                "section": ["C", "C1", 102]
             },
             "preset_model": {
                 "description": "它独处时用哪个 AI 大脑",
                 "hint": "填一个你在 AstrBot 里配置好的模型 provider id（留空=用当前聊天模型）。强烈建议给它单独配一个便宜些的模型，避免自主活动烧聊天模型的额度。",
                 "type": "string",
                 "default": "",
-                "invisible": true
+                "invisible": true,
+                "section": ["A", "A1", 101]
             },
             "life_extra": {
                 "description": "它的性格与兴趣底色",
                 "hint": "它独处时的性格底色与兴趣倾向，写得越具体越有味道（作息习惯、喜欢什么、讨厌什么…）。这是背景参考不是任务清单——影响它的风格和口味，但不会把话题锁死。可自由修改。",
                 "type": "text",
                 "default": "# 生活背景参考（可自由修改，影响它独处时的行为口味，不必围绕它选题）\n- 作息习惯：喜欢安静，通常在深夜有精神\n- 兴趣倾向：对技术、宇宙、咖啡、独立游戏感兴趣\n- 性格底色：温和、有点慢热，好奇心强\n- 不喜欢：被打断、重复劳动",
-                "invisible": true
+                "invisible": true,
+                "section": ["C", "C2", 102]
             }
         }
     },
@@ -118,21 +127,45 @@
                         "hint": "0=静养（仅自带搜索/抓取/沙箱/记忆）；1=观看（+浏览器）；2=居家（+工作区文件读写）；3=自由（同 2，文件能力的顶）；4=命令行（+本机命令行）。重要：第 4 档等于给她本机命令行权限——她将能在这台电脑上执行命令，请确认信任后再开；且需 write_level>=2（与写文件同级）。旧档 3 不再包含命令行。",
                         "type": "int",
                         "default": 1,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["B", "B1", 1],
+                        "requires": [
+                            {
+                                "op": "anyOf",
+                                "label": "浏览器内核（tier≥1 需要）",
+                                "of": [
+                                    {
+                                        "key": "autonomy.tier",
+                                        "op": "eq",
+                                        "value": 0,
+                                        "label": "档位为 0（静养，不需要浏览器）"
+                                    },
+                                    {
+                                        "key": "runtime.browser_installed",
+                                        "op": "truthy",
+                                        "label": "Chromium 已安装"
+                                    }
+                                ],
+                                "failHint": "浏览器五件套（浏览/读页/截图/点击/输入）不会挂载，活动退化为「搜索 + 读文本」。安装方法见新手区「浏览器能力」卡。",
+                                "anchor": "core/living_tools.py:295（tier≥1 且 chromium_installed() is not True 时不挂浏览器件套）"
+                            }
+                        ]
                     },
                     "write_level": {
                         "description": "对外写操作层级（0-3）",
                         "hint": "0=只读（禁止任何提交）；1=浏览交互（点击/翻页/填表）；2=轻写入（评论/点赞/关注）；3=全权（发帖/私信等）。一次授权法：设了就能用。",
                         "type": "int",
                         "default": 0,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["B", "B1", 2]
                     },
                     "workspace_dir": {
                         "description": "工作区目录",
                         "hint": "她的专属文件夹：tier 2+ 的文件读写与小程序产物放在这里，tier 4 命令行的默认工作目录也是这里。留空则用插件数据目录下的绝对路径（data/plugin_data/astrbot_plugin_living_home/），插件启动时会自动创建。",
                         "type": "string",
                         "default": "",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["B", "B1", 3]
                     }
                 },
                 "invisible": true
@@ -151,49 +184,56 @@
                             "llm"
                         ],
                         "default": "hybrid",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["C", "C1", 1]
                     },
                     "impulse_check_interval_minutes": {
                         "description": "冲动检查间隔（分钟）",
                         "hint": "主循环每隔多少分钟做一次'要不要干点什么'的检查。判定是纯内存/SQLite 读，零 API 消耗；活动频率实际由无聊曲线控制，心跳可以调得很勤。",
                         "type": "int",
                         "default": 5,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["C", "C1", 2]
                     },
                     "activity_probability": {
                         "description": "冲动最高概率（0-1）",
                         "hint": "无聊曲线的封顶值：闲得越久越接近这个概率，过了封顶时间后恒定。",
                         "type": "float",
                         "default": 0.8,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["C", "C1", 3]
                     },
                     "activity_probability_min": {
                         "description": "冲动最低概率（0-1）",
                         "hint": "无聊曲线的起点：冷却刚结束时用这个低概率，避免刚忙完又立刻想动。",
                         "type": "float",
                         "default": 0.1,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["C", "C1", 4]
                     },
                     "activity_probability_ramp_minutes": {
                         "description": "无聊曲线爬升时间（分钟）",
                         "hint": "从最低概率爬升到最高概率所需的时间（自冷却结束起算）。0 = 不爬升，直接用最高概率。",
                         "type": "float",
                         "default": 60,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["C", "C1", 5]
                     },
                     "interest_daily_decay": {
                         "description": "兴趣每日衰减系数（0-1）",
                         "hint": "每天结算时全部兴趣乘以该系数。越低忘得越快——偏执循环调参口之一。",
                         "type": "float",
                         "default": 0.7,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["C", "C2", 1]
                     },
                     "recent_topic_window": {
                         "description": "近期话题追踪窗口（次）",
                         "hint": "记录最近 N 次活动实际使用的主题，用于重复惩罚与探索配额判定。",
                         "type": "int",
                         "default": 6,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["C", "C2", 2]
                     },
                     "recent_topic_penalty": {
                         "description": "近期话题重复惩罚表",
@@ -204,82 +244,94 @@
                             0.3,
                             0.15
                         ],
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["C", "C2", 3]
                     },
                     "exploration_window": {
                         "description": "探索配额判定窗口（次）",
                         "type": "int",
                         "default": 4,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["C", "C2", 4]
                     },
                     "exploration_trigger": {
                         "description": "探索触发阈值（窗口内同主题出现次数）",
                         "hint": "达到该次数即强制探索新话题（LLM 决策加指令、脚本决策避开近期池）。",
                         "type": "int",
                         "default": 3,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["C", "C2", 5]
                     },
                     "free_choice_ratio": {
                         "description": "自由局配额（0-1）",
                         "hint": "每次 LLM 选题前掷骰：命中即撤除本轮 prompt 里的全部兴趣牵引（心境兴趣行不注入、近期话题改为\"想一个不同新方向\"的正向指令），让选题纯靠当下的好奇心。0=全靠兴趣驱动，1=全靠自由发挥，0.5=各半（主人定稿默认）。",
                         "type": "float",
                         "default": 0.5,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["C", "C2", 6]
                     },
                     "share_context_messages": {
                         "description": "分享携带聊天上下文条数",
                         "hint": "分享改写时携带的最近聊天消息条数（取自 AstrBot 会话的真实聊天记录，让分享能接上你们正在聊的话题，但仍是主动分享而不是回应）。0=关闭，改写行为回到就事论事。",
                         "type": "int",
                         "default": 12,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["C", "C4", 1]
                     },
                     "activity_context_write": {
                         "description": "活动经历写入对话上下文",
                         "hint": "活动结束后把第一人称自述写入你们的对话上下文与 livingmemory 会话：你追问时它记得自己刚做了什么、问过什么；记忆图谱也改由 livingmemory 从对话自然总结。关闭后回到旧行为（活动经历只进它自己的记忆库，主人追问时它可能'忘了问的是啥'）。",
                         "type": "bool",
                         "default": true,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["C", "C4", 2]
                     },
                     "interest_cooldown_threshold": {
                         "description": "兴趣降温阈值（0-1）",
                         "hint": "启动自愈时检查：任一主题兴趣达到该值即触发一次性降温（历史偏执数据稀释）。",
                         "type": "float",
                         "default": 0.85,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["C", "C2", 7]
                     },
                     "interest_cooldown_factor": {
                         "description": "兴趣降温乘数（0-1）",
                         "hint": "降温 = 兴趣值乘以该系数（1.0 → 0.4）。幂等，只执行一次。",
                         "type": "float",
                         "default": 0.4,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["C", "C2", 8]
                     },
                     "daily_impulse_limit": {
                         "description": "每日冲动上限",
                         "hint": "0 = 不限制。",
                         "type": "int",
                         "default": 3,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["C", "C1", 6]
                     },
                     "single_run_token_budget": {
                         "description": "单次活动 token 预算",
                         "hint": "单次自主活动允许消耗的最大 token 数。",
                         "type": "int",
                         "default": 20000,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["C", "C4", 3]
                     },
                     "max_tool_rounds": {
                         "description": "单循环最大工具轮数",
                         "type": "int",
                         "default": 8,
                         "invisible": true,
-                        "hint": "单次活动允许的最大工具轮数。0 或负数 = 不限制轮数（由 token 预算 single_run_token_budget 兜底，预算耗尽即中断）。"
+                        "hint": "单次活动允许的最大工具轮数。0 或负数 = 不限制轮数（由 token 预算 single_run_token_budget 兜底，预算耗尽即中断）。",
+                        "section": ["C", "C4", 4]
                     },
                     "max_run_seconds": {
                         "description": "单循环最长时长（秒）",
                         "type": "int",
                         "default": 300,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["C", "C4", 5]
                     },
                     "agent_activities": {
                         "description": "走 agent 模式的活动",
@@ -291,70 +343,80 @@
                             "game",
                             "free"
                         ],
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["C", "C3", 1]
                     },
                     "free_activity_enabled": {
                         "description": "自由活动开关",
                         "hint": "关闭后 free（自由活动）从活动池移除，回到固定活动池（surf/read/game/peek/reminisce），改配置下个决策生效。",
                         "type": "bool",
                         "default": true,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["C", "C3", 2]
                     },
                     "prompt_decide_params_game": {
                         "description": "选题提示词：小游戏参数（专家）",
                         "hint": "hybrid/llm 档选中小游戏活动时给判断模型的 prompt（选个游戏风格）。占位符：{mood_block}=心境摘要。改坏可整段清空恢复默认。",
                         "type": "text",
                         "default": "你现在打算写个小游戏自己玩。你现在的状态：{mood_block}。\n顺着状态选一个具体的小游戏风格。只输出 JSON，格式：{\"style\": \"…\"}",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["C", "C5", 1]
                     },
                     "prompt_decide_params_browse": {
                         "description": "选题提示词：冲浪/读文章参数（专家）",
                         "hint": "hybrid/llm 档选中 surf 或 read 时给判断模型的 prompt（选个主题）。占位符：{action}=上网冲浪（搜索）/读一篇文章；{mood_block}=心境摘要；{recent_line}=近期方向提醒（含换行，可为空）；{merge_line}=话题归并指令（可为空）；{json_spec}=输出格式说明。",
                         "type": "text",
                         "default": "你现在打算{action}。你现在的状态：{mood_block}。\n{recent_line}顺着状态选一个具体、有生活气息的主题词，选一个你最近没碰过的方向，越新鲜越好。\n{merge_line}{json_spec}",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["C", "C5", 2]
                     },
                     "prompt_decide_llm_free": {
                         "description": "选题提示词：全 LLM 决策·自由局（专家）",
                         "hint": "decision_mode=llm 且掷中自由局配额时的选题 prompt（撤除兴趣牵引）。占位符：{mood_block}=心境摘要（自由局已切兴趣行）；{memory_block}=近期记忆清单；{recent_section}=近期话题段（首尾含换行，可为空）；{activity_lines}=可选活动清单；{exploration_line}=探索强制指令（可为空）；{merge_line}=话题归并指令（可为空）；{json_spec}=输出格式说明。",
                         "type": "text",
                         "default": "现在是你的独处时间，没有人在找你，可以自己决定干点什么。\n\n你现在的状态：{mood_block}\n\n最近记得的事：\n{memory_block}\n{recent_section}\n可以做的活动：\n{activity_lines}\n\n{exploration_line}请选一个你现在最想做的活动，并给它合适参数（topic 为主题词，style 为小游戏风格，peek 和 reminisce 不需要参数）。这次凭当下的好奇心自由发挥，不用考虑平时的兴趣方向。\n{merge_line}{json_spec}",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["C", "C5", 3]
                     },
                     "prompt_decide_llm_interest": {
                         "description": "选题提示词：全 LLM 决策·兴趣局（专家）",
                         "hint": "decision_mode=llm 且兴趣局时的选题 prompt（对照基线）。占位符同自由局，但 {mood_block} 是完整心境摘要（含兴趣行）。",
                         "type": "text",
                         "default": "现在是你的独处时间，没有人在找你，可以自己决定干点什么。\n\n你现在的状态：{mood_block}\n\n最近记得的事：\n{memory_block}\n{recent_section}\n可以做的活动：\n{activity_lines}\n\n{exploration_line}请选一个你现在最想做的活动，并给它合适参数（topic 为主题词，style 为小游戏风格，peek 和 reminisce 不需要参数）。如果上面列了你最近反复折腾的话题，这次避开它们。\n{merge_line}{json_spec}",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["C", "C5", 4]
                     },
                     "prompt_intent_surf": {
                         "description": "活动意图：上网冲浪（专家）",
                         "hint": "surf 活动 agent 模式给执行模型的意图说明。占位符：{topic_line}=主题方向（决策参数，可为空）；{avoid_line}=近期话题避开指令（可为空）。",
                         "type": "text",
                         "default": "你现在打算上网冲浪。{topic_line}{avoid_line}用 web_search 搜一搜，挑一两条结果看看，最后用几句话汇报你看到了什么、有什么想法。",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["C", "C5", 5]
                     },
                     "prompt_intent_read": {
                         "description": "活动意图：读文章（专家）",
                         "hint": "read 活动 agent 模式的意图说明。占位符：{topic_line}=主题方向（可为空）；{avoid_line}=近期话题避开指令（可为空）。",
                         "type": "text",
                         "default": "你现在打算读一篇文章。{topic_line}{avoid_line}用 web_search 搜索，挑一条你最想读的，用 fetch_page 认真读完，然后用自己的话总结要点，再说一点你的感想。",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["C", "C5", 6]
                     },
                     "prompt_intent_game": {
                         "description": "活动意图：写小游戏（专家）",
                         "hint": "game 活动 agent 模式的意图说明。占位符：{style_line}=风格想法（可为空）。",
                         "type": "text",
                         "default": "你现在打算写个小游戏自己玩。{style_line}用 run_python 现场写一个秒级能跑完的小游戏（只能用 random/math/time/datetime/json/re/itertools/collections，记得 print 出结果），跑一跑，说说结果和你的心得。",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["C", "C5", 7]
                     },
                     "prompt_intent_free": {
                         "description": "活动意图：自由活动（专家）",
                         "hint": "free 活动 agent 模式的意图说明。占位符：{extra}=方向偏好（可为空，自带括号）；{tools_line}=当前可用工具清单；{closing}=收尾指令（随工具有无切换）。",
                         "type": "text",
                         "default": "现在是完全的自由活动时间，{extra}。你可以使用这些工具：{tools_line}。{closing}",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["C", "C5", 8]
                     }
                 },
                 "invisible": true
@@ -368,41 +430,47 @@
                         "hint": "0 = 不限制。",
                         "type": "int",
                         "default": 10,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["D", "D1", 1]
                     },
                     "message_min_interval_minutes": {
                         "description": "两条主动消息最小间隔（分钟）",
                         "type": "int",
                         "default": 30,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["D", "D1", 2]
                     },
                     "target_sessions": {
                         "description": "输出目标会话列表",
                         "hint": "每行一个 unified_msg_origin（格式：平台:消息类型:会话ID）。留空时自动认主：派生为全部管理员（AstrBot 面板的管理员 ID）的私聊会话；发群聊需在此手动填写。",
                         "type": "text",
                         "default": "",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["D", "D1", 3]
                     },
                     "share_rewrite_enabled": {
                         "description": "分享角色化改写",
                         "hint": "开启后主动分享前用 LLM 把工作报告改写成聊天口吻（关闭则直发原文，与旧版一致）。改写失败自动降级原文。",
                         "type": "bool",
                         "default": true,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["D", "D2", 1]
                     },
                     "share_rewrite_prompt": {
                         "description": "分享改写提示词",
                         "hint": "改写提示词模板，支持 {report}（活动汇报）与 {mood}（心境摘要）占位符。",
                         "type": "text",
                         "default": "你刚完成了自己的活动，正准备随手跟主人聊一句。\n\n下面是你的活动材料，仅供你自己参考，主人看不到这些：\n--- 活动材料开始 ---\n{report}\n--- 结束 ---\n\n这是你主动想跟他说的话，不是回答他的问题——绝不能出现‘你说’、‘发过来’、‘给我’这类回应式措辞，也不要问主人要任何东西。\n\n要求：\n- 像朋友间随口聊天，不是汇报；不要标题、不要列表、不要 Markdown 格式\n- 用你自己的口吻，可以带一点当天心情（你现在的状态：{mood}）\n- 只输出要说的话本身，不要任何前缀和引号",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["D", "D2", 2]
                     },
                     "share_max_length": {
                         "description": "分享文本长度上限",
                         "hint": "改写结果超过该长度时按句子边界截断。",
                         "type": "int",
                         "default": 120,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["D", "D2", 3]
                     }
                 },
                 "invisible": true
@@ -416,49 +484,56 @@
                         "hint": "开启后，她除了分享活动/说梦话，还会纯粹因为想找你说话而主动开口——可能没有事由，也可能接上你们最近聊的话题。她睡着时永远不会打扰；配额与间隔和活动分享共用同一个闸门。关闭后回到只有分享的状态。",
                         "type": "bool",
                         "default": true,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["D", "D3", 1]
                     },
                     "base_probability": {
                         "description": "主动搭话的基础概率（0-1）",
                         "hint": "她每次'要不要现在找你说话'的内心评估里掷骰的基础值，实际概率还会乘上她的心境（精力充沛时更想说话）和收敛系数。调大=更常找你；调小=更矜持。默认 0.18（新手面板的'主动程度'三档调的就是它）。",
                         "type": "float",
                         "default": 0.18,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["D", "D3", 2]
                     },
                     "unanswered_backoff": {
                         "description": "未回应收敛",
                         "hint": "连续几次主动找你都没得到回应时，她会慢慢降低频率——但永远不会降到零（保底约六分之一的基础概率），你一说话就立刻恢复。关闭则频率不随回应变化。",
                         "type": "bool",
                         "default": true,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["D", "D3", 3]
                     },
                     "final_review_enabled": {
                         "description": "说话前先过一遍脑子",
                         "hint": "生成台词时附带一次自查：此刻该不该说、像不像她会说的话，不对就把话咽回去（同一次调用内完成，不多花钱）。关闭则纯生成，供调试对比。",
                         "type": "bool",
                         "default": true,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["D", "D3", 4]
                     },
                     "sources": {
                         "description": "念头的来源（逗号分隔）",
                         "hint": "random_miss=没有事由，就是想找你说句话；open_topic=从你们最近的聊天里挑一个还没聊完的话题自然接上（提取不到合适话题就这次不说）。",
                         "type": "string",
                         "default": "random_miss,open_topic",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["D", "D3", 5]
                     },
                     "prompt_open_topic": {
                         "description": "话题提取提示词（专家）",
                         "hint": "open_topic 来源从最近聊天里挑'还没聊完的话题'用的 prompt。占位符：{context_block}=聊天记录节选（每行一条，只含角色与内容）。",
                         "type": "text",
                         "default": "下面是你和主人最近的聊天记录（节选）：\n{context_block}\n\n从中找一个\"可以自然接上、继续聊下去\"的话题，用一句短语概括（20 字以内）。\n要求：必须是还没聊完的话题；不能是需要主人回答的追问；不要重复已经聊完了的话题。\n如果没有合适的话题，只输出 NONE。",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["D", "D3", 6]
                     },
                     "prompt_line": {
                         "description": "搭话台词生成提示词（专家）",
                         "hint": "主动搭话台词的生成 prompt。占位符：{now_text}=当前时间（X月X日 HH:MM）；{material}=念头事由；{skip_rule}=终审自查指令（final_review_enabled 控制，可为空）。",
                         "type": "text",
                         "default": "当前时间：{now_text}。\n{material}\n\n写一句你主动发给主人的话。要求：\n- 用你自己的口吻，30 字以内\n- 这是主动搭话，不是回答他：不要\"你说\"\"发过来\"这类回应式措辞，不要问主人要任何东西，不要催促\n- 像朋友间随口聊天：不要标题、列表、Markdown、链接，只输出这句话本身{skip_rule}",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["D", "D3", 7]
                     }
                 },
                 "invisible": true
@@ -471,34 +546,39 @@
                         "description": "自主模式：最短睡眠（小时）",
                         "type": "float",
                         "default": 5.0,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E1", 1]
                     },
                     "max_sleep_hours": {
                         "description": "自主模式：最长睡眠（小时）",
                         "type": "float",
                         "default": 11.0,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E1", 2]
                     },
                     "min_awake_minutes": {
                         "description": "自主模式：醒后最短清醒时长（分钟）",
                         "hint": "刚醒来的这段时间内不会再睡（防连睡）。",
                         "type": "int",
                         "default": 240,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E1", 3]
                     },
                     "sleepiness_threshold": {
                         "description": "入睡阈值（0-1）",
                         "hint": "睡意值达到该值即入睡。",
                         "type": "float",
                         "default": 0.6,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E1", 4]
                     },
                     "sleepiness_jitter": {
                         "description": "睡意随机抖动幅度（0-0.5）",
                         "hint": "同样状态下不必然同时刻入睡。",
                         "type": "float",
                         "default": 0.15,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E1", 5]
                     },
                     "weights": {
                         "description": "睡意权重",
@@ -536,98 +616,113 @@
                                 "default": 0.2
                             }
                         },
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E1", 6]
                     },
                     "nap_enabled": {
                         "description": "白天小睡",
                         "type": "bool",
                         "default": true,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E2", 1]
                     },
                     "nap_min_minutes": {
                         "description": "小睡最短时长（分钟）",
                         "type": "int",
                         "default": 20,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E2", 2]
                     },
                     "nap_max_minutes": {
                         "description": "小睡最长时长（分钟）",
                         "type": "int",
                         "default": 90,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E2", 3]
                     },
                     "nap_cooldown_minutes": {
                         "description": "两次小睡最小间隔（分钟）",
                         "hint": "距上次小睡结束不足该时长时不再小睡——防止白天连续打盹挤掉长睡（M5-补丁2 A1）。",
                         "type": "int",
                         "default": 240,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E2", 4]
                     },
                     "nap_max_per_day": {
                         "description": "每日小睡次数上限",
                         "hint": "当日小睡达到该次数后不再小睡（跨日重置）。0 = 不限制（M5-补丁2 A2）。",
                         "type": "int",
                         "default": 2,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E2", 5]
                     },
                     "circadian_hint": {
                         "description": "昼夜节律提示窗口",
                         "hint": "该时段睡意倾向最高（仅加权，不强制）。格式 HH:MM-HH:MM。",
                         "type": "string",
                         "default": "23:00-07:00",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E1", 7]
                     },
                     "fatigue_rate_per_hour": {
                         "description": "疲惫积累速率（每小时）",
                         "hint": "高级参数：活动耗时折算成疲惫值的速率。默认 4.0 即可，一般无需调整。",
                         "type": "float",
                         "default": 4.0,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E1", 8]
                     },
                     "sleep_debt_decay_per_day": {
                         "description": "睡眠债每日消退量",
                         "type": "float",
                         "default": 30.0,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E1", 9]
                     },
                     "wake_n_messages": {
                         "description": "吵醒所需消息条数",
                         "type": "int",
                         "default": 3,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E3", 1]
                     },
                     "wake_window_minutes": {
                         "description": "吵醒判定时间窗（分钟）",
                         "type": "int",
                         "default": 10,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E3", 2]
                     },
                     "grouchiness_percent": {
                         "description": "起床气概率（0-100%）",
                         "type": "int",
                         "default": 20,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E3", 3]
                     },
                     "awake_standby_minutes": {
                         "description": "清醒待机时长（分钟）",
                         "hint": "被吵醒后保持清醒的时长；期间主人每发一条消息都会重新计时（滑动窗口）。待机期内正常聊天不静默，结束后若仍在睡眠窗则继续睡。",
                         "type": "int",
                         "default": 30,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E3", 4]
                     },
                     "wake_ack_message": {
                         "description": "唤醒确认消息",
                         "hint": "被吵醒后立刻回给主人的一句话（零延迟、不经过 LLM）。留空 = 不发送。",
                         "type": "string",
                         "default": "醒了，怎么了？",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E3", 5]
                     },
                     "sleep_farewell_message": {
                         "description": "入睡告别消息",
                         "hint": "清醒待机结束、继续入睡时告知主人的一句话（零 token）。留空 = 安静入睡不告知。仅 probability 档使用；llm 档由她自己现场斟酌措辞（忽略本条）。",
                         "type": "string",
                         "default": "",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E4", 3]
                     },
                     "farewell_mode": {
                         "description": "晚安消息档位",
@@ -639,21 +734,24 @@
                             "off"
                         ],
                         "default": "probability",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E4", 1]
                     },
                     "farewell_probability": {
                         "description": "随机晚安概率（0-1）",
                         "hint": "farewell_mode=probability 时每次入睡的发送概率，命中发 sleep_farewell_message。默认 0.5（一半的晚上说晚安）。",
                         "type": "float",
                         "default": 0.5,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E4", 2]
                     },
                     "standby_blocks_sleep": {
                         "description": "聊天中不入睡",
                         "hint": "她正在陪你聊天时（待机期内）不做入睡判定——聊得再久也不会当场睡着；你安静 30 分钟后待机过期，下个心跳才恢复入睡评估。关闭则回到旧行为（睡意达标就可能聊着聊着睡着）。",
                         "type": "bool",
                         "default": true,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E3", 11]
                     },
                     "wake_source": {
                         "description": "吵醒计数来源",
@@ -664,49 +762,56 @@
                             "owner_only"
                         ],
                         "default": "all",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E3", 9]
                     },
                     "owner_id": {
                         "description": "主人 ID（wake_source=owner_only 时用）",
                         "hint": "填主人的用户 ID；留空时自动认主（取 AstrBot 管理员 ID 的第一位，手填优先）。wake_source 为 all 时忽略。",
                         "type": "string",
                         "default": "",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E3", 10]
                     },
                     "sleep_mute_replies": {
                         "description": "睡眠期静默回复",
                         "hint": "开启后休眠窗内收到的消息会被拦截，AstrBot 与所有插件都不回复（真正休息）。达到吵醒阈值的那条消息与本插件命令不受影响。关掉则休眠期照常回复、只是插件自己不活动。",
                         "type": "bool",
                         "default": true,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E3", 12]
                     },
                     "dream_probability": {
                         "description": "做梦概率（0-1）",
                         "hint": "醒来后按此概率生成一条梦话，写入记忆（默认不外发）。",
                         "type": "float",
                         "default": 0.3,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E5", 1]
                     },
                     "schedule_reminder_enabled": {
                         "description": "起床约定感知",
                         "hint": "感知主人消息里的起床约定（如\"明早 8 点起\"），作为入睡与醒来的软性参考。",
                         "type": "bool",
                         "default": true,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E6", 1]
                     },
                     "schedule_discipline": {
                         "description": "守时自觉性（0-1）",
                         "hint": "越高越把约定当回事：约定临近时睡意加成越强。调低更容易熬夜睡过头。",
                         "type": "float",
                         "default": 0.6,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E6", 2]
                     },
                     "schedule_extract_strictness": {
                         "description": "约定提取严格度（0-1）",
                         "hint": "LLM 判定\"这是起床约定\"的置信度门槛，越高越难记录。默认 0.7。",
                         "type": "float",
                         "default": 0.7,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E6", 3]
                     },
                     "schedule_trigger_words": {
                         "description": "约定触发词表",
@@ -723,56 +828,73 @@
                             "wake",
                             "alarm"
                         ],
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E6", 4]
                     },
                     "wake_random_enabled": {
                         "description": "随机吵醒阈值",
                         "hint": "每次入睡时随机抽定\"连发几条能吵醒她\"（1-3 条中按睡眠深浅加权：刚入睡偏难叫醒，快醒时偏容易叫醒），同一次睡眠内固定不变。关闭则回到固定阈值（wake_n_messages）。（M17-补丁1 C1）",
                         "type": "bool",
                         "default": true,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E3", 6]
                     },
                     "wake_messages_min": {
                         "description": "吵醒阈值下限（条）",
                         "hint": "随机抽定范围的最小值（浅睡端最容易达到的条数）。",
                         "type": "int",
                         "default": 1,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E3", 7]
                     },
                     "wake_messages_max": {
                         "description": "吵醒阈值上限（条）",
                         "hint": "随机抽定范围的最大值（深睡端最难达到的条数）。",
                         "type": "int",
                         "default": 3,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E3", 8]
                     },
                     "pending_reply_enabled": {
                         "description": "醒来补回复",
                         "hint": "她睡着时你发的消息（没吵醒她的），她醒来后会自己判断要不要回：可能认真回，可能轻描淡写接一句，也可能判断不用回就不回。默认关，先看效果再决定常开。（M17-补丁1 C2）",
                         "type": "bool",
                         "default": false,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E5", 3],
+                        "requires": [
+                            {
+                                "key": "model.provider_id",
+                                "op": "nonEmpty",
+                                "label": "自主大脑（独立 provider）",
+                                "failHint": "现在会与聊天共用模型——补回复的每一次调用都会冲掉你聊天的缓存（按未命中重新计费）。强烈建议去 A1 配一个便宜些的独立 provider。",
+                                "anchor": "main.py:1718（dream_llm_call=self._decision_llm_call）、core/living_loop.py:1050（补回复走自主链，不吃判断模型）"
+                            }
+                        ]
                     },
                     "prompt_farewell": {
                         "description": "晚安生成提示词（专家）",
                         "hint": "farewell_mode=llm 时的晚安 prompt（她自行斟酌说不说）。占位符：{now_text}=当前时间（YYYY-MM-DD HH:MM）；{mood_digest}=心境摘要；{chat_block}=当天聊天回顾段。",
                         "type": "text",
                         "default": "现在是 {now_text}，你准备去睡了。你现在的状态：{mood_digest}。\n\n{chat_block}\n\n考虑一下今晚要不要跟他道声晚安：如果今天聊得开心、被关心，就自然地道声晚安；如果今天有不愉快、你还在气头上，可以不说；如果你想缓和关系，也可以借这句晚安说点什么。像人一样自己斟酌，不是每次都非说不可。\n如果决定不说，只输出 SKIP；决定说就只输出晚安那句话本身（一两句、口语化，不要任何前缀和引号）。",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E4", 4]
                     },
                     "prompt_wake_reply": {
                         "description": "醒来补回复提示词（专家）",
                         "hint": "pending_reply_enabled 开启后，睡醒对睡眠期消息的回/不回判断 prompt。占位符：{messages_block}=睡眠期消息清单；{sleep_hours}=睡眠时长；{now_text}=当前时间；{mood_section}=心境段（可为空）。输出协议（SKIP/REPLY/BRIEF）是代码解析依赖的，改协议措辞会导致判读失效。",
                         "type": "text",
                         "default": "你刚睡醒。你睡着的时候收到了这些消息（当时你在睡，没回）：\n{messages_block}\n\n你睡了 {sleep_hours} 个小时，现在是 {now_text}。{mood_section}\n\n想想现在要不要回、怎么回：\n- 如果已经不用回了（话题早过去了/只是随口一说/现在突然回反而奇怪）→ 只输出 SKIP\n- 如果值得正经回应 → 第一行写 REPLY，第二行开始写你要发的话\n- 如果轻轻带一句就好 → 第一行写 BRIEF，第二行开始写你要发的话（一句轻描淡写的，比如\"昨晚睡着了，你说的那个我看看哈\"）\n用你自己的口吻，像刚睡醒看到手机消息那样自然。只输出上述内容之一。",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E5", 4]
                     },
                     "prompt_dream": {
                         "description": "梦话生成提示词（专家）",
                         "hint": "醒来低概率说梦话的 prompt。占位符：{fragments_block}=记忆碎片清单；{style_section}=风格学习语气参考（可为空）。",
                         "type": "text",
                         "default": "你刚从睡梦中醒来，还带着睡意。下面是你最近的记忆碎片：\n{fragments_block}\n\n请说一句你刚才做的梦，80 字以内，第一人称，语气朦胧含糊，把碎片搅在一起也没关系，梦本来就是不讲道理的。只输出梦话本身。{style_section}",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["E", "E5", 2]
                     }
                 },
                 "invisible": true
@@ -785,31 +907,36 @@
                         "description": "风格学习总开关",
                         "hint": "她在读文章/冲浪时从真人语料里学说话风格（句式、思维方式、待人接物，不只口癖），并在说话时低调度参考。判定为 AI 生成的语料绝不学。默认关，先看效果再决定常开。",
                         "type": "bool",
-                        "default": false
+                        "default": false,
+                        "section": ["F", "F1", 1]
                     },
                     "max_inject_chars": {
                         "description": "单次注入字符上限",
                         "hint": "说话时最多带多少字的语气参考（硬上限，防注入盖过人设）。",
                         "type": "int",
-                        "default": 300
+                        "default": 300,
+                        "section": ["F", "F1", 2]
                     },
                     "max_items_per_pick": {
                         "description": "单次取用条数上限",
                         "hint": "一次说话最多参考几条风格片段（1-2 条为宜，塞多了会四不像）。",
                         "type": "int",
-                        "default": 2
+                        "default": 2,
+                        "section": ["F", "F1", 3]
                     },
                     "pool_limit": {
                         "description": "语料库容量上限（条）",
                         "hint": "提炼出的风格片段（语料库）最多存多少条，超出时按权重×新鲜度×使用率淘汰综合分最低的。",
                         "type": "int",
-                        "default": 200
+                        "default": 200,
+                        "section": ["F", "F2", 1]
                     },
                     "decay_days": {
                         "description": "不用衰减周期（天）",
                         "hint": "一条风格片段超过这么多天没用上，权重开始减半衰减（每过一个周期再减半），衰减到底自动淘汰——她最近学什么，说话就带什么味。",
                         "type": "int",
-                        "default": 14
+                        "default": 14,
+                        "section": ["F", "F2", 2]
                     },
                     "source_weights": {
                         "description": "来源权重",
@@ -826,98 +953,128 @@
                                 "type": "float",
                                 "default": 0.5
                             }
-                        }
+                        },
+                        "section": ["F", "F2", 3]
                     },
                     "prompt_distill": {
                         "description": "风格提炼提示词（专家）",
                         "hint": "从读到的文本一次完成 AI 判定与六维提炼的 prompt。占位符：{source_note}=来源备注（空时代码兜底'网页'）；{material}=学习材料正文。输出 JSON 协议（kind/source/dims 六键）是解析依赖的，别改结构。",
                         "type": "text",
                         "default": "下面是你昨天在网上读到的文本片段（来源备注：{source_note}）。请完成两件事：\n\n一、判断它更可能是【人写的】还是【AI 生成的】。判断依据：\n- AI 特征：结构工整对称、排比铺陈、\"首先/其次/最后\"、无口语碎语、情绪平铺、无具体到细节的个人经历、套话（\"值得注意的是\"\"让我们一起\"\"希望这对你有帮助\"）、标点规范到不像真人、段落长度均匀\n- 人味特征：口语与短句跳跃、错别字/口误/语气词、情绪起伏、跑题与打断、具体生活细节（时间地点人物）、自嘲与黑话\n\n二、只有判定为\"人写的\"才做：从中提炼值得学习的说话风格。六个维度都要看一遍（没有的给空串），其中【思维方式】与【待人接物】是重点——不要只盯着用词，要看这个人怎么想问题、怎么跟人打交道：\n- wording：用词口癖（高频词/语气词）\n- syntax：句式习惯\n- thinking：思维方式（先看什么、怎么得出结论）\n- emotion_style：情绪表达方式\n- interaction：待人接物（怎么接话、怎么打岔、怎么表达不同意）\n- avoid：反面特征（这类文本里不出现的）\n\nsource 字段：dialogue=多人在互相说话（评论区、回复串、问答往来）；article=单作者的长文。拿不准按 article。\n\n严格输出一个 JSON 对象，不要输出任何其他文字：\n{\"kind\": \"human\", \"source\": \"dialogue\", \"dims\": {\"wording\": \"\", \"syntax\": \"\", \"thinking\": \"\", \"emotion_style\": \"\", \"interaction\": \"\", \"avoid\": \"\"}}\nkind 只能是 human / ai / uncertain；kind 是 ai 或 uncertain 时 dims 给空对象。\n\n文本片段：\n{material}",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["F", "F4", 1]
                     },
                     "material_max_chars": {
                         "description": "单条材料长度上限（字符）",
                         "hint": "送进提炼提示词的学习材料最多带多少字（控制 token，不追全文）。超出部分截断。",
                         "type": "int",
                         "default": 1200,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["F", "F2", 4]
                     },
                     "min_material_chars": {
                         "description": "材料最小长度（字符）",
                         "hint": "学习材料低于该字数就不提炼（太短/纯代码撑不起六维观察）。",
                         "type": "int",
                         "default": 80,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["F", "F2", 5]
                     },
                     "item_max_chars": {
                         "description": "单条片段单维上限（字符）",
                         "hint": "注入时每条片段每个维度的展示字符上限。",
                         "type": "int",
                         "default": 80,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["F", "F2", 6]
                     },
                     "manual_weight": {
                         "description": "人工优选权重倍率",
                         "hint": "主人手动投入的素材提炼出的语料，权重=来源权重×该倍率。只比普通语料高一点点即可（内部上限 1.5，不设 2 倍以上——防止某条独霸注入）。",
                         "type": "float",
                         "default": 1.2,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["F", "F2", 7]
                     },
                     "feature_importance_cap": {
                         "description": "重要度上限倍率",
                         "hint": "复盘判好的条目重要度会略升，但绝不超过基础权重的该倍率、也不超过同类条目中位数的 1.5 倍（防僵化：不能因为被夸过一次就独霸注入）。",
                         "type": "float",
                         "default": 1.5,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["F", "F2", 8]
                     },
                     "daily_review_enabled": {
                         "description": "每日复盘开关",
                         "hint": "每天凌晨用判断模型复盘一次：最近用过的语料哪些好哪些不好，调整留存度与重要度；累计够多好评后归纳出沉淀层（稳定的一面）。判断模型未配置时自动跳过。总开关（风格学习）关闭时不跑。",
                         "type": "bool",
                         "default": true,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["F", "F3", 1],
+                        "requires": [
+                            {
+                                "key": "style_learning.enabled",
+                                "op": "truthy",
+                                "label": "风格学习总闸",
+                                "failHint": "总闸不开，复盘不会跑。去 F1 开总闸。",
+                                "anchor": "core/style_review.py:88-96（review_enabled 只查 enabled + daily_review_enabled）"
+                            },
+                            {
+                                "key": "judge.provider_id",
+                                "op": "nonEmpty",
+                                "label": "判断模型 provider",
+                                "failHint": "provider 没配，复盘会整轮跳过——这是保护逻辑（不复盘好过烧错模型），不是故障。去 A2 配 provider。",
+                                "anchor": "main.py:364（_judge_llm_call 只读 provider_id，不读 judge.mode）"
+                            }
+                        ]
                     },
                     "daily_review_time": {
                         "description": "每日复盘时间",
                         "hint": "格式 HH:MM（24 小时制）。默认凌晨 4 点，趁你睡觉时她在后台自己复盘。",
                         "type": "string",
                         "default": "04:00",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["F", "F3", 2]
                     },
                     "usage_log_limit": {
                         "description": "调用记录条数上限",
                         "hint": "调用记录库（feature_usage.json）最多保留多少条取用事实（复盘输入）。只记「什么时间用了哪些片段」，不记聊天内容。",
                         "type": "int",
                         "default": 500,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["F", "F2", 11]
                     },
                     "material_pool_limit": {
                         "description": "素材库容量上限（条）",
                         "hint": "你手动投入的原始素材最多存多少条。素材库只由你添加，插件不会改写或删除你的数据，满了请先清理。",
                         "type": "int",
                         "default": 100,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["F", "F2", 9]
                     },
                     "feature_promote_threshold": {
                         "description": "沉淀归纳阈值",
                         "hint": "自上次归纳以来累计判好的条目数达到该值，才触发一次沉淀归纳（把反复被取用且被判定好的特征沉淀成她自己的说话方式）。",
                         "type": "int",
                         "default": 3,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["F", "F2", 10]
                     },
                     "prompt_review": {
                         "description": "每日复盘提示词（专家）",
                         "hint": "复盘判定调用的 prompt。占位符：{entries_block}=被取用条目清单；{reactions_block}=近期聊天摘录。输出 JSON 协议（entries[].id/verdict/reason，verdict 只能 good/bad/neutral）是解析依赖，别改结构。",
                         "type": "text",
                         "default": "下面是「她」说话风格库里最近被取用过的条目，以及她最近和主人的聊天摘录。请逐条判断：这条说话方式在最近的相处里效果如何？\n\n判断依据（从聊天摘录里找信号，找不到就给 neutral，不要猜）：\n- good：主人没有表示反感、聊天氛围正常、或有正面反应\n- bad：主人表达过「别这样说话」「你怎么突然这个腔调」之类的调整要求，或这条语气出现后明显冷场\n- neutral：没有足够信息判断\n\n严格输出一个 JSON 对象，不要输出任何其他文字：\n{\"entries\": [{\"id\": \"条目id\", \"verdict\": \"good\", \"reason\": \"一句话\"}]}\n只允许对下面给出的条目 id 给判断，不要发明新 id；verdict 只能是 good / bad / neutral。\n\n最近被取用的条目：\n{entries_block}\n\n最近的聊天摘录（只看反应，不要复述）：\n{reactions_block}",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["F", "F4", 2]
                     },
                     "prompt_induct": {
                         "description": "沉淀归纳提示词（专家）",
                         "hint": "沉淀归纳调用的 prompt。占位符：{entries_block}=高评分条目清单。输出 JSON 协议（features[].note/dims 六键）是解析依赖，别改结构。",
                         "type": "text",
                         "default": "下面是「她」说话风格库里评分较高、反复被取用的条目。请把它们沉淀成少数几条稳定的「她自己的说话方式」——不是复制原文，而是把共同点归纳成通用特征。\n\n要求：\n- 每条特征六个维度都看一遍（没有内容的给空串）：wording 用词 / syntax 句式 / thinking 思维方式 / emotion_style 情绪表达 / interaction 待人接物 / avoid 别这样\n- 最多 4 条，每条单维内容不超过 40 字\n- 只输出 JSON：{\"features\": [{\"note\": \"一句话概括\", \"dims\": {\"wording\": \"\", \"syntax\": \"\", \"thinking\": \"\", \"emotion_style\": \"\", \"interaction\": \"\", \"avoid\": \"\"}}]}\n\n高评分条目：\n{entries_block}",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["F", "F4", 3]
                     }
                 }
             },
@@ -929,21 +1086,24 @@
                         "description": "沙箱超时（秒）",
                         "type": "int",
                         "default": 10,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["B", "B2", 4]
                     },
                     "cooldown_between_activities_hours": {
                         "description": "两次活动最小间隔（小时）",
                         "hint": "刚忙完一件事需要歇一会儿，隔多久才允许下一次冲动。",
                         "type": "float",
                         "default": 2.0,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["B", "B2", 5]
                     },
                     "web_search_enabled": {
                         "description": "允许她联网搜索（博查网页搜索）",
                         "hint": "关闭后她自主活动不再挂载 web_search 搜索工具，冲浪/读文章两项活动也从活动池剔除（转而做其他活动）；她的网页抓取（fetch_page）与你的聊天搜索不受影响（那是 AstrBot 自己的搜索，同一条 key 但独立开关）。",
                         "type": "bool",
                         "default": true,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["B", "B2", 1]
                     },
                     "agent_tools_mode": {
                         "description": "复用本体工具",
@@ -955,14 +1115,16 @@
                             "custom"
                         ],
                         "default": "off",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["B", "B2", 2]
                     },
                     "agent_tools": {
                         "description": "本体工具白名单（custom 档）",
                         "hint": "逗号分隔的工具名，如 web_search,fetch_page。仅 agent_tools_mode=custom 时生效；留空 = 不追加任何本体工具。与 living 自带工具同名时以自带优先。",
                         "type": "string",
                         "default": "",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["B", "B2", 3]
                     }
                 },
                 "invisible": true
@@ -981,7 +1143,8 @@
                             "simple"
                         ],
                         "default": "auto",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["G", "G1", 1]
                     }
                 },
                 "invisible": true
@@ -995,28 +1158,32 @@
                         "hint": "留空 = 与聊天共用同一个模型和账号。该账号的缓存只有一套：她做活动、选活动、搭话、分享等任何一次调用都会冲掉聊天的缓存，之后你和她聊天的全部历史将按未命中重新计费。强烈建议单独配一个 provider（最好用不同的 api key / 账号）。配了独立 provider 时她走自己的提示词形态，与聊天互不影响。",
                         "type": "string",
                         "default": "",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["A", "A1", 1]
                     },
                     "fallback_chain": {
                         "description": "模型故障转移链",
                         "hint": "按顺序尝试的 provider id 列表；链尾默认会自动兜底全部已启用的聊天模型（关闭下方\"失败时允许回退到聊天模型\"则不兜底）。默认聊天模型 404/限流/超时时自动切换，全部失败才算活动失败。",
                         "type": "list",
                         "default": [],
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["A", "A1", 2]
                     },
                     "allow_chat_fallback": {
                         "description": "失败时允许回退到聊天模型",
                         "hint": "开（默认，保持旧行为）：模型故障转移链走完后仍可回退到全部已启用的聊天模型——代价是失败时也会冲掉聊天的缓存。关（缓存保护）：只重试故障转移链里配置的 provider，全部失败就按本轮调用失败处理（宁可她这次活动失败，也不冲你聊天的缓存）。",
                         "type": "bool",
                         "default": true,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["A", "A1", 3]
                     },
                     "prefix_cache_ttl_minutes": {
                         "description": "聊天前缀缓存时效（分钟）",
                         "hint": "回退到聊天模型时，她的调用会带上与聊天完全相同的 system 与会话历史（前缀对齐，命中缓存、不再冲缓存）。该前缀取自最近一次聊天请求，超过此时效就不用（退回旧形态）。0 = 不过期。一般不用改。",
                         "type": "int",
                         "default": 360,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["A", "A1", 4]
                     }
                 },
                 "invisible": true
@@ -1035,49 +1202,56 @@
                             "api"
                         ],
                         "default": "off",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["A", "A2", 1]
                     },
                     "provider_id": {
                         "description": "判断模型 provider id",
                         "hint": "api 档使用的 provider（面板用下拉选择；此处也可手填）。留空或填了不存在的 id = 本轮不判断（记 WARNING，不影响聊天）。注意：这个 provider 也必须与聊天模型分开（不同的 api key / 账号），否则每次判断调用同样会冲掉聊天的缓存。",
                         "type": "string",
                         "default": "",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["A", "A2", 2]
                     },
                     "local_model_path": {
                         "description": "本地模型路径（预留）",
                         "hint": "local 档预留键：本地权重文件路径。本地推理尚未实现，本键暂不生效。",
                         "type": "string",
                         "default": "",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["A", "A2", 3]
                     },
                     "local_backend": {
                         "description": "本地推理后端（预留）",
                         "hint": "local 档预留键：推理后端类型（如 llama.cpp / ollama）。本地推理尚未实现，本键暂不生效。",
                         "type": "string",
                         "default": "",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["A", "A2", 4]
                     },
                     "context_messages": {
                         "description": "输入判断携带的上文条数",
                         "hint": "判断'这条消息该用什么模式回'时附带的最近聊天条数（0-12，默认 6——五到十条聊天记录就够）。",
                         "type": "int",
                         "default": 6,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["A", "A3", 1]
                     },
                     "min_interval_seconds": {
                         "description": "输入判断最小间隔（秒）",
                         "hint": "两次输入判断的最小间隔，间隔内的消息直接跳过判断（防刷屏式连环消息每条都烧一次判断）。默认 20。",
                         "type": "int",
                         "default": 20,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["A", "A3", 2]
                     },
                     "timeout_seconds": {
                         "description": "判断调用超时（秒）",
                         "hint": "输入/输出判断的单次调用超时。超时按'本轮不判断'处理，主回复照常走。默认 6——判断模型应该又小又快，超过 6 秒不如不判。",
                         "type": "int",
                         "default": 6,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["A", "A3", 3]
                     },
                     "output_action": {
                         "description": "输出检查动作",
@@ -1088,35 +1262,40 @@
                             "rewrite"
                         ],
                         "default": "log_only",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["A", "A3", 4]
                     },
                     "record_limit": {
                         "description": "判断记录保留条数",
                         "hint": "最近 N 条判断结果（输入摘要/判断输出/是否注入/是否打回）供面板查看，超出自动淘汰最旧的。默认 50。",
                         "type": "int",
                         "default": 50,
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["A", "A3", 5]
                     },
                     "prompt_input": {
                         "description": "输入判断提示词",
                         "hint": "对主人新消息做'该用什么模式回'判断的 prompt。要求输出 JSON：{\"mode\": \"work|chat\", \"length\": \"short|normal|long\", \"tone\": \"plain|warm|playful\", \"note\": \"一句话提醒\"}。note 只允许提醒语气（如'这条可以短一点答'），不得出现具体措辞指令——小模型只给建议，不指挥输出。",
                         "type": "text",
                         "default": "你是聊天助手的幕后小助手，负责判断主人刚发来的这条消息适合用什么方式回应。\n\n最近聊天（旧→新）：\n{context_block}\n\n主人刚发的消息：{message_text}\n\n请只输出一个 JSON 对象，不要输出任何其他文字：\n{\"mode\": \"work|chat\", \"length\": \"short|normal|long\", \"tone\": \"plain|warm|playful\", \"note\": \"≤40字的一句话提醒\"}\n字段含义：mode=这条消息的性质（work=要办事/问信息，chat=闲聊）；length=合适回应长度（short=几个字到一句话，normal=两三句，long=可以展开聊）；tone=合适语气；note=给回复模型的提醒，只允许提醒语气（例如'这条可以短一点答'），禁止指定具体措辞。判断不了就全给中性值（chat/normal/plain），note 给空串。",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["A", "A4", 1]
                     },
                     "inject_template": {
                         "description": "输入判断注入模板",
                         "hint": "把判断结果拼成注入块的模板（追加到请求末尾，用完即弃，不进记忆）。占位符：{mode}/{length}/{tone}=判断结果；{note}=提醒语（空串则该位置自然消失）。",
                         "type": "text",
                         "default": "（内部提醒，主人和其他人都看不到这段：回复前先参考这条消息的判断建议——消息性质：{mode}，建议长度：{length}，建议语气：{tone}。{note}这是参考建议，按你自己自然的表达来。）",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["A", "A4", 2]
                     },
                     "prompt_output": {
                         "description": "输出检查提示词",
                         "hint": "聊天模型回复后做质量检查的 prompt。要求输出 JSON：{\"ok\": true} 或 {\"ok\": false, \"note\": \"问题一句话\", \"fixed\": \"轻量修正后的全文\"}。fixed 只允许轻量修正（删重复句/删残缺尾句/收紧超长），禁止改写内容或添加新内容。",
                         "type": "text",
                         "default": "你是聊天助手的幕后质检小助手。下面是助手刚发出的回复，请检查它有没有明显的输出惯性毛病。\n\n最近聊天（旧→新）：\n{context_block}\n\n助手刚发的回复：\n{reply_text}\n\n检查点：是不是明显比平时啰嗦（同样的意思车轱辘话说好几遍）；是不是把闲聊回成了公文（列表/标题/汇报腔）；结尾是否残缺（话说一半）；是否重复了上一条回复里刚说过的话。\n\n只输出一个 JSON 对象，不要输出任何其他文字：\n{\"ok\": true} 或 {\"ok\": false, \"note\": \"问题一句话\", \"fixed\": \"轻量修正后的全文\"}\nfixed 的规则：只做轻量修正（删掉重复句/残缺尾句，收紧啰嗦段），保持原回复的语气与内容，禁止改写内容、禁止添加新内容、长度不得超过原文。没有问题就只给 {\"ok\": true}。",
-                        "invisible": true
+                        "invisible": true,
+                        "section": ["A", "A4", 3]
                     }
                 }
             }

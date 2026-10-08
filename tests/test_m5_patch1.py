@@ -40,7 +40,10 @@ def test_get_payload_structure_and_key_counts():
     payload = build_config_payload(config, SCHEMA)
     # M19-补丁1：providers（面板 provider 下拉数据源）入列
     # M20-补丁1 F3：agent_tools（本体工具多选数据源）入列
-    assert set(payload) == {"knobs", "advanced", "schema", "providers", "agent_tools"}
+    # M25-补丁1 配套 g：layout（panel_layout.json 的栏目树透传）入列
+    assert set(payload) == {
+        "knobs", "advanced", "schema", "providers", "agent_tools", "layout",
+    }
     assert payload["providers"] == []
     assert payload["agent_tools"] == []
 

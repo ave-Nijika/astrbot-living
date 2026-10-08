@@ -21,6 +21,13 @@ from .conf_path import CONF_ADVANCED, CONF_PRESET
 from .mood import UNIT_MAX, UNIT_MIN
 
 SCHEMA_FILENAME = "_conf_schema.json"
+# M25-补丁1 C2：面板信息架构（一级/二级栏目 + 组级 requires/switch + 新手
+# 归组 + 七条出口）。独立文件而非 schema 顶层键——AstrBot 本体加载插件时
+# 把整个 schema 交给 AstrBotConfig._parse_schema（astrbot_config.py:139-163，
+# 对顶层键强制读 v["type"]，star_manager.py:1159-1165 无过滤传入），顶层多
+# 一个无 type 的键会让插件加载直接崩溃。load_schema() 把它以 "_layout" 内存
+# 合并进返回的 schema（盘上文件不动）；build_config_payload 以 "layout" 透传。
+LAYOUT_FILENAME = "panel_layout.json"
 
 # M9-补丁1 B1：心境快照的五项只读状态（energy/fatigue/valence/arousal/
 # sleep_debt）——由活动和睡眠自然涨落，手改会破坏涌现，不做编辑入口；
@@ -35,10 +42,19 @@ class PanelApiError(Exception):
 
 
 def load_schema(plugin_dir: str | Path) -> dict:
-    """读插件目录的 _conf_schema.json（面板渲染元数据来源）。"""
+    """读插件目录的 _conf_schema.json（面板渲染元数据来源）。
+
+    M25-补丁1 C2：同目录存在 panel_layout.json 时，将其内容以 "_layout"
+    键内存合并进返回值（文件本身不动，AstrBot 本体加载 schema 不受影响）。
+    缺文件时无该键——前端配套 h 按无布局回退扁平渲染。"""
     path = Path(plugin_dir) / SCHEMA_FILENAME
     with open(path, encoding="utf-8") as f:
-        return json.load(f)
+        schema: dict = json.load(f)
+    layout_path = Path(plugin_dir) / LAYOUT_FILENAME
+    if layout_path.exists():
+        with open(layout_path, encoding="utf-8") as f:
+            schema["_layout"] = json.load(f)
+    return schema
 
 
 def default_tree(schema: dict) -> dict:
@@ -95,11 +111,13 @@ def build_config_payload(
         "knobs": dict(preset_group(config)),
         "advanced": advanced_values,
         # 与原 schema 同构（{preset/advanced: {items: {键: 定义}}}），前端
-        # 按 .items 遍历渲染
+        # 按 .items 遍历渲染。M25-补丁1：键定义内的 section/requires 元数据
+        # 随键整体透传；顶层布局（栏目树）单独以 "layout" 带出（配套 g）。
         "schema": {
             CONF_PRESET: {"items": section(schema.get(CONF_PRESET, {}).get("items", {}))},
             CONF_ADVANCED: {"items": section(schema.get(CONF_ADVANCED, {}).get("items", {}))},
         },
+        "layout": copy.deepcopy(schema.get("_layout")) or None,
         "providers": list(providers or []),
         "agent_tools": list(agent_tools or []),
     }

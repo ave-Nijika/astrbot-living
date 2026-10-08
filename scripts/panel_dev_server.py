@@ -195,6 +195,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send_file("index.html")
         elif path == "/app.js":
             self._send_file("app.js")
+        elif path == "/status-engine.js":
+            # M25-补丁1：app.js import 的状态引擎模块（mock 渲染自检用）
+            self._send_file("status-engine.js")
         elif path == "/style.css":
             self._send_file("style.css")
         elif path == "/api/plugin/page/bridge-sdk.js":

@@ -25,21 +25,31 @@
   </header>
 
   <main>
-    <!-- 新手视图：9 张旋钮卡片 + 生活背景参考 -->
+    <!-- M25-补丁1 C8：全局状态行——她现在会主动做的事（七条出口各带状态，
+      两个视图共用；由 app.js renderGlobalStatus 按 panel_layout.json exits 求值） -->
+    <div id="global-status" class="global-status hidden"></div>
+
+    <!-- 新手视图：M25-补丁1 配套 a——首层 8 张旋钮按一级栏目归组 +
+      生活背景参考；13 张功能卡进「细项」折叠区 -->
     <section id="view-novice" class="view" role="tabpanel">
       <div id="novice-cards" class="card-grid"></div>
       <div id="novice-life" class="life-box"></div>
     </section>
 
-    <!-- 专家视图：7 个折叠抽屉，危险项带警告 -->
+    <!-- 专家视图：M25-补丁1 C3——按 _layout 树渲染（一级域/二级功能/三级键），
+      四态状态点、生效链、级联置灰与组计数；无布局时回退旧扁平渲染 -->
     <section id="view-expert" class="view hidden" role="tabpanel">
       <p class="expert-note">
         专家区：默认值即保守安全值。带 <span class="danger-chip">⚠ 危险</span>
         标记的项改错会导致它作息失序或烧钱，不确定就别动。
+        状态点：<span class="status-dot st-active">● 开</span>真的在生效｜
+        <span class="status-dot st-off">● 关</span>显式关闭｜
+        <span class="status-dot st-blocked">▲ 卡着</span>开关开了但前置不满足｜
+        <span class="status-dot st-dead">● 哑</span>被上游关闭级联。
       </p>
       <div id="expert-groups" class="drawer-list"></div>
-      <!-- 心境与兴趣（M9-补丁1 B5/B6）：运行时状态，专家视图专属 -->
-      <div id="mood-section"></div>
+      <!-- 心境与兴趣（M9-补丁1 B5/B6）：M25-补丁1 起并入「她的记忆」区（（附）），
+        容器由 renderExpert 在 G 区动态创建 -->
     </section>
 
     <p id="load-error" class="load-error hidden"></p>

@@ -332,3 +332,88 @@ main { padding: 18px 20px 60px; max-width: 1080px; margin: 0 auto; }
 .style-editor textarea { font-family: monospace; font-size: 12px; }
 .style-admin-body h4 { margin: 10px 0 4px; }
 .link-button.danger { color: var(--danger, #c0392b); }
+
+/* ---------- M25-补丁1：信息架构重排（四态 / 生效链 / 级联置灰 / 计数） ---------- */
+/* C8 全局状态行（两个视图共用） */
+.global-status {
+  margin: 10px 0 2px; padding: 8px 12px; font-size: 13px; line-height: 1.8;
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+}
+.global-status.hidden { display: none; }
+.global-status-lead { font-weight: 600; margin-right: 6px; }
+.exit-seg { white-space: nowrap; margin-right: 4px; }
+
+/* 四态状态点 */
+.status-dot { font-size: 12px; margin-right: 6px; white-space: nowrap; }
+.st-active { color: var(--ok, #2e8b57); }
+.st-off { color: var(--muted, #7a8a80); }
+.st-blocked { color: #b8860b; }
+.st-dead { color: var(--danger, #c0392b); }
+.st-unimpl { color: #8e44ad; }
+.st-unknown { color: var(--muted, #7a8a80); font-style: italic; }
+
+/* 新手视图：一级栏目小标题 + 细项折叠 */
+.novice-section-head {
+  grid-column: 1 / -1; margin-top: 10px; padding: 2px 2px 4px;
+  font-weight: 700; font-size: 14px; color: var(--accent);
+  border-bottom: 1px dashed var(--border);
+}
+.novice-section-head:first-child { margin-top: 0; }
+.novice-detail-toggle { grid-column: 1 / -1; margin: 8px 0 2px; }
+#novice-cards .novice-detail { display: none; }
+#novice-cards.show-detail .novice-detail { display: revert; }
+#novice-cards.show-detail .novice-detail.knob-card { display: block; }
+
+/* 专家视图：树形结构（一级区 → 二级组 → 键行） */
+.expert-section {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--radius); overflow: hidden;
+}
+.drawer-list .expert-section { margin-top: 10px; }
+.section-head { justify-content: flex-start; gap: 8px; }
+.section-title { font-weight: 700; }
+.section-count { margin-left: auto; }
+.section-subtitle {
+  padding: 6px 16px 2px; font-size: 12px; color: var(--muted, #7a8a80);
+}
+.expert-group {
+  margin: 8px 10px; border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px); overflow: hidden;
+}
+.group-head { font-size: 13px; padding: 8px 12px; }
+.group-body { padding: 4px 12px 10px; }
+.group-body.dimmed .key-row { opacity: 0.55; }
+.cascade-note {
+  font-size: 12px; line-height: 1.6; color: var(--danger, #c0392b);
+  background: rgba(192, 57, 43, 0.07); border-radius: 6px;
+  padding: 6px 8px; margin: 6px 0;
+}
+.pool-note {
+  font-size: 12px; color: var(--muted, #7a8a80);
+  background: rgba(0,0,0,0.03); border-radius: 6px; padding: 5px 8px; margin: 6px 0;
+}
+.key-side { display: flex; align-items: flex-start; margin-left: 8px; }
+.chain-toggle { font-size: 12px; white-space: nowrap; }
+
+/* 生效链面板（C5） */
+.chain-block, .chain-panel {
+  font-size: 13px; line-height: 1.9;
+  border: 1px dashed var(--border); border-radius: 6px;
+  padding: 8px 10px; margin: 6px 0; background: rgba(0,0,0,0.02);
+}
+.chain-panel.hidden { display: none; }
+.chain-title { font-weight: 600; }
+.chain-line { font-family: inherit; white-space: pre-wrap; word-break: break-all; }
+.chain-conclusion { font-weight: 600; }
+.chain-note {
+  font-size: 12px; color: var(--muted, #7a8a80); margin-top: 4px;
+}
+.chain-conclusion.st-active, .exit-seg.st-active { color: var(--ok, #2e8b57); }
+.chain-conclusion.st-off, .exit-seg.st-off { color: var(--muted, #7a8a80); }
+.chain-conclusion.st-blocked, .exit-seg.st-blocked { color: #b8860b; }
+.chain-conclusion.st-dead, .exit-seg.st-dead { color: var(--danger, #c0392b); }
+.chain-conclusion.st-unimpl { color: #8e44ad; }
+.chain-conclusion.st-unknown { color: var(--muted, #7a8a80); }
+
+/* 专家区图例（index.html expert-note 内联小点） */
+.expert-note .status-dot { margin-right: 2px; }

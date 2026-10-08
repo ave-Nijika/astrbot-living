@@ -3,12 +3,22 @@
  * bridge 调用后端（自动携带 dashboard 鉴权）。bridge 仅提供 GET/POST。
  * 注意：Pages 沙箱忽略 window.confirm/alert/prompt——确认动作用页内弹层。 */
 
-const KNOB_ORDER = [
-  // M6-补丁1：preset_sleep_style 随 sleep_mode 配置键移除
-  "preset_activity_level", "preset_talk_frequency",
-  "preset_capability_tier", "preset_write_level", "preset_topic_taste",
-  "preset_free_activity", "preset_decision_mode", "preset_model",
-];
+/* M25-补丁1 C4-C8：状态引擎（四态/生效链/出口行/归组）是纯函数模块，
+ * pytest 经 node 桥（tests/js/status_engine_harness.mjs）行为级测试同一份代码。 */
+import {
+  STATUS_META,
+  computeCounts,
+  computeExitLines,
+  computeKeyStatus,
+  computeNodeStatus,
+  novicePlan,
+  renderChain,
+  runnableActivities,
+} from "./status-engine.js";
+
+/* M25-补丁1 配套 a：新手旋钮的展示顺序不再由本文件的 KNOB_ORDER 硬编码
+ * （已随重排移除）——归组与顺序统一来自 panel_layout.json（后端透传
+ * payload.layout），数据单一权威，前端不再两处维护。 */
 
 const GROUP_LABELS = {
   autonomy: "能力档位", decision: "决策", output_gate: "输出闸门",
@@ -113,6 +123,8 @@ const state = {
   values: { knobs: {}, advanced: {} }, // 当前编辑值（切换视图不丢）
   loaded: { knobs: {}, advanced: {} }, // 加载时的原始快照（保存时做差量）
   schema: null,
+  layout: null, // M25-补丁1 C2：payload.layout（panel_layout.json，可 null → 回退扁平渲染）
+  runtime: {}, // M25-补丁1：运行时谓词（browser_installed/workspace_ready/providers；拉取失败保持 undefined → 状态引擎按"未知"处理，不猜）
   dirty: false,
   expanded: loadExpanded(),
 };
@@ -162,13 +174,14 @@ function providerPickerControl({ value, onChange, emptyLabel }) {
   const refresh = () => {
     const current = select.value === MANUAL ? manualInput.value.trim() : select.value;
     if (!current) {
-      status.textContent = "当前生效：聊天模型（共用账号）";
+      // M25-补丁1 配套 c：「当前实际生效」行——留空 = 与聊天共用（烧额度提示）
+      status.textContent = "当前实际生效：聊天模型（共用账号）";
       warn.textContent = "⚠ 与聊天共用模型：她做活动/搭话/分享的任何一次调用都会打断你聊天的缓存，聊天全部历史将按未命中重新计费。建议单独配一个 provider（最好用不同的 api key）。";
     } else if (!providers.includes(current)) {
-      status.textContent = `当前生效：${current}（不在已启用列表中）`;
+      status.textContent = `当前实际生效：${current}（不在已启用列表中）`;
       warn.textContent = "⚠ 该 provider id 不在已启用的 provider 列表里，调用时会按回退处理并在日志留痕。请核对拼写，或到 provider 管理页启用它。";
     } else {
-      status.textContent = `当前生效：${current}（独立 provider）`;
+      status.textContent = `当前实际生效：${current}（独立 provider）`;
       warn.textContent = "";
     }
   };
@@ -401,14 +414,35 @@ async function load() {
   const data = await bridge.apiGet("config");
   const payload = data && data.data ? data.data : data;
   state.schema = payload.schema;
+  state.layout = payload.layout || null; // M25-补丁1 C2（null → 配套 h 回退扁平渲染）
   state.providers = payload.providers || []; // M19-补丁1 F2/E3：provider 下拉数据源
   state.agent_tools = payload.agent_tools || []; // M20-补丁1 F3：本体工具多选数据源
   state.values.knobs = { ...(payload.knobs || {}) };
   state.values.advanced = JSON.parse(JSON.stringify(payload.advanced || {}));
   state.loaded = JSON.parse(JSON.stringify(state.values));
   setDirty(false);
+  await loadRuntime(); // M25-补丁1：运行时谓词（失败按未知处理，不阻塞面板）
   renderNovice();
   renderExpert();
+  renderGlobalStatus();
+}
+
+/* M25-补丁1：运行时谓词拉取——复用既有端点（browser_status /
+ * workspace_status），零新增轮询；失败时对应值保持 undefined，
+ * 状态引擎按"未知"处理（宁可标未知也不猜）。 */
+async function loadRuntime() {
+  const rt = { providers: state.providers || [] };
+  try {
+    const res = await bridge.apiGet("browser_status");
+    const d = res && res.data ? res.data : res;
+    rt.browser_installed = !!(d && d.installed);
+  } catch (e) { /* 保持 undefined = 未知 */ }
+  try {
+    const res = await bridge.apiGet("workspace_status");
+    const d = res && res.data ? res.data : res;
+    rt.workspace_ready = !!(d && d.state === "ready");
+  } catch (e) { /* 保持 undefined = 未知 */ }
+  state.runtime = rt;
 }
 
 /* 差量提取：只提交用户真正改动过的键（防止页面快照旧值覆盖后端新值） */
@@ -441,71 +475,130 @@ function knobHint(schemaItem) {
   return schemaItem && schemaItem.hint ? schemaItem.hint : "";
 }
 
+/* M25-补丁1 配套 a：新手面板重排——第一层只留 8 张旋钮（按 preset 键的
+ * section 一级 id 归组、组间小标题）+ life_extra；13 张功能卡进「细项」
+ * 折叠区（按新一级栏目归组）。归组数据来自 panel_layout.json（novicePlan，
+ * 纯函数可测）；卡片的挂载保持逐张 grid.appendChild 形态。 */
+function noviceSectionHead(title, sectionId) {
+  const head = document.createElement("div");
+  head.className = "novice-section-head";
+  head.dataset.section = sectionId || "";
+  head.textContent = title;
+  return head;
+}
+
 function renderNovice() {
   const presetSchema = state.schema.preset.items;
   const grid = $("#novice-cards");
   grid.innerHTML = "";
-  for (const name of KNOB_ORDER) {
-    const item = presetSchema[name];
-    if (!item) continue;
-    const card = document.createElement("div");
-    card.className = "knob-card";
+  const plan = novicePlan(state.layout, presetSchema);
 
-    const title = document.createElement("h3");
-    title.textContent = item.description || name;
-    card.appendChild(title);
-
-    const hint = document.createElement("p");
-    hint.className = "hint";
-    hint.textContent = knobHint(item);
-    card.appendChild(hint);
-
-    if (name === "preset_model") {
-      // M20-补丁1 F1/A2：新手卡"它独处时用哪个 AI 大脑"改下拉（更不能
-      // 让新手手打 id）+ 留空缓存警告 + 当前生效显示（providerPickerControl）
-      card.appendChild(providerPickerControl({
-        value: state.values.knobs[name] ?? "",
-        onChange: (v) => { state.values.knobs[name] = v; setDirty(true); },
-        emptyLabel: "（留空 = 与聊天共用模型）",
-      }));
-    } else {
-      const options = item.options || [];
-      const wrap = document.createElement("div");
-      wrap.className = "option-row";
-      for (const opt of options) {
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "option";
-        // M23-补丁1 A5：有能力档中文标签映射时显示中文（值不变）
-        btn.textContent = (KNOB_OPTION_LABELS[name] || {})[opt] || opt;
-        if (state.values.knobs[name] === opt) btn.classList.add("selected");
-        btn.addEventListener("click", () => {
-          state.values.knobs[name] = opt;
-          setDirty(true);
-          wrap.querySelectorAll(".option").forEach((el) => el.classList.remove("selected"));
-          btn.classList.add("selected");
-        });
-        wrap.appendChild(btn);
-      }
-      card.appendChild(wrap);
+  // 首层：旋钮按一级栏目归组（她怎么安排生活 / 她什么时候开口 / …）
+  for (const g of plan.knobGroups) {
+    grid.appendChild(noviceSectionHead(g.title, g.id));
+    for (const name of g.knobs) {
+      const item = presetSchema[name];
+      if (!item) continue;
+      const card = buildKnobCard(name, item);
+      grid.appendChild(card);
     }
-    grid.appendChild(card);
   }
-  grid.appendChild(initiativeCard()); // 主动搭话卡（M14-补丁2 F3）：新手卡之后、起床约定卡之前
+
+  // 细项折叠开关（状态记忆在 state.expanded）
+  const detailOpen = !!state.expanded.__novice_detail;
+  grid.classList.toggle("show-detail", detailOpen);
+  const toggleRow = document.createElement("div");
+  toggleRow.className = "novice-detail-toggle";
+  const toggleBtn = document.createElement("button");
+  toggleBtn.type = "button";
+  toggleBtn.className = "link-button";
+  toggleBtn.textContent = detailOpen
+    ? "▲ 收起细项设置"
+    : `▼ 细项设置（${plan.cardGroups.reduce((n, g) => n + g.cards.length, 0)} 张功能卡，按栏目归组）`;
+  toggleBtn.addEventListener("click", () => {
+    const next = !grid.classList.contains("show-detail");
+    grid.classList.toggle("show-detail", next);
+    state.expanded.__novice_detail = next;
+    saveExpanded(state.expanded);
+    toggleBtn.textContent = next
+      ? "▲ 收起细项设置"
+      : `▼ 细项设置（${plan.cardGroups.reduce((n, g) => n + g.cards.length, 0)} 张功能卡，按栏目归组）`;
+  });
+  toggleRow.appendChild(toggleBtn);
+  grid.appendChild(toggleRow);
+
+  // 折叠区：13 张功能卡按新一级栏目归组 + 组间小标题（默认折叠）
+  for (const g of plan.cardGroups) {
+    const head = noviceSectionHead(g.title, g.id);
+    head.classList.add("novice-detail");
+    grid.appendChild(head);
+  }
+  grid.appendChild(judgeCard());
+  grid.appendChild(browserCard());
+  grid.appendChild(workspaceCard());
+  grid.appendChild(searchToggleCard());
+  grid.appendChild(agentToolsCard());
+  grid.appendChild(initiativeCard()); // 主动搭话卡（M14-补丁2 F3）：D 组先于 E 组
   grid.appendChild(scheduleCard()); // 起床约定卡（M5-补丁4）
-  // M15-补丁1 F1：新后端键全部配面板入口（铁律 4b），接在睡眠/能力相关卡之后
   grid.appendChild(farewellCard()); // 晚安消息（三档 + 概率滑块）
   grid.appendChild(chatGuardCard()); // 聊天时不睡觉
   grid.appendChild(wakeRandomCard()); // 随机吵醒（M17-补丁1 C1）
   grid.appendChild(pendingReplyCard()); // 醒来补回复（M17-补丁1 C2）
-  grid.appendChild(styleLearningCard()); // 风格学习（M17-补丁1 A5）
-  grid.appendChild(styleDataCard()); // M20-补丁1 J：语料与素材（添加/立即处理）
-  grid.appendChild(browserCard()); // 浏览器能力说明 + 实时状态
-  grid.appendChild(workspaceCard()); // 她的文件夹（M23-补丁1 B4）：路径 + 状态
-  grid.appendChild(searchToggleCard()); // 联网搜索开关
-  grid.appendChild(agentToolsCard()); // 本体工具开关
-  grid.appendChild(judgeCard()); // M19-补丁1 A5/E3：判断模型（三档+状态+记录）
+  grid.appendChild(styleLearningCard()); // 风格学习（M17-补丁1 A5，卡上带生效链）
+  grid.appendChild(styleDataCard()); // M20-补丁1 J：语料与素材（卡上带生效链）
+  for (const card of grid.querySelectorAll(".knob-card")) {
+    if (!card.classList.contains("novice-detail")) {
+      card.classList.add("novice-detail");
+    }
+  }
   renderLifeExtra(presetSchema);
+}
+
+/* 旋钮卡构建（M25-补丁1 从 renderNovice 内联提出，逻辑原样） */
+function buildKnobCard(name, item) {
+  const card = document.createElement("div");
+  card.className = "knob-card";
+
+  const title = document.createElement("h3");
+  title.textContent = item.description || name;
+  card.appendChild(title);
+
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent = knobHint(item);
+  card.appendChild(hint);
+
+  if (name === "preset_model") {
+    // M20-补丁1 F1/A2：新手卡"它独处时用哪个 AI 大脑"改下拉（更不能
+    // 让新手手打 id）+ 留空缓存警告 + 当前实际生效显示（providerPickerControl，
+    // M25-补丁1 配套 c：状态行前缀已改「当前实际生效」）
+    card.appendChild(providerPickerControl({
+      value: state.values.knobs[name] ?? "",
+      onChange: (v) => { state.values.knobs[name] = v; setDirty(true); },
+      emptyLabel: "（留空 = 与聊天共用模型）",
+    }));
+  } else {
+    const options = item.options || [];
+    const wrap = document.createElement("div");
+    wrap.className = "option-row";
+    for (const opt of options) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "option";
+      // M23-补丁1 A5：有能力档中文标签映射时显示中文（值不变）
+      btn.textContent = (KNOB_OPTION_LABELS[name] || {})[opt] || opt;
+      if (state.values.knobs[name] === opt) btn.classList.add("selected");
+      btn.addEventListener("click", () => {
+        state.values.knobs[name] = opt;
+        setDirty(true);
+        wrap.querySelectorAll(".option").forEach((el) => el.classList.remove("selected"));
+        btn.classList.add("selected");
+      });
+      wrap.appendChild(btn);
+    }
+    card.appendChild(wrap);
+  }
+  return card;
 }
 
 /* ---------------- M19-补丁1：判断模型新手卡（A5/E3/E1） ----------------
@@ -821,13 +914,40 @@ function pendingReplyCard() {
   );
 }
 
+/* M25-补丁1 配套 b：素材总结的生效链（主人点名的痛点——面板必须能看出
+ * "素材库不是一直开着的"）。链声明取 layout 的 F2 组（语料与素材），
+ * 与专家区 F2 组头同源；判定走状态引擎（总闸 × 自主大脑两环）。 */
+function styleChainBlock() {
+  const wrap = document.createElement("div");
+  wrap.className = "chain-block";
+  const sec = ((state.layout || {}).sections || []).find((s) => s.id === "F");
+  const grp = sec && (sec.groups || []).find((g) => g.id === "F2");
+  if (!grp) return wrap; // 无布局（配套 h 回退）时不渲染链，卡片其余部分不受影响
+  const chain = renderChain("素材总结的生效链", grp, expertBuildCtx());
+  const title = document.createElement("div");
+  title.className = "chain-title";
+  title.textContent = chain.title;
+  wrap.appendChild(title);
+  for (const line of chain.lines) {
+    const row = document.createElement("div");
+    row.className = "chain-line";
+    row.textContent = line;
+    wrap.appendChild(row);
+  }
+  const conclusion = document.createElement("div");
+  conclusion.className = `chain-conclusion ${STATUS_META[chain.status]?.cls || ""}`;
+  conclusion.textContent = chain.conclusion;
+  wrap.appendChild(conclusion);
+  return wrap;
+}
+
 /* 风格学习卡：advanced.style_learning.enabled（M17-补丁1 A5，默认关） */
 function styleLearningCard() {
   if (!state.values.advanced.style_learning) {
     state.values.advanced.style_learning = {};
   }
   const styleValues = state.values.advanced.style_learning;
-  return optionCard(
+  const card = optionCard(
     "风格学习",
     "她在读文章、冲浪的时候，会从真人写的东西里学说话风格——句式、" +
       "思维方式、待人接物，不只是口癖。学到的味道会在她说话时低调度参考，" +
@@ -840,6 +960,9 @@ function styleLearningCard() {
       setDirty(true);
     },
   );
+  card.classList.add("style-card");
+  card.appendChild(styleChainBlock()); // M25-补丁1 配套 b：卡上直接显示生效链
+  return card;
 }
 
 /* 浏览器能力说明块（C2/C3）：与 README「浏览器能力（可选安装）」同源
@@ -1438,7 +1561,218 @@ function buildControl(group, key, item, container) {
   if (danger) container.classList.add("danger-zone");
 }
 
-function renderExpert() {
+/* ---------------- M25-补丁1：状态引擎视图层 ----------------
+ * expertBuildCtx / 状态点 / 生效链面板 / 键行构建 / 树渲染 / 全局状态行。
+ * 判定全部走 status-engine.js 纯函数（node 桥行为级测试同一份代码）。 */
+
+function expertBuildCtx() {
+  return { values: state.values, runtime: state.runtime || {} };
+}
+
+/* 四态状态点（默认只露一个点，链路点击才展开——设计纪律） */
+function statusDotEl(status, labelOverride) {
+  const meta = STATUS_META[status] || STATUS_META.unknown;
+  const el = document.createElement("span");
+  el.className = `status-dot ${meta.cls}`;
+  el.textContent = `${meta.dot} ${labelOverride || meta.label}`;
+  el.title =
+    status === "active" ? "开关打开且前置满足，真的在生效"
+      : status === "off" ? "显式关闭"
+        : status === "blocked" ? "开关打开但前置不满足（点「生效链」看卡在哪）"
+          : status === "dead" ? "被上游显式关闭级联——这里的键改了也不生效"
+            : status === "unimpl" ? "该档位尚未实现，选中仅占位"
+              : "运行时状态未知（数据未就绪），不猜";
+  return el;
+}
+
+/* 生效链面板（C5）：点开弹一条文本链路，每环带状态与原因 */
+function chainPanelEl(title, decl) {
+  const panel = document.createElement("div");
+  panel.className = "chain-panel hidden";
+  const chain = renderChain(title, decl, expertBuildCtx());
+  const head = document.createElement("div");
+  head.className = "chain-title";
+  head.textContent = chain.title;
+  panel.appendChild(head);
+  for (const line of chain.lines) {
+    const row = document.createElement("div");
+    row.className = "chain-line";
+    row.textContent = line;
+    panel.appendChild(row);
+  }
+  const conclusion = document.createElement("div");
+  conclusion.className = `chain-conclusion ${STATUS_META[chain.status]?.cls || ""}`;
+  conclusion.textContent = chain.conclusion;
+  panel.appendChild(conclusion);
+  if (chain.note) {
+    const note = document.createElement("div");
+    note.className = "chain-note";
+    note.textContent = chain.note;
+    panel.appendChild(note);
+  }
+  return panel;
+}
+
+function chainToggleBtn(panel) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "link-button chain-toggle";
+  btn.textContent = "生效链 ▸";
+  btn.addEventListener("click", () => {
+    const hidden = panel.classList.toggle("hidden");
+    btn.textContent = hidden ? "生效链 ▸" : "生效链 ▾";
+  });
+  return btn;
+}
+
+/* 单个键行（从旧 renderExpert 提出：label + 危险/联动徽章 + 控件）。
+ * M25-补丁1 新增：键级状态点（组不生效或键自带 requires 时显示）与
+ * 键行「生效链」按钮（仅自带 requires 的键，避免密度回潮）。 */
+function buildKeyRow(group, key, item, keyStatus, showDot) {
+  const row = document.createElement("div");
+  row.className = "key-row";
+  const labelEl = document.createElement("div");
+  labelEl.className = "key-label";
+  const nameEl = document.createElement("span");
+  nameEl.className = "key-name";
+  nameEl.textContent = item.description || key;
+  const keyEl = document.createElement("code");
+  keyEl.className = "key-code";
+  keyEl.textContent = `${group}.${key}`;
+  const hintEl = document.createElement("div");
+  hintEl.className = "hint";
+  hintEl.textContent = item.hint || "";
+  labelEl.append(nameEl, keyEl, hintEl);
+  if (isDanger(group, key)) {
+    const chip = document.createElement("span");
+    chip.className = "danger-chip";
+    chip.textContent = "⚠ 危险";
+    chip.title = "改错会导致它作息失序或烧钱，不确定就别动";
+    nameEl.prepend(chip);
+    row.classList.add("danger-row");
+  }
+  // M18-补丁1 D2 / M25-补丁1 配套 f：旋钮映射目标键的 mapped-chip 随重排保留
+  if (KNOB_MAPPED_KEYS.has(`${group}.${key}`)) {
+    const chip = document.createElement("span");
+    chip.className = "mapped-chip";
+    chip.textContent = "档位联动";
+    chip.title = "新手区对应的档位旋钮会写入这个键；在新手区切换档位时，" +
+      "你在这里改的值会被档位映射覆盖";
+    nameEl.prepend(chip);
+  }
+  if (showDot && keyStatus) {
+    labelEl.insertBefore(statusDotEl(keyStatus), keyEl);
+    if (keyStatus === "dead") row.classList.add("dimmed");
+  }
+  if (Array.isArray(item.requires) && item.requires.length) {
+    const side = document.createElement("div");
+    side.className = "key-side";
+    side.append(chainToggleBtn(chainPanelEl(`${item.description || key} 的生效链`, item)));
+    row.append(labelEl, side);
+  }
+  const ctrl = document.createElement("div");
+  ctrl.className = "key-control";
+  buildControl(group, key, item, ctrl);
+  row.appendChild(ctrl);
+  return row;
+}
+
+/* 二级组渲染（四态 + 生效 x/y + 生效链 + 级联置灰 + 因果行） */
+function buildGroup(secDecl, gDecl, entries, ctx) {
+  const ctxWrap = document.createElement("div");
+  ctxWrap.className = "expert-group";
+
+  const grpResult = computeNodeStatus(gDecl, ctx);
+  const switchKey = gDecl.switch || "";
+  const keyStatuses = entries.map((e) => computeKeyStatus(grpResult.status, {
+    requires: e.item.requires,
+    isGroupSwitch: switchKey === `${e.group}.${e.key}`,
+  }, ctx));
+  const counts = computeCounts(keyStatuses);
+
+  const gkey = `grp:${secDecl.id}|${gDecl.id}`;
+  const expanded = !!state.expanded[gkey];
+  const head = document.createElement("button");
+  head.type = "button";
+  head.className = "drawer-head group-head" + (expanded ? " open" : "");
+  const arrow = document.createElement("span");
+  arrow.className = "arrow";
+  arrow.textContent = expanded ? "▾" : "▸";
+  const dot = statusDotEl(grpResult.status, grpResult.statusLabel);
+  const title = document.createElement("span");
+  title.textContent = gDecl.title || gDecl.id;
+  const count = document.createElement("span");
+  count.className = "count";
+  count.textContent = `${entries.length} 项 · 生效 ${counts.active}/${counts.total}`;
+  head.append(arrow, dot, title, count);
+
+  const body = document.createElement("div");
+  body.className = "drawer-body group-body" + (expanded ? "" : " hidden");
+
+  // C6：被上游显式关闭级联（哑）→ 整组置灰 + 头部一行因果说明
+  if (grpResult.status === "dead" && grpResult.failing) {
+    body.classList.add("dimmed");
+    const ring = grpResult.chain[grpResult.failing.index];
+    const cause = document.createElement("div");
+    cause.className = "cascade-note";
+    cause.textContent =
+      `⇒ 被「${ring.label}」级联休眠：这里的键改了也不生效。${ring.failHint || ""}`;
+    body.appendChild(cause);
+  }
+  if (grpResult.status === "unimpl" && grpResult.hint) {
+    const note = document.createElement("div");
+    note.className = "cascade-note";
+    note.textContent = `⇒ ${grpResult.hint}`;
+    body.appendChild(note);
+  }
+
+  // C5：组级生效链（组头按钮，默认折叠）
+  if ((gDecl.requires || []).length) {
+    const chainWrap = document.createElement("div");
+    chainWrap.className = "group-chain";
+    chainWrap.append(chainToggleBtn(chainPanelEl(`${gDecl.title || gDecl.id} 的生效链`, gDecl)));
+    body.appendChild(chainWrap);
+  }
+
+  // C3 活动池：当前可跑的活动注记（镜像 activities.py，验收 4 的展示面）
+  if (secDecl.id === "C" && gDecl.id === "C3") {
+    const adv = state.values.advanced || {};
+    const runnable = runnableActivities(
+      (adv.decision || {}).agent_activities,
+      (adv.decision || {}).free_activity_enabled,
+      (adv.capabilities || {}).web_search_enabled,
+    );
+    const poolNote = document.createElement("div");
+    poolNote.className = "pool-note";
+    poolNote.textContent =
+      `当前可跑的活动：${runnable.length ? runnable.join(" / ") : "（空）"}` +
+      (runnable.length ? "" : "——检查联网搜索与活动池配置");
+    body.appendChild(poolNote);
+  }
+
+  entries.forEach((e, i) => {
+    // 键行状态点：仅组不生效或键自带 requires 时显示（密度纪律）
+    const showDot = grpResult.status !== "active"
+      || (Array.isArray(e.item.requires) && e.item.requires.length);
+    body.appendChild(buildKeyRow(e.group, e.key, e.item, keyStatuses[i], showDot));
+  });
+
+  head.addEventListener("click", () => {
+    const next = !state.expanded[gkey];
+    state.expanded[gkey] = next;
+    saveExpanded(state.expanded);
+    head.classList.toggle("open", next);
+    arrow.textContent = next ? "▾" : "▸";
+    body.classList.toggle("hidden", !next);
+  });
+
+  ctxWrap.append(head, body);
+  return { el: ctxWrap, body, keyStatuses };
+}
+
+/* 配套 h：兼容回退——schema 无元数据（无 section/无 layout）时按旧扁平
+ * 分组渲染（不崩、走旧路径），不显示四态与链。 */
+function renderExpertFlat() {
   const list = $("#expert-groups");
   list.innerHTML = "";
   const advancedSchema = state.schema.advanced.items;
@@ -1468,45 +1802,9 @@ function renderExpert() {
     });
 
     for (const [key, item] of keys) {
-      const row = document.createElement("div");
-      row.className = "key-row";
-      const labelEl = document.createElement("div");
-      labelEl.className = "key-label";
-      const nameEl = document.createElement("span");
-      nameEl.className = "key-name";
-      nameEl.textContent = item.description || key;
-      const keyEl = document.createElement("code");
-      keyEl.className = "key-code";
-      keyEl.textContent = `${group}.${key}`;
-      const hintEl = document.createElement("div");
-      hintEl.className = "hint";
-      hintEl.textContent = item.hint || "";
-      labelEl.append(nameEl, keyEl, hintEl);
-      if (isDanger(group, key)) {
-        const chip = document.createElement("span");
-        chip.className = "danger-chip";
-        chip.textContent = "⚠ 危险";
-        chip.title = "改错会导致它作息失序或烧钱，不确定就别动";
-        nameEl.prepend(chip);
-        row.classList.add("danger-row");
-      }
-      // M18-补丁1 D2：旋钮映射目标键——新手区切档位会覆盖专家区的手改
-      if (KNOB_MAPPED_KEYS.has(`${group}.${key}`)) {
-        const chip = document.createElement("span");
-        chip.className = "mapped-chip";
-        chip.textContent = "档位联动";
-        chip.title = "新手区对应的档位旋钮会写入这个键；在新手区切换档位时，" +
-          "你在这里改的值会被档位映射覆盖";
-        nameEl.prepend(chip);
-      }
-      const ctrl = document.createElement("div");
-      ctrl.className = "key-control";
-      buildControl(group, key, item, ctrl);
-      row.append(labelEl, ctrl);
-      body_el.appendChild(row);
+      body_el.appendChild(buildKeyRow(group, key, item, "active", false));
     }
 
-    // M20-补丁1 J：语料库/素材库管理挂在 style_learning 抽屉末尾
     if (group === "style_learning") {
       body_el.appendChild(styleLibraryAdmin());
     }
@@ -1514,6 +1812,147 @@ function renderExpert() {
     drawer.append(head, body_el);
     list.appendChild(drawer);
   }
+}
+
+/* C3/C7/C8 主渲染：遍历 _layout 树收叶子（一级域 / 二级功能 / 三级键，
+ * 不设四级）；键按 section 落位，未收录键进兜底区（配套 d，不丢键）。 */
+function renderExpert() {
+  const list = $("#expert-groups");
+  list.innerHTML = "";
+  const layout = state.layout;
+  const advancedSchema = state.schema.advanced.items;
+  if (!layout || !Array.isArray(layout.sections) || !layout.sections.length) {
+    renderExpertFlat(); // 配套 h：旧 schema 回退扁平渲染
+    return;
+  }
+  const ctx = expertBuildCtx();
+
+  // 按 section 收集键；同时记录未收录键（兜底）
+  const placed = new Set();
+  const byGroup = new Map();
+  const uncovered = [];
+  for (const [group, body] of Object.entries(advancedSchema)) {
+    for (const [key, item] of Object.entries(body.items || {})) {
+      const sec = Array.isArray(item.section) ? item.section : null;
+      if (!sec) {
+        uncovered.push({ group, key, item, order: 0 });
+        // 配套 d：布局未覆盖 → console.warn + 归入「其他参数」区（不丢键）
+        console.warn(`[living] _layout 未收录键 ${group}.${key}，已归入「其他参数」区`);
+        continue;
+      }
+      placed.add(`${group}.${key}`);
+      const gid = `${sec[0]}|${sec[1]}`;
+      if (!byGroup.has(gid)) byGroup.set(gid, []);
+      byGroup.get(gid).push({
+        group, key, item,
+        order: typeof sec[2] === "number" ? sec[2] : 0,
+      });
+    }
+  }
+
+  const skey = (id) => `sec:${id}`;
+  for (const secDecl of layout.sections) {
+    const isFallback = !!secDecl.fallback;
+    const groupsRendered = [];
+    const secStatuses = [];
+    let moodHost = null;
+    for (let gi = 0; gi < (secDecl.groups || []).length; gi++) {
+      const gDecl = secDecl.groups[gi];
+      const entries = isFallback ? uncovered : (byGroup.get(`${secDecl.id}|${gDecl.id}`) || []);
+      if (!entries.length) continue;
+      entries.sort((a, b) => a.order - b.order);
+      const built = buildGroup(secDecl, gDecl, entries, ctx);
+      groupsRendered.push(built.el);
+      secStatuses.push(...built.keyStatuses);
+      // （附）运行时管理卡：挂在区的最后一个有键的组的末尾
+      const isLastGroupWithKeys =
+        !secDecl.groups.slice(gi + 1).some((g2) =>
+          (isFallback ? uncovered : (byGroup.get(`${secDecl.id}|${g2.id}`) || [])).length);
+      if (isLastGroupWithKeys && secDecl.id === "F") {
+        built.body.appendChild(styleLibraryAdmin());
+      }
+      if (isLastGroupWithKeys && secDecl.id === "G") {
+        moodHost = document.createElement("div");
+        moodHost.id = "mood-section";
+        built.body.appendChild(moodHost);
+      }
+    }
+    if (isFallback && !groupsRendered.length) continue; // 无未收录键不渲染兜底区
+    if (!groupsRendered.length) continue;
+
+    const counts = computeCounts(secStatuses);
+    const secOpen = state.expanded[skey(secDecl.id)]
+      ?? !(secDecl.collapsed === true);
+    const secEl = document.createElement("div");
+    secEl.className = "expert-section";
+    const secHead = document.createElement("button");
+    secHead.type = "button";
+    secHead.className = "drawer-head section-head" + (secOpen ? " open" : "");
+    const secArrow = document.createElement("span");
+    secArrow.className = "arrow";
+    secArrow.textContent = secOpen ? "▾" : "▸";
+    const secTitle = document.createElement("span");
+    secTitle.className = "section-title";
+    secTitle.textContent = `${secDecl.id}. ${secDecl.title}`;
+    const secCount = document.createElement("span");
+    secCount.className = "count section-count";
+    secCount.textContent = `本区 ${counts.active}/${counts.total} 项生效`;
+    secHead.append(secArrow, secTitle, secCount);
+    const secBody = document.createElement("div");
+    secBody.className = "drawer-body section-body" + (secOpen ? "" : " hidden");
+    if (secDecl.subtitle) {
+      const sub = document.createElement("div");
+      sub.className = "section-subtitle";
+      sub.textContent = secDecl.subtitle;
+      secBody.appendChild(sub);
+    }
+    for (const el of groupsRendered) secBody.appendChild(el);
+    secHead.addEventListener("click", () => {
+      const next = !state.expanded[skey(secDecl.id)];
+      state.expanded[skey(secDecl.id)] = next;
+      saveExpanded(state.expanded);
+      secHead.classList.toggle("open", next);
+      secArrow.textContent = next ? "▾" : "▸";
+      secBody.classList.toggle("hidden", !next);
+    });
+    secEl.append(secHead, secBody);
+    list.appendChild(secEl);
+    if (moodHost && !$("#view-expert").classList.contains("hidden")) {
+      renderMoodSection(); // 心境与兴趣（G 区（附））：专家视图可见时立即填充
+    }
+  }
+}
+
+/* C8 全局状态行：她现在会主动做的事（七条出口各带状态）。4 条过闸门
+ * （活动分享/梦话/睡过头交代共用 _maybe_share + 主动搭话）+ 3 条直发
+ * （晚安/唤醒确认/醒来补回复）——文案逐字来自 panel_layout.json。 */
+function renderGlobalStatus() {
+  const host = $("#global-status");
+  if (!host) return;
+  const exits = ((state.layout || {}).exits || {}).items || [];
+  if (!exits.length) {
+    host.classList.add("hidden");
+    return;
+  }
+  const lines = computeExitLines(exits, expertBuildCtx());
+  host.innerHTML = "";
+  const lead = document.createElement("span");
+  lead.className = "global-status-lead";
+  lead.textContent = "她现在会主动做的事：";
+  host.appendChild(lead);
+  lines.forEach((item, i) => {
+    const meta = STATUS_META[item.status] || STATUS_META.unknown;
+    const seg = document.createElement("span");
+    seg.className = `exit-seg ${meta.cls}`;
+    seg.textContent =
+      `${item.label} ${meta.dot}${item.status === "on" ? "" : meta.label}` +
+      (item.detail ? `（${item.detail}）` : "");
+    host.appendChild(seg);
+    if (i < lines.length - 1) {
+      host.appendChild(document.createTextNode("｜"));
+    }
+  });
+  host.classList.remove("hidden");
 }
 
 /* ---------------- 心境与兴趣（M9-补丁1 B5：专家视图专属） ----------------
@@ -1814,8 +2253,10 @@ async function save() {
         state.values.knobs = { ...(fresh.knobs || {}) };
         state.values.advanced = JSON.parse(JSON.stringify(fresh.advanced || {}));
         state.loaded = JSON.parse(JSON.stringify(state.values));
+        await loadRuntime();
         renderNovice();
         renderExpert();
+        renderGlobalStatus();
         setDirty(false);
       } catch { /* 失联重试失败不打扰用户，当前编辑仍在 */ }
     }, 1500);
@@ -2201,6 +2642,7 @@ function styleDataCard() {
   hint.className = "hint";
   hint.textContent = "把你想让她学的语料丢进素材库，她下次活动结束（或你点「立即处理」）就会提炼成自己的说话方式。学到的都存在语料库里，随时可看可删。";
   card.appendChild(hint);
+  card.appendChild(styleChainBlock()); // M25-补丁1 配套 b：素材卡上直接显示生效链
 
   const body = document.createElement("div");
   card.appendChild(body);
