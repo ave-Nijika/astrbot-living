@@ -417,3 +417,9 @@ main { padding: 18px 20px 60px; max-width: 1080px; margin: 0 auto; }
 
 /* 专家区图例（index.html expert-note 内联小点） */
 .expert-note .status-dot { margin-right: 2px; }
+
+/* ---------- M26-补丁1 配套 a：组级一句话说明 ---------- */
+.group-summary {
+  font-size: 12px; line-height: 1.6; color: var(--muted, #7a8a80);
+  padding: 2px 0 6px;
+}

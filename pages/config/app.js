@@ -1680,15 +1680,20 @@ function buildKeyRow(group, key, item, keyStatus, showDot) {
     labelEl.insertBefore(statusDotEl(keyStatus), keyEl);
     if (keyStatus === "dead") row.classList.add("dimmed");
   }
+  // M26-补丁1：key-side（生效链按钮）仍仅 requires 键显示（密度纪律），
+  // 但 label 的挂载必须在分支外——M25 提取本函数时把挂载误圈进了 if，
+  // 导致 121 个无 requires 键的标签整体丢失（回归，修前必红见 test_m26_patch1）。
+  let side = null;
   if (Array.isArray(item.requires) && item.requires.length) {
-    const side = document.createElement("div");
+    side = document.createElement("div");
     side.className = "key-side";
     side.append(chainToggleBtn(chainPanelEl(`${item.description || key} 的生效链`, item)));
-    row.append(labelEl, side);
   }
   const ctrl = document.createElement("div");
   ctrl.className = "key-control";
   buildControl(group, key, item, ctrl);
+  row.appendChild(labelEl);          // 不变量：label 永远挂载（与 3174dba 旧版一致）
+  if (side) row.appendChild(side);   // 生效链按钮仅 requires 键显示
   row.appendChild(ctrl);
   return row;
 }
@@ -1724,6 +1729,15 @@ function buildGroup(secDecl, gDecl, entries, ctx) {
 
   const body = document.createElement("div");
   body.className = "drawer-body group-body" + (expanded ? "" : " hidden");
+
+  // M26-补丁1 配套 a：组级一句话说明（panel_layout.json 的 summary 此前
+  // 是无通路死数据，前端从未读取）——组头下首行；无 summary 的组不渲染空行
+  if (gDecl.summary) {
+    const summaryEl = document.createElement("div");
+    summaryEl.className = "group-summary";
+    summaryEl.textContent = gDecl.summary;
+    body.appendChild(summaryEl);
+  }
 
   // C6：被上游显式关闭级联（哑）→ 整组置灰 + 头部一行因果说明
   if (grpResult.status === "dead" && grpResult.failing) {
