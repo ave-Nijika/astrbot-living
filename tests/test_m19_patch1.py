@@ -295,7 +295,7 @@ def test_t5_injection_only_appends_extra_parts(tmp_path):
     assert len(parts) == 1
     text = parts[0].text
     assert "work" in text and "short" in text and "这条可以短一点答" in text
-    assert "内部提醒" in text  # 模板包裹（主人看不到的注入块形态）
+    assert "内部提醒" in text  # 模板包裹（用户看不到的注入块形态）
     assert req.system_prompt == sys_before  # 逐字不变
     assert json.dumps(req.contexts, ensure_ascii=False) == ctx_before
     assert req.prompt == prompt_before
@@ -467,7 +467,7 @@ def test_t10_rewrite_once_and_fallback_to_original(tmp_path):
     asyncio.run(plugin.judge_output_on_llm_response(FakeEvent(), response3))
     assert response3.completion_text == original
 
-    # 护栏 3：判断调用异常 → 放行原文（不能让主人收不到消息）
+    # 护栏 3：判断调用异常 → 放行原文（不能让用户收不到消息）
     judge4 = judge_of(plugin, [RuntimeError("judge down")], tmp_path)
     response4 = _fake_response(original)
     asyncio.run(plugin.judge_output_on_llm_response(FakeEvent(), response4))
@@ -679,11 +679,11 @@ def test_t11_initiative_prompts_verbatim():
     topic = asyncio.run(engine._extract_topic())
     assert topic
     expected_topic = (
-        "下面是你和主人最近的聊天记录（节选）：\n"
-        "主人：今天天气不错\n你：是啊，想出去走走"
+        "下面是你和用户最近的聊天记录（节选）：\n"
+        "用户：今天天气不错\n你：是啊，想出去走走"
         '\n\n从中找一个"可以自然接上、继续聊下去"的话题，'
         "用一句短语概括（20 字以内）。\n"
-        "要求：必须是还没聊完的话题；不能是需要主人回答的追问；"
+        "要求：必须是还没聊完的话题；不能是需要对方回答的追问；"
         "不要重复已经聊完了的话题。\n"
         "如果没有合适的话题，只输出 NONE。"
     )
@@ -694,11 +694,11 @@ def test_t11_initiative_prompts_verbatim():
     asyncio.run(engine._generate_line(line_cfg, NOW, None))
     expected_line_on = (
         f"当前时间：10月6日 14:05。\n"
-        "没有什么特别的事由，就是忽然想找他说句话。\n\n"
-        "写一句你主动发给主人的话。要求：\n"
+        "没有什么特别的事由，就是忽然想找用户说句话。\n\n"
+        "写一句你主动发给用户的话。要求：\n"
         "- 用你自己的口吻，30 字以内\n"
-        '- 这是主动搭话，不是回答他：不要"你说""发过来"这类回应式措辞，'
-        "不要问主人要任何东西，不要催促\n"
+        '- 这是主动搭话，不是回答对方：不要"你说""发过来"这类回应式措辞，'
+        "不要问对方要任何东西，不要催促\n"
         "- 像朋友间随口聊天：不要标题、列表、Markdown、链接，"
         "只输出这句话本身\n- 如果此刻其实不该说话、或者这话不像你会说的，只输出 SKIP"
     )
@@ -760,7 +760,7 @@ def test_t11_farewell_prompt_verbatim():
         return (["s1"], "test")
 
     async def fake_contexts(sessions):
-        return None  # → chat_block = "今天还没和主人聊过天。"
+        return None  # → chat_block = "今天还没和用户聊过天。"
 
     async def fake_persona():
         return None
@@ -783,8 +783,8 @@ def test_t11_farewell_prompt_verbatim():
     asyncio.run(loop._farewell_llm_mode(now))
     expected = (
         f"现在是 {now.strftime('%Y-%m-%d %H:%M')}，你准备去睡了。"
-        f"你现在的状态：{MOOD}。\n\n今天还没和主人聊过天。\n\n"
-        "考虑一下今晚要不要跟他道声晚安：如果今天聊得开心、被关心，"
+        f"你现在的状态：{MOOD}。\n\n今天还没和用户聊过天。\n\n"
+        "考虑一下今晚要不要跟对方道声晚安：如果今天聊得开心、被关心，"
         "就自然地道声晚安；如果今天有不愉快、你还在气头上，可以不说；"
         "如果你想缓和关系，也可以借这句晚安说点什么。"
         "像人一样自己斟酌，不是每次都非说不可。\n"

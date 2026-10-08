@@ -1,8 +1,8 @@
 """OutputJudge——判断模型引擎（M19-补丁1 A/B/C/E 组）。
 
-外置的"很小的大脑"（主人原话：所有输出用完一次就要丢，相当于外置一个
+外置的"很小的大脑"（需求原话：所有输出用完一次就要丢，相当于外置一个
 很小的大脑，分工合作）：
-- 输入侧（B 组）：主人发消息时判断该用什么模式回应（mode/length/tone +
+- 输入侧（B 组）：用户发消息时判断该用什么模式回应（mode/length/tone +
   一句提醒），结果按模板拼成小段追加到请求末尾——**用完即弃**，不写记忆、
   不写会话、不进聊天历史（红线 1）；
 - 输出侧（C 组）：聊天模型回复后过一遍质量检查。默认 log_only（只记录，
@@ -298,7 +298,7 @@ class OutputJudge:
     ) -> dict | None:
         """C1：回复生成后过一遍判断模型。返回检查结果（None = 没判成）。
 
-        不修改、不拦截输出——记录在案（日志 + 面板回看），供主人决定
+        不修改、不拦截输出——记录在案（日志 + 面板回看），供用户决定
         要不要开启 rewrite。"""
         if not self.enabled():
             return None
@@ -366,7 +366,7 @@ class OutputJudge:
         （prompt_output 的 fixed 字段——一次调用完成判断与修正，不加第二
         轮昂贵生成）；修复护栏——fixed 为空/与原文相同/长度超过原文 1.2 倍
         一律视为修正失败放行原文（防小模型自作主张整条重写）。失败/超时
-        必须放行原回复（红线 6：不能让主人收不到消息）。"""
+        必须放行原回复（红线 6：不能让用户收不到消息）。"""
         if not self.enabled():
             return None
         text = str(reply_text or "").strip()
@@ -497,10 +497,10 @@ class OutputJudge:
 # judge.prompt_output；空值回落默认——share_rewrite_prompt 同口径）
 # ---------------------------------------------------------------------------
 DEFAULT_PROMPT_INPUT = (
-    "你是聊天助手的幕后小助手，负责判断主人刚发来的这条消息适合"
+    "你是聊天助手的幕后小助手，负责判断用户刚发来的这条消息适合"
     "用什么方式回应。\n\n"
     "最近聊天（旧→新）：\n{context_block}\n\n"
-    "主人刚发的消息：{message_text}\n\n"
+    "用户刚发的消息：{message_text}\n\n"
     "请只输出一个 JSON 对象，不要输出任何其他文字：\n"
     '{"mode": "work|chat", "length": "short|normal|long", '
     '"tone": "plain|warm|playful", "note": "≤40字的一句话提醒"}\n'
@@ -511,7 +511,7 @@ DEFAULT_PROMPT_INPUT = (
     "判断不了就全给中性值（chat/normal/plain），note 给空串。"
 )
 DEFAULT_INJECT_TEMPLATE = (
-    "（内部提醒，主人和其他人都看不到这段：回复前先参考这条消息"
+    "（内部提醒，用户和其他人都看不到这段：回复前先参考这条消息"
     "的判断建议——消息性质：{mode}，建议长度：{length}，建议语气："
     "{tone}。{note}这是参考建议，按你自己自然的表达来。）"
 )

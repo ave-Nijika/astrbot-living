@@ -28,7 +28,7 @@ def test_simple_backend_full_flow(tmp_path):
         try:
             id1 = await backend.add("我学会了用博查搜索 Next.js 16 的新特性", 0.7)
             id2 = await backend.add(
-                "主人喜欢让我汇报天气", 0.5, {"topic": "weather"}
+                "用户喜欢让我汇报天气", 0.5, {"topic": "weather"}
             )
             await backend.add("完全无关的记录：今天写了一个贪吃蛇小游戏", 0.3)
 

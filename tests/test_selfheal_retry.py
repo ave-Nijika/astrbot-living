@@ -1,4 +1,4 @@
-"""凛热修（2026-09-15）回归测试：自愈任务等待 LivingMemory 就绪。
+"""热修（2026-09-15）回归测试：自愈任务等待 LivingMemory 就绪。
 
 根因：AstrBot 按目录序加载插件，living 先于 livingmemory——自愈触发时
 lazy_memory 探测失败降级 Simple，原一次性执行被跳过且不再重试。

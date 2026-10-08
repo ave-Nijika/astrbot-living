@@ -319,7 +319,7 @@ def test_e3_prefix_verbatim_alignment_for_decision_call(tmp_path):
                contexts=[{"role": "user", "content": "历史一"},
                          {"role": "assistant", "content": "历史二"}])
     text = asyncio.run(
-        plugin._decision_llm_call("她的活动指令", "她的原 system")
+        plugin._decision_llm_call("它的活动指令", "它的原 system")
     )
     assert text == "答复"
     call = plugin.context.calls[-1]
@@ -327,7 +327,7 @@ def test_e3_prefix_verbatim_alignment_for_decision_call(tmp_path):
     assert call["system_prompt"] == "聊天最终 SYSTEM"  # 逐字一致
     assert call["contexts"] == [{"role": "user", "content": "历史一"},
                                 {"role": "assistant", "content": "历史二"}]
-    assert call["prompt"] == "她的原 system\n\n她的活动指令"  # 指令并入 user
+    assert call["prompt"] == "它的原 system\n\n它的活动指令"  # 指令并入 user
 
 
 def test_e_decision_call_without_cache_keeps_current_form(tmp_path):

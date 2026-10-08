@@ -333,7 +333,7 @@ class ActivityDecider:
         """自由局配额（M10-补丁1）：0=全靠兴趣驱动，1=全靠自由发挥。
 
         读取失败/非法值一律回落 0.5（任务书红线 5：默认各半，配置读取
-        失败不得中断决策）；越界值 clamp 进 [0,1]（主人面板手滑 1.2 按
+        失败不得中断决策）；越界值 clamp 进 [0,1]（面板手滑 1.2 按
         全自由理解，比静默回 0.5 更贴近填写意图）。
         """
         try:
@@ -592,7 +592,7 @@ class ActivityDecider:
     # prompt 素材（全部可失效：缺谁都能拼出一个能用的 prompt）
     # ------------------------------------------------------------------
     async def _system_prompt(self) -> str | None:
-        """人设拼接（总纲 D4）：AstrBot persona 为主人格 + life_extra 补充。"""
+        """人设拼接（总纲 D4）：AstrBot persona 为主提示词 + life_extra 补充。"""
         parts = []
         if self._persona_getter is not None:
             try:

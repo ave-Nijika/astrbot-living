@@ -1,4 +1,4 @@
-"""M16-补丁1：话语回读完整性——她说过的每句话都要能被自己读到。
+"""M16-补丁1：话语回读完整性——它说过的每句话都要能被自己读到。
 
 对应任务书 T1-T9（T8 全量基线由本地全量回归保证，不在本文件）。
 测试不写 AstrBot 本体数据目录；真实身份一律用先例假号 10001。
@@ -225,7 +225,7 @@ def test_share_writes_speech_after_send():
         {"role": "user", "content": "(分享)"},
         {"role": "assistant", "content": REWRITE_TEXT},
     )]
-    # 落点 B：livingmemory 会话（主人真实 umo、assistant/bot 形态）
+    # 落点 B：livingmemory 会话（用户真实 umo、assistant/bot 形态）
     assert len(lm.added) == 1
     assert lm.added[0]["session_id"] == MASTER
     assert lm.added[0]["role"] == "assistant"

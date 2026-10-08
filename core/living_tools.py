@@ -328,7 +328,7 @@ def build_living_tools(
     # 与"写工作区文件"同属能改动本机的能力，同级闸门；选挂载时判断而非
     # 执行时拒绝，因为挂载清单（build_tool_manifest）能如实反映"现在
     # 给没给"，延续 M15/M20"清单=实际挂载"口径；挂了再拒会让清单谎报
-    # 能力，还让她白耗工具轮数去撞墙。
+    # 能力，还让它白耗工具轮数去撞墙。
     if tier >= 4 and write_level >= 2:
         tools.append(LocalShellTool().bind(workspace, write_level))
     elif tier >= 4:
@@ -668,9 +668,9 @@ class BrowserScreenshotTool(FunctionTool):
 
         - 支持图片（或未知）：返回含 ImageContent 的 CallToolResult——本体
           runner（tool_loop_agent_runner）会缓存图片并在活动模型支持图片
-          模态时作为 user 消息塞回上下文，她直接"看到"画面（零转述）；
+          模态时作为 user 消息塞回上下文，它直接"看到"画面（零转述）；
         - 明确不支持：走本体同款兜底——配置了 default_image_caption_provider_id
-          就转述成 <image_caption> 文本；没配就图片仅存盘（她看不到，DEBUG）。
+          就转述成 <image_caption> 文本；没配就图片仅存盘（它看不到，DEBUG）。
         """
         supports = True
         if self._image_probe is not None:
@@ -770,7 +770,7 @@ class BrowserClickTool(FunctionTool):
             await page.click(selector, timeout=5000)
         except Exception as e:
             # M20-补丁1 N3：选择器失效（页面结构变了）→ 明确报错，不静默
-            # 失败——她会据此重新 browser_read 获取最新清单再点
+            # 失败——它会据此重新 browser_read 获取最新清单再点
             logger.info(f"[browser_click] 点击失败 selector={selector[:60]}: {e}")
             return (
                 f"点击失败：{selector}（选择器可能已失效——页面结构可能变了。"

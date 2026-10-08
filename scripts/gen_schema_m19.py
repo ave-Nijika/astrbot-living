@@ -133,7 +133,7 @@ def main() -> None:
     slp = adv["sleep"]["items"]
     slp["prompt_farewell"] = text_key(
         "晚安生成提示词（专家）",
-        "farewell_mode=llm 时的晚安 prompt（她自行斟酌说不说）。占位符："
+        "farewell_mode=llm 时的晚安 prompt（它自行斟酌说不说）。占位符："
         "{now_text}=当前时间（YYYY-MM-DD HH:MM）；{mood_digest}=心境摘要；"
         "{chat_block}=当天聊天回顾段。",
         DEFAULT_PROMPT_FAREWELL,
@@ -246,7 +246,7 @@ def main() -> None:
             },
             "prompt_input": {
                 "description": "输入判断提示词",
-                "hint": "对主人新消息做'该用什么模式回'判断的 prompt。要求输出 "
+                "hint": "对用户新消息做'该用什么模式回'判断的 prompt。要求输出 "
                 "JSON：{\"mode\": \"work|chat\", \"length\": \"short|normal|long\", "
                 "\"tone\": \"plain|warm|playful\", \"note\": \"一句话提醒\"}。"
                 "note 只允许提醒语气（如'这条可以短一点答'），不得出现具体措辞"

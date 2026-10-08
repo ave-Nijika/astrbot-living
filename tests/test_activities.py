@@ -174,14 +174,33 @@ def test_reminisce_activity_empty_memory():
     assert "空" in outcome.memory_content  # 记忆里也要记下"今天没翻到东西"
 
 
-def test_peek_activity_exercises_gate_but_stays_silent():
-    """看评价（弱触发）：只空走闸门，无产出、不写记忆。"""
-    gate = FakeGate(allow=True)
+def test_peek_activity_reads_state_leaves_memory_stays_silent():
+    """看留言（M27-补丁1 7.4 改造）：真读"上一条说了话对方回了没有"，
+    留一段经历进记忆；仍然不发送（不产生候选发送、不碰发送闸门）。"""
+
+    class StateGate:
+        """带 state_get 的最小闸门替身；发送闸门被调即计数。"""
+
+        def __init__(self, state):
+            self.state = state
+            self.calls = 0
+
+        async def state_get(self, key):
+            return self.state.get(key)
+
+        async def should_send_message(self, now=None):
+            self.calls += 1
+            return True, "ok"
+
+    gate = StateGate({
+        "last_message_at": "2026-10-08T10:00:00",
+        "initiative_unanswered_streak": "1",
+    })
     ctx = make_ctx(gate=gate)
     outcome = asyncio.run(PeekFeedbackActivity().run(ctx))
-    assert gate.calls == 1
-    assert outcome.summary is None
-    assert outcome.memory_content is None
+    assert gate.calls == 0  # 不触碰发送闸门（不发送的定位）
+    assert outcome.summary is None  # 不产生候选发送（不进 _maybe_share）
+    assert outcome.memory_content and "还没回" in outcome.memory_content  # 惦记
 
 
 def test_activity_pool_has_five_activities():

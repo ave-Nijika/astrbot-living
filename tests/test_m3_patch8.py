@@ -260,10 +260,10 @@ def test_loop_sends_rewritten_text():
 
 
 def test_loop_skips_share_on_rewrite_failure():
-    """M9-补丁4（主人 2026-09-24 拍板）：改写失败 → 整条分享静默跳过。
+    """M9-补丁4（2026-09-24 拍板）：改写失败 → 整条分享静默跳过。
 
     不再降级发送原文——原文是工作汇报体，发进聊天框就是 OOC；
-    完整内容已留在活动记忆里，主人翻记忆随时可见。"""
+    完整内容已留在活动记忆里，用户翻记忆随时可见。"""
     sender = FakeSender()
     llm = FakeLLM(error=RuntimeError("down"))
     loop, sender2 = make_loop(sender=sender, llm=llm)

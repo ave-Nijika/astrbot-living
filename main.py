@@ -63,7 +63,7 @@ from .core.style_review import StyleReviewer
 
 PLUGIN_NAME = "astrbot_plugin_living"
 
-# 闸门拦截原因 → 给主人看的一句话（/living_wake 反馈用）
+# 闸门拦截原因 → 给用户看的一句话（/living_wake 反馈用）
 _WAKE_REASON_TEXT = {
     "sleeping": "我在睡觉呢（自主作息），不忍心叫就别叫我啦",
     "daily_limit": "今天已经玩够了（每日活动上限）",
@@ -594,7 +594,7 @@ class LivingPlugin(Star):
     async def judge_input_on_llm_request(
         self, event: AstrMessageEvent, req: Any
     ) -> None:
-        """B 组：输入侧判断（主人发消息时给建议，追加到请求末尾）。
+        """B 组：输入侧判断（用户发消息时给建议，追加到请求末尾）。
 
         红线逐条：
         - 默认 off → 第一行即返回（零调用、零注入、零行为变化）；
@@ -670,7 +670,7 @@ class LivingPlugin(Star):
                 content = str(content or "").strip().replace("\n", " ")
                 if not content:
                     continue
-                who = "主人" if role == "user" else "助手"
+                who = "用户" if role == "user" else "助手"
                 lines.append(f"{who}：{content[:80]}")
         except Exception as e:
             logger.debug(f"[Judge] 上文材料整理失败（按无上文继续）: {e}")
@@ -1012,7 +1012,7 @@ class LivingPlugin(Star):
         return text or "default"
 
     async def _persona_prompt(self) -> str | None:
-        """读取当前生效 persona 的 system_prompt（总纲 D4：主人格复用）。
+        """读取当前生效 persona 的 system_prompt（总纲 D4：主提示词复用）。
 
         C1 约定：任何一步失败都静默返回 None——决策没有性格引导也能跑，
         只是少了点"它是谁"的味道。
@@ -1088,7 +1088,7 @@ class LivingPlugin(Star):
           与它正交（先替换后追加，两者都生效，T16 验证此场景）；
         - 不留痕：TextPart.mark_as_temp() 使注入只面向本轮 provider，
           不写进会话历史存储；
-        - 稳：钩子内任何异常一律吞掉，绝不让主人的正常聊天失败。"""
+        - 稳：钩子内任何异常一律吞掉，绝不让用户的正常聊天失败。"""
         try:
             learner = getattr(self, "_style_learner", None)
             if learner is None or not learner.enabled():
@@ -1110,7 +1110,7 @@ class LivingPlugin(Star):
     # 自主能力接线（补丁 XIII：档位配置热读 + 浏览器会话复用）
     # ------------------------------------------------------------------
     def _living_workspace(self) -> str:
-        """"她的家"：自主活动工作区目录（配置优先）。
+        """"AstrBot 的家"：自主活动工作区目录（配置优先）。
 
         M23-补丁1 B2：缺省值从"相对进程工作目录的 data/plugin_data/..."
         改为基于 AstrBot 数据目录的绝对路径（get_astrbot_plugin_data_path，
@@ -1288,7 +1288,7 @@ class LivingPlugin(Star):
                 content = content.replace("\n", " ")
                 if not content:
                     continue
-                who = "主人" if role == "user" else "她"
+                who = "用户" if role == "user" else "AstrBot"
                 lines.append(f"{who}：{redact_secrets(content)[:80]}")
             return lines
         except Exception as e:
@@ -1349,7 +1349,7 @@ class LivingPlugin(Star):
             image_captioner=self._caption_screenshot,
         )
         # M15-补丁1 D 组：按 agent_tools_mode 追加本体工具（含 MCP）。
-        # living 自带四件套与档位工具始终保留（她的核心生活能力，不随
+        # living 自带四件套与档位工具始终保留（它的核心生活能力，不随
         # 本体工具开关变动，红线 5）；同名冲突以 living 自带优先（D3）。
         await self._append_agent_tools(tools)
         # 补丁 XV 清单2：档位日志改用 build_tool_manifest（"预期清单"），
@@ -1446,7 +1446,7 @@ class LivingPlugin(Star):
     async def _append_agent_tools(self, tools) -> None:
         """D1：agent_tools_mode 三档——off 逐字现状；persona 按当前人格的
         tools 筛选本体工具集（复用本体筛选语义，不另造界面）；custom 按
-        白名单。D3：与 living 自带同名时以自带优先（她的 surf/read 依赖
+        白名单。D3：与 living 自带同名时以自带优先（它的 surf/read 依赖
         自建 searcher/fetcher 的注入与脱敏语义），冲突逐条记 INFO（D3
         报告清单的数据源）。"""
         from astrbot.core.agent.tool import ToolSet
@@ -1578,7 +1578,7 @@ class LivingPlugin(Star):
         if self.loop is not None:
             await self.loop.stop()
 
-        # M23-补丁1 B 组：工作区目录自愈——她的"家"要真的存在（幂等，
+        # M23-补丁1 B 组：工作区目录自愈——它的"家"要真的存在（幂等，
         # 失败只记日志不阻断启动；结果供面板 workspace_status 展示）
         try:
             self._workspace_ensure_result = self._ensure_workspace()
@@ -1623,7 +1623,7 @@ class LivingPlugin(Star):
             if legacy_quiet:
                 logger.info(
                     f"[{PLUGIN_NAME}] 检测到历史配置 output_gate.quiet_hours="
-                    f"{legacy_quiet!r}：该键已废弃，静默现由她的真实作息"
+                    f"{legacy_quiet!r}：该键已废弃，静默现由它的真实作息"
                     f"（睡眠系统）与判断模型决定，此配置不再生效，可从配置中删除"
                 )
         except Exception:
@@ -1640,7 +1640,7 @@ class LivingPlugin(Star):
             gate=self.gate,
             mood=self.mood,
             schedule=self._schedule,
-            # M9-补丁1：主人身份自动认领——owner_id 未手填时派生自管理员
+            # M9-补丁1：用户身份自动认领——owner_id 未手填时派生自管理员
             global_config_getter=lambda: self.context.astrbot_config,
         )
         # M17-补丁1 C1/C2：重启时若仍在睡，恢复入睡时抽定的吵醒阈值与
@@ -1749,13 +1749,13 @@ class LivingPlugin(Star):
                 contexts_getter=self._initiative_chat_contexts,
                 speech_writer=self._initiative_speech_write,
             ),
-            # M9-补丁1：主人身份自动认领——target_sessions 未手填时派生
+            # M9-补丁1：用户身份自动认领——target_sessions 未手填时派生
             # 全部管理员的私聊会话（与 _bot_identity_getter 同款注入先例）
             global_config_getter=lambda: self.context.astrbot_config,
             # M12-补丁1：真实聊天历史（ConversationManager 公开 API）——
             # 分享改写的完整上下文来源；取不到时 loop 内部静默按无上下文处理
             conversation_manager=getattr(self.context, "conversation_manager", None),
-            # M15-补丁1 A3：晚安 LLM 档的人格 system prompt（复用主人格读取）
+            # M15-补丁1 A3：晚安 LLM 档的人格 system prompt（复用主提示词读取）
             persona_getter=self._persona_prompt,
             # M17-补丁1 A 组：风格学习引擎（A7 学习触发 / A5 梦话注入）
             style_learner=self._style_learner,
@@ -1793,7 +1793,7 @@ class LivingPlugin(Star):
         )
         # M20-补丁1 K 组：每日复盘（跑在判断模型上；judge.provider_id 未
         # 配置时 _judge_llm_call 返回 None → 复盘自动跳过并记日志）。后台
-        # 循环任务独立于主循环（红线 4：不占用主人对话路径）
+        # 循环任务独立于主循环（红线 4：不占用用户对话路径）
         self._style_reviewer = StyleReviewer(
             learner=self._style_learner,
             llm_call=self._judge_llm_call,
@@ -2172,7 +2172,7 @@ class LivingPlugin(Star):
 
     async def _api_style_materials_post(self):
         """J2：素材库管理（添加 / 删除 / 清空）。添加是插件唯一写素材库
-        的路径（I2：只由主人添加，插件自己绝不写）。"""
+        的路径（I2：只由用户添加，插件自己绝不写）。"""
         from astrbot.api.web import request as web_request
 
         from .core.panel_api import (
@@ -2257,13 +2257,13 @@ class LivingPlugin(Star):
             logger.warning(f"[SelfHeal] 兴趣降温任务异常（不影响服务）: {e}")
 
     async def _run_identity_selfheal_with_retry(self) -> None:
-        """历史污染数据自愈（任务书 M3 补丁 VI 需求 2；凛热修补时序）。
+        """历史污染数据自愈（任务书 M3 补丁 VI 需求 2；热修时序见下）。
 
         只处理 living 直写记忆（participant_identities 含 default: 污染
         身份的条目），原生记忆绝不触碰；幂等状态落 selfheal_state.json。
         全流程异常只记 WARNING——自愈失败绝不影响插件正常服务。
 
-        凛热修（2026-09-15）：AstrBot 按目录序加载插件，living 排在
+        热修（2026-09-15）：AstrBot 按目录序加载插件，living 排在
         livingmemory 之前——本任务触发时引擎往往尚未就绪（lazy_memory
         探测失败降级 Simple），原"一次性执行"版本会在这个窗口被跳过且
         不再重试。改为轮询等待：探测到 LivingMemory 后端才开始自愈，
@@ -2581,7 +2581,7 @@ class LivingPlugin(Star):
             lines.append("现在在睡，下次心跳会继续休息。")
         else:
             lines.append("当前不在睡，照常待机。")
-        # 告别消息（如配置了）发到待机期最后活跃会话——主人让它睡，它道个晚安
+        # 告别消息（如配置了）发到待机期最后活跃会话——用户让它睡，它道个晚安
         if was_standby and self.loop is not None:
             try:
                 await self.loop._send_sleep_farewell(datetime.now())
@@ -2855,7 +2855,7 @@ class LivingPlugin(Star):
     async def living_wake_now(self, event: AstrMessageEvent):
         """紧急唤醒：立即终止本次休眠，清空吵醒计数与待机，立即触发一次
         force 判定。下次入睡仍由睡意动力学决定。"""
-        logger.info("[Living] 紧急唤醒：主人强制结束休眠")
+        logger.info("[Living] 紧急唤醒：用户强制结束休眠")
         now = datetime.now()
         if self.gate is None or self.sleep_manager is None:
             yield event.plain_result("休眠组件未就绪，稍后再试")
@@ -2898,7 +2898,7 @@ class LivingPlugin(Star):
         M9-补丁1 交付后线上实测发现原签名 (self, schedule, text) 不可用：
         AstrBot 的 handler 参数注入只认 event 等内置名，schedule/text 不会被
         注入，导致每条用户消息触发一次 TypeError、约定提取自上线起从未
-        工作（2026-09-23 凛核验定位）。现改为从 event 取文本、schedule 走
+        工作（2026-09-23 核验定位）。现改为从 event 取文本、schedule 走
         实例属性。"""
         try:
             text = str(getattr(event, "message_str", "") or "")
@@ -2915,7 +2915,7 @@ class LivingPlugin(Star):
         时把这行装饰器"抢走"了——本方法自此失去注册，身份采集、待机刷新、
         吵醒计数、静默拦截在线上整体失效（身份链断裂的直接根因）。
         约定提取不在这里做：它由 _extract_schedule_safe 自己的装饰器路径
-        覆盖（本方法体内的 create_task 调用块随本补丁移除——其传参与凛
+        覆盖（本方法体内的 create_task 调用块随本补丁移除——其传参与
         1ecef9c 修好的签名失配，恢复注册后每条消息都会 TypeError）。
 
         顺序敏感：
@@ -2931,9 +2931,9 @@ class LivingPlugin(Star):
         remember_identity = getattr(self, "_remember_self_identity", None)
         if callable(remember_identity):
             remember_identity(event)
-        # M14-补丁1 I2：念头系统的回应记账（F2）——主人消息到达即清零
-        # 未回应收敛计数。只认念头目标会话（主人的私聊会话）来的消息，
-        # 群聊里别人说话不算"回应她"。任何失败只 DEBUG，绝不影响消息链路
+        # M14-补丁1 I2：念头系统的回应记账（F2）——用户消息到达即清零
+        # 未回应收敛计数。只认念头目标会话（用户的私聊会话）来的消息，
+        # 群聊里别人说话不算"回应它"。任何失败只 DEBUG，绝不影响消息链路
         initiative = (
             getattr(self.loop, "initiative", None) if self.loop is not None else None
         )
@@ -2966,7 +2966,7 @@ class LivingPlugin(Star):
             if await self.sleep_manager.refresh_standby(now, session=session):
                 return
         except Exception as e:
-            # 补丁 IX：异常不该静默——主人排查"为什么没反应"时日志要能给答案
+            # 补丁 IX：异常不该静默——排查"为什么没反应"时日志要能给答案
             logger.warning(f"[Living] 待机刷新异常（按非待机继续）: {e}")
 
         try:
@@ -2983,7 +2983,7 @@ class LivingPlugin(Star):
             if self.loop is not None:
                 self.loop.request_wake()
             return  # 触发吵醒的这条不拦
-        # 补丁 IX 需求 1：窗内逐条消息的计数进度 INFO——主人能实时看到
+        # 补丁 IX 需求 1：窗内逐条消息的计数进度 INFO——用户能实时看到
         # "还差几条吵醒"（观测原则：影响响应行为的路径必须 INFO 可见）
         if self.sleep_manager.last_window_count:
             # 模块级 conf_group（非 self._cfg）：消息监听热路径上的局部
@@ -3004,7 +3004,7 @@ class LivingPlugin(Star):
         except Exception:
             message_str = ""
         # M17-补丁1 C2：睡眠期收到的消息留档（醒来后由 LLM 一次判断
-        # 回不回）。触发吵醒的那条在上面已 return（她马上正常回应，
+        # 回不回）。触发吵醒的那条在上面已 return（它马上正常回应，
         # 不算"错过"）；记录条件（开关/在睡/命令豁免/有界）在
         # record_pending_message 内自查，失败只 DEBUG 不影响拦截链路
         try:
@@ -3015,7 +3015,7 @@ class LivingPlugin(Star):
             logger.debug(f"[Living] 未回消息留档失败（忽略）: {e}")
         if self.sleep_manager.should_mute_message(now, message_str):
             # 拦截 = 事件不再向后续插件 handler 与 LLM 回复管线传播
-            #（scheduler 逐阶段检查 is_stopped）——主人定稿的"真正休息"。
+            #（scheduler 逐阶段检查 is_stopped）——定稿口径的"真正休息"。
             # 补丁 IX：INFO 级 + 带行动指引，杜绝"为什么没回复"的误判
             context_text = self.sleep_manager.describe_mute(now, window_count)
             event.stop_event()

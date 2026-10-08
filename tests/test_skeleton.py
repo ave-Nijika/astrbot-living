@@ -103,7 +103,7 @@ def test_conf_schema_valid_and_groups_complete():
     assert sleep_items["wake_messages_min"]["default"] == 1
     assert sleep_items["wake_messages_max"]["default"] == 3
     assert sleep_items["pending_reply_enabled"]["default"] is False
-    # M17-补丁1：风格学习组（独立新组，默认关——主人要先看效果）
+    # M17-补丁1：风格学习组（独立新组，默认关——先看效果）
     style = advanced["style_learning"]["items"]
     assert style["enabled"]["default"] is False
     assert style["max_inject_chars"]["default"] == 300

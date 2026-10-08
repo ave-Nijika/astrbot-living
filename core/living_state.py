@@ -493,7 +493,7 @@ class LivingGate:
                 return True, "ok"
             # 落到下面的上限/冷却/概率链：待机期是否"再干一件事"仍受约束
         elif self.force_awake_active(now):
-            # 紧急唤醒后的强制清醒期：等同窗外，不触发吵醒结算（主人已
+            # 紧急唤醒后的强制清醒期：等同窗外，不触发吵醒结算（用户已
             # 明确要求结束本次休眠）
             pass
         else:
@@ -521,7 +521,7 @@ class LivingGate:
                 return False, "cooldown"
 
         # 4. 概率掷点：无聊曲线（补丁 IV-A）——越久没做事越"无聊"，
-        #    概率从 min_prob 爬向 base_prob。手动唤醒豁免——主人都来叫了，
+        #    概率从 min_prob 爬向 base_prob。手动唤醒豁免——用户都来叫了，
         #    还掷骰子就太不识趣了
         if force:
             return True, "ok"
@@ -555,7 +555,7 @@ class LivingGate:
         """此刻是否允许主动发消息（输出闸门，任务书 M1-E）。
 
         M20-补丁1 G：原第 3 关"静默时段"（output_gate.quiet_hours）已删——
-        主人定论：该不该安静由她的真实作息（睡眠系统）与判断模型决定，
+        定论口径：该不该安静由AstrBot的真实作息（睡眠系统）与判断模型决定，
         不该再有一条跟着钟表走的死规则。其余闸门（每日上限/最小间隔/
         睡眠静默）零改动。"""
         now = now or datetime.now()

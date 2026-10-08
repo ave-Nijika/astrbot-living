@@ -10,7 +10,7 @@
       灾难性回溯——有超时兜底）；
     - 未做内存限制（Windows Job Object 强化与内存上限在 M4）；
     - 子进程以 AstrBot 同等用户权限运行，无权限隔离。
-  M1 后 zcode 安全审核将以此组件为第一重点。
+  M1 后 安全审核将以此组件为第一重点。
 """
 
 from __future__ import annotations

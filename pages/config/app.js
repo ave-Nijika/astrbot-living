@@ -32,9 +32,9 @@ const GROUP_LABELS = {
 const OPTION_LABELS = {
   "decision.decision_mode": { rules: "规则", hybrid: "混合", llm: "大模型" },
   "sleep.farewell_mode": {
-    probability: "投骰子", llm: "她自己斟酌", off: "不说",
+    probability: "投骰子", llm: "AstrBot 自己斟酌", off: "不说",
   },
-  "sleep.wake_source": { all: "所有人", owner_only: "只算主人" },
+  "sleep.wake_source": { all: "所有人", owner_only: "只算用户" },
   "capabilities.agent_tools_mode": {
     off: "关闭", persona: "跟随人格", custom: "自定义白名单",
   },
@@ -55,7 +55,7 @@ const KNOB_OPTION_LABELS = {
 };
 
 /* M19-补丁1 F2：agent_activities 的多选选项（6 个活动 + 中文说明——
- * 主人原话"没有说明用户肯定不知道怎么写"）。 */
+ * 用户反馈原话"没有说明用户肯定不知道怎么写"）。 */
 const AGENT_ACTIVITY_CHOICES = [
   { value: "surf", label: "surf 上网冲浪" },
   { value: "read", label: "read 读文章" },
@@ -72,9 +72,19 @@ const SOURCE_WEIGHT_FIELDS = [
   { key: "article", label: "单作者文章权重" },
 ];
 
+/* M27-补丁1 7.3：本体工具白名单的中文说明（此前只列英文工具名，用户看
+ * 不懂 recall_long_term_memory 这类名字）。映射表只收确定含义的工具名，
+ * 注册表里的其它工具原样列名；注册表里没有但已配置的值保留显示并标注
+ * （不静默丢弃用户已存的值）。保存格式不变：仍是逗号分隔字符串。 */
+const AGENT_TOOL_DESCRIPTIONS = {
+  recall_long_term_memory: "回忆长期记忆",
+  web_search: "联网搜索",
+  fetch_page: "抓取网页内容",
+};
+
 /* M20-补丁1 F3：initiative.sources 的取值固定（两个来源）——改多选。 */
 const INITIATIVE_SOURCE_CHOICES = [
-  { value: "random_miss", label: "random_miss：没回她消息时，她可能会惦记" },
+  { value: "random_miss", label: "random_miss：你没回消息时，AstrBot 可能会惦记" },
   { value: "open_topic", label: "open_topic：从最近的聊天内容里找话题" },
 ];
 
@@ -125,17 +135,58 @@ const state = {
   schema: null,
   layout: null, // M25-补丁1 C2：payload.layout（panel_layout.json，可 null → 回退扁平渲染）
   runtime: {}, // M25-补丁1：运行时谓词（browser_installed/workspace_ready/providers；拉取失败保持 undefined → 状态引擎按"未知"处理，不猜）
+  statusKeys: new Set(), // M27-补丁1 7.2：状态相关键集合（load 时从 layout 收集）
   dirty: false,
   expanded: loadExpanded(),
 };
 
+/* M27-补丁1 7.2：状态相关键集合——layout 声明里被 switch / requires /
+ * 出口条件引用到的键。只有这些键的值变化才触发状态点重算（整体重渲染），
+ * 普通调参（预算数字、开关细项）不重渲染，避免无谓的全页重建。 */
+function statusRelevantKeys(layout) {
+  const keys = new Set();
+  const walkCond = (cond) => {
+    if (!cond || typeof cond !== "object") return;
+    if (cond.key) keys.add(cond.key);
+    for (const sub of cond.of || []) walkCond(sub);
+  };
+  for (const sec of (layout || {}).sections || []) {
+    for (const g of sec.groups || []) {
+      if (g.switch) keys.add(g.switch);
+      for (const r of g.requires || []) walkCond(r);
+    }
+  }
+  for (const e of (((layout || {}).exits || {}).items) || []) {
+    walkCond(e.cond);
+    for (const r of e.requires || []) walkCond(r);
+  }
+  return keys;
+}
+
+/* M27-补丁1 7.2：受影响键的值提交后实时重算状态点——整体重渲染专家视图
+ * 与全局状态行（顺带刷新新手卡上的常驻生效链）。滚动位置重渲染前捕获、
+ * 渲染后恢复；抽屉展开态持久化在 state.expanded（localStorage），树渲染
+ * 逐组读取，天然保持。改值→重渲染同步发生在 change 提交点，不碰保存链路
+ * （buildSavePayload/diffSection 零改动）。 */
+function refreshStatusViews(fullKey) {
+  if (!state.statusKeys || !state.statusKeys.has(fullKey)) return;
+  const y = typeof window.scrollY === "number" ? window.scrollY : 0;
+  renderNovice();
+  renderExpert();
+  renderGlobalStatus();
+  if (typeof window.scrollTo === "function") window.scrollTo(0, y);
+}
+
 /* M20-补丁1 F1/A2/A4：provider 类字段的统一控件。
  * - 下拉选项从"已启用的 provider"动态生成（数据源 GET /config 的 providers）；
- * - 留空选项（当前=聊天模型）+ A2 缓存警告 + F1-b 手填兜底（填了不存在
+ * - 留空选项（语义随调用方不同）+ 缓存警告 + F1-b 手填兜底（填了不存在
  *   的 id 明确提示，不静默回退）；
  * - getter/setter 抽象：expert 的 model.provider_id 写 advanced，novice
- *   的 preset_model 写 knobs，同一控件两处复用。 */
-function providerPickerControl({ value, onChange, emptyLabel }) {
+ *   的 preset_model 写 knobs，同一控件两处复用；
+ * - M27-补丁1 7.1：judge.provider_id 复用同款控件，留空的语义不同
+ *   （model 留空 = 回退聊天模型；judge 留空 = 整条判断链不工作）——
+ *   emptyStatus/emptyWarn/missingWarn 可按调用方覆盖，文案必须准确。 */
+function providerPickerControl({ value, onChange, emptyLabel, emptyStatus, emptyWarn, missingWarn }) {
   const wrap = document.createElement("div");
   wrap.className = "provider-picker";
   const providers = state.providers || [];
@@ -174,12 +225,14 @@ function providerPickerControl({ value, onChange, emptyLabel }) {
   const refresh = () => {
     const current = select.value === MANUAL ? manualInput.value.trim() : select.value;
     if (!current) {
-      // M25-补丁1 配套 c：「当前实际生效」行——留空 = 与聊天共用（烧额度提示）
-      status.textContent = "当前实际生效：聊天模型（共用账号）";
-      warn.textContent = "⚠ 与聊天共用模型：她做活动/搭话/分享的任何一次调用都会打断你聊天的缓存，聊天全部历史将按未命中重新计费。建议单独配一个 provider（最好用不同的 api key）。";
+      // M25-补丁1 配套 c：「当前实际生效」行（留空语义随调用方，见 7.1）
+      status.textContent = emptyStatus || "当前实际生效：聊天模型（共用账号）";
+      warn.textContent = emptyWarn
+        || "⚠ 与聊天共用模型：AstrBot 做活动/搭话/分享的任何一次调用都会打断你聊天的缓存，聊天全部历史将按未命中重新计费。建议单独配一个 provider（最好用不同的 api key）。";
     } else if (!providers.includes(current)) {
       status.textContent = `当前实际生效：${current}（不在已启用列表中）`;
-      warn.textContent = "⚠ 该 provider id 不在已启用的 provider 列表里，调用时会按回退处理并在日志留痕。请核对拼写，或到 provider 管理页启用它。";
+      warn.textContent = missingWarn
+        || "⚠ 该 provider id 不在已启用的 provider 列表里，调用时会按回退处理并在日志留痕。请核对拼写，或到 provider 管理页启用它。";
     } else {
       status.textContent = `当前实际生效：${current}（独立 provider）`;
       warn.textContent = "";
@@ -415,6 +468,7 @@ async function load() {
   const payload = data && data.data ? data.data : data;
   state.schema = payload.schema;
   state.layout = payload.layout || null; // M25-补丁1 C2（null → 配套 h 回退扁平渲染）
+  state.statusKeys = statusRelevantKeys(state.layout); // M27-补丁1 7.2
   state.providers = payload.providers || []; // M19-补丁1 F2/E3：provider 下拉数据源
   state.agent_tools = payload.agent_tools || []; // M20-补丁1 F3：本体工具多选数据源
   state.values.knobs = { ...(payload.knobs || {}) };
@@ -493,7 +547,7 @@ function renderNovice() {
   grid.innerHTML = "";
   const plan = novicePlan(state.layout, presetSchema);
 
-  // 首层：旋钮按一级栏目归组（她怎么安排生活 / 她什么时候开口 / …）
+  // 首层：旋钮按一级栏目归组（AstrBot 怎么安排生活 / AstrBot 什么时候开口 / …）
   for (const g of plan.knobGroups) {
     grid.appendChild(noviceSectionHead(g.title, g.id));
     for (const name of g.knobs) {
@@ -542,22 +596,22 @@ function renderNovice() {
     return h;
   });
   let hi = 0;
-  grid.appendChild(detailHeads[hi++]); // A 她的大脑：判断模型
+  grid.appendChild(detailHeads[hi++]); // A AstrBot 的大脑：判断模型
   grid.appendChild(judgeCard());
-  grid.appendChild(detailHeads[hi++]); // B 她的手脚
+  grid.appendChild(detailHeads[hi++]); // B AstrBot 的手脚
   grid.appendChild(browserCard());
   grid.appendChild(workspaceCard());
   grid.appendChild(searchToggleCard());
   grid.appendChild(agentToolsCard());
-  grid.appendChild(detailHeads[hi++]); // D 她什么时候开口
+  grid.appendChild(detailHeads[hi++]); // D AstrBot 什么时候开口
   grid.appendChild(initiativeCard()); // 主动搭话卡（M14-补丁2 F3）：D 组先于 E 组
-  grid.appendChild(detailHeads[hi++]); // E 她的作息
+  grid.appendChild(detailHeads[hi++]); // E AstrBot 的作息
   grid.appendChild(scheduleCard()); // 起床约定卡（M5-补丁4）
   grid.appendChild(farewellCard()); // 晚安消息（三档 + 概率滑块）
   grid.appendChild(chatGuardCard()); // 聊天时不睡觉
   grid.appendChild(wakeRandomCard()); // 随机吵醒（M17-补丁1 C1）
   grid.appendChild(pendingReplyCard()); // 醒来补回复（M17-补丁1 C2）
-  grid.appendChild(detailHeads[hi++]); // F 她学我说话
+  grid.appendChild(detailHeads[hi++]); // F AstrBot 学你说话
   grid.appendChild(styleLearningCard()); // 风格学习（M17-补丁1 A5，卡上带生效链）
   grid.appendChild(styleDataCard()); // M20-补丁1 J：语料与素材（卡上带生效链）
   // 仅标记 toggle 之后的功能卡（.novice-detail-toggle ~ .knob-card）为
@@ -635,9 +689,9 @@ function judgeCard() {
   hint.className = "hint";
   hint.textContent =
     "外挂一个很小的\"大脑\"帮你把关：你发消息时先判断该用什么方式回" +
-    "（详细/简短/带情绪），她回复后再检查一次有没有越回越啰嗦——对抗" +
+    "（详细/简短/带情绪），AstrBot 回复后再检查一次有没有越回越啰嗦——对抗" +
     "输出惯性。判断用的模型应该是又小又快的（便宜），跟聊天模型分开。" +
-    "判断结果用完就丢，不会进她的记忆。";
+    "判断结果用完就丢，不会进它的记忆。";
   card.appendChild(hint);
 
   const MODES = [
@@ -659,6 +713,7 @@ function judgeCard() {
       setDirty(true);
       row.querySelectorAll(".option").forEach((el) => el.classList.remove("selected"));
       btn.classList.add("selected");
+      refreshStatusViews("judge.mode"); // M27-补丁1 7.2：A2 组头状态点跟着变
       refreshJudgeExtras();
     });
     row.appendChild(btn);
@@ -702,6 +757,7 @@ function judgeCard() {
   providerSelect.addEventListener("change", () => {
     judgeValues.provider_id = providerSelect.value;
     setDirty(true);
+    refreshStatusViews("judge.provider_id"); // M27-补丁1 7.2
     refreshStatus();
   });
   providerWrap.append(providerLabel, providerSelect);
@@ -806,7 +862,7 @@ function optionCard(title, hint, options, get, set) {
   return card;
 }
 
-/* 晚安消息卡：不说 / 随机说（显示概率滑块）/ 她自己斟酌着说。
+/* 晚安消息卡：不说 / 随机说（显示概率滑块）/ AstrBot 自己斟酌着说。
  * 读写 advanced.sleep.farewell_mode + farewell_probability（A 组）。 */
 function farewellCard() {
   if (!state.values.advanced.sleep) state.values.advanced.sleep = {};
@@ -821,7 +877,7 @@ function farewellCard() {
   const hint = document.createElement("p");
   hint.className = "hint";
   hint.textContent =
-    "她去睡觉时要不要跟你说声晚安。「她自己斟酌着说」会让她睡前看一眼" +
+    "AstrBot 去睡觉时要不要跟你说声晚安。「AstrBot 自己斟酌着说」会让它睡前看一眼" +
     "今天你们聊得怎么样，再决定说不说、怎么说——聊得开心自然道晚安，" +
     "还在气头上可以不说，想和好也可以借这句说点什么。";
   card.appendChild(hint);
@@ -829,7 +885,7 @@ function farewellCard() {
   const MODES = [
     ["不说", "off"],
     ["随机说", "probability"],
-    ["她自己斟酌着说", "llm"],
+    ["AstrBot 自己斟酌着说", "llm"],
   ];
   const mode = sleepValues.farewell_mode || "probability";
   const row = document.createElement("div");
@@ -847,6 +903,7 @@ function farewellCard() {
       setDirty(true);
       row.querySelectorAll(".option").forEach((el) => el.classList.remove("selected"));
       btn.classList.add("selected");
+      refreshStatusViews("sleep.farewell_mode"); // M27-补丁1 7.2（E4 档位）
       sliderWrap.classList.toggle("hidden", value !== "probability");
     });
     row.appendChild(btn);
@@ -883,7 +940,7 @@ function chatGuardCard() {
   const sleepValues = state.values.advanced.sleep;
   return optionCard(
     "聊天时不睡觉",
-    "她陪你聊天的时候不会当场睡着——你安静半小时后她才恢复入睡评估。" +
+    "AstrBot 陪你聊天的时候不会当场睡着——你安静半小时后它才恢复入睡评估。" +
       "关掉则回到旧行为（睡意到了可能聊着聊着就睡着）。",
     [["开", true], ["关", false]],
     () => sleepValues.standby_blocks_sleep !== false,
@@ -900,7 +957,7 @@ function wakeRandomCard() {
   const sleepValues = state.values.advanced.sleep;
   return optionCard(
     "随机吵醒",
-    "每次入睡时随机抽定「连发几条能吵醒她」（1-3 条中按睡眠深浅加权：" +
+    "每次入睡时随机抽定「连发几条能吵醒它」（1-3 条中按睡眠深浅加权：" +
       "刚入睡偏难叫醒，快天亮时偏容易叫醒），同一次睡觉内不变。" +
       "关掉则回到固定阈值（默认 3 条）。",
     [["开", true], ["关", false]],
@@ -918,7 +975,7 @@ function pendingReplyCard() {
   const sleepValues = state.values.advanced.sleep;
   return optionCard(
     "醒来补回复",
-    "她睡着时你发的消息（没吵醒她的），她醒来后会自己看看要不要回：" +
+    "它睡着时你发的消息（没吵醒它的），它醒来后会自己看看要不要回：" +
       "可能认真回，可能轻描淡写接一句（\"昨晚睡着了，你说的那个我看看哈\"），" +
       "也可能觉得不用回就不回。默认关，先看效果再决定常开。",
     [["开", true], ["关", false]],
@@ -930,7 +987,7 @@ function pendingReplyCard() {
   );
 }
 
-/* M25-补丁1 配套 b：素材总结的生效链（主人点名的痛点——面板必须能看出
+/* M25-补丁1 配套 b：素材总结的生效链（用户点名的痛点——面板必须能看出
  * "素材库不是一直开着的"）。链声明取 layout 的 F2 组（语料与素材），
  * 与专家区 F2 组头同源；判定走状态引擎（总闸 × 自主大脑两环）。 */
 function styleChainBlock() {
@@ -965,8 +1022,8 @@ function styleLearningCard() {
   const styleValues = state.values.advanced.style_learning;
   const card = optionCard(
     "风格学习",
-    "她在读文章、冲浪的时候，会从真人写的东西里学说话风格——句式、" +
-      "思维方式、待人接物，不只是口癖。学到的味道会在她说话时低调度参考，" +
+    "AstrBot 在读文章、冲浪的时候，会从真人写的东西里学说话风格——句式、" +
+      "思维方式、待人接物，不只是口癖。学到的味道会在它说话时低调度参考，" +
       "用得顺的变成习惯，久不用自然淡出。判定像 AI 写的语料绝不学。" +
       "默认关，先看效果再决定常开（细项在专家组「风格学习」）。",
     [["开", true], ["关", false]],
@@ -974,6 +1031,7 @@ function styleLearningCard() {
     (v) => {
       styleValues.enabled = v;
       setDirty(true);
+      refreshStatusViews("style_learning.enabled"); // M27-补丁1 7.2（F 区总闸）
     },
   );
   card.classList.add("style-card");
@@ -993,10 +1051,10 @@ function browserCard() {
   const p = document.createElement("p");
   p.className = "hint";
   p.textContent =
-    "她的浏览器工具（打开网页、看画面、点击、输入）依赖 Playwright 的 " +
+    "AstrBot 的浏览器工具（打开网页、看画面、点击、输入）依赖 Playwright 的 " +
     "Chromium 内核（约 150MB 下载），不随插件内置。装好后能力档位 ≥1 时" +
-    "她能真正浏览网页并把看到的画面截图存档；不装则浏览器工具不挂载，" +
-    "她的活动退化为「搜索 + 读文本」，其余能力不受影响。" +
+    "它能真正浏览网页并把看到的画面截图存档；不装则浏览器工具不挂载，" +
+    "它的活动退化为「搜索 + 读文本」，其余能力不受影响。" +
     "安装：在 AstrBot 的 Python 环境执行 playwright install chromium，装完重启。" +
     "卸载：playwright uninstall chromium（或删除 ms-playwright 缓存目录），" +
     "自动回落，无需改配置。";
@@ -1022,19 +1080,19 @@ async function refreshBrowserStatus(el) {
   }
 }
 
-/* 她的文件夹（M23-补丁1 B4）：工作区实际路径与状态实时展示。
+/* AstrBot 的文件夹（M23-补丁1 B4）：工作区实际路径与状态实时展示。
  * 让人一眼知道自己的 workspace_dir 配置有没有生效（就绪/不存在/被文件
  * 占用/创建失败），失败时带原因，不静默。 */
 function workspaceCard() {
   const card = document.createElement("div");
   card.className = "knob-card workspace-card";
   const h = document.createElement("h3");
-  h.textContent = "她的文件夹";
+  h.textContent = "AstrBot 的文件夹";
   card.appendChild(h);
   const p = document.createElement("p");
   p.className = "hint";
   p.textContent =
-    "这是她的专属工作区：能力档「玩」及以上时，她的文件读写、小程序都" +
+    "这是 AstrBot 的专属工作区：能力档「玩」及以上时，它的文件读写、小程序都" +
     "在这个目录里；开到「命令行」档时那也是命令的默认工作目录。路径来自" +
     "专家配置 autonomy.workspace_dir，留空则用插件数据目录下的默认位置，" +
     "插件启动时会自动创建。如果下面显示创建失败，检查路径是否合法、磁盘" +
@@ -1042,7 +1100,7 @@ function workspaceCard() {
   card.appendChild(p);
   const status = document.createElement("p");
   status.className = "hint workspace-status";
-  status.textContent = "她的文件夹：读取中…";
+  status.textContent = "AstrBot 的文件夹：读取中…";
   card.appendChild(status);
   refreshWorkspaceStatus(status);
   return card;
@@ -1062,7 +1120,7 @@ async function refreshWorkspaceStatus(el) {
         : data.state === "missing"
           ? "不存在"
           : data.message || data.state;
-    el.textContent = `她的文件夹：${data.path}（${stateText}）`;
+    el.textContent = `AstrBot 的文件夹：${data.path}（${stateText}）`;
   } catch (e) {
     el.textContent = ""; // 状态取不到就不显示
   }
@@ -1074,8 +1132,8 @@ function searchToggleCard() {
   const cap = state.values.advanced.capabilities;
   return optionCard(
     "联网搜索",
-    "允许她自主活动时联网搜索（博查网页搜索）。你聊天时的搜索不受影响" +
-      "（那是 AstrBot 自己的搜索）。关掉后冲浪、读文章两项活动也会从她的" +
+    "允许 AstrBot 自主活动时联网搜索（博查网页搜索）。你聊天时的搜索不受影响" +
+      "（那是 AstrBot 自己的搜索）。关掉后冲浪、读文章两项活动也会从它的" +
       "活动池里退场，其余能力照旧。",
     [["开", true], ["关", false]],
     () => cap.web_search_enabled !== false,
@@ -1093,8 +1151,8 @@ function agentToolsCard() {
   const cap = state.values.advanced.capabilities;
   return optionCard(
     "本体工具",
-    "允许她使用你给本体（AstrBot）配置的工具——按人格设定里勾选的工具" +
-      "筛选，含 MCP 工具。她自带的搜索、抓取、沙箱、记忆能力不受影响。",
+    "允许它使用你给本体（AstrBot）配置的工具——按人格设定里勾选的工具" +
+      "筛选，含 MCP 工具。它自带的搜索、抓取、沙箱、记忆能力不受影响。",
     [["允许", "persona"], ["不允许", "off"]],
     () => (cap.agent_tools_mode === "persona" ? "persona" : "off"),
     (v) => {
@@ -1109,7 +1167,7 @@ function agentToolsCard() {
  * INITIATIVE_LEVELS 是纯数据，initiativeLevelToProbability 是纯函数
  * （tests/test_m14_patch2.py 对映射表做边界值断言）。 */
 
-/* 档位 → base_probability 映射（主人 10-03 定稿：0.08 / 0.18 / 0.35） */
+/* 档位 → base_probability 映射（10-03 定稿：0.08 / 0.18 / 0.35） */
 const INITIATIVE_LEVELS = [
   ["quiet", "安静", 0.08],
   ["moderate", "适中", 0.18],
@@ -1136,8 +1194,8 @@ function initiativeCard() {
   const hint = document.createElement("p");
   hint.className = "hint";
   hint.textContent =
-    "除了分享活动和说梦话，她也会自己起念头找你说话——可能没有事由，" +
-    "也可能接上你们最近聊的话题。她睡着时绝不会打扰；每天能说多少句、" +
+    "除了分享活动和说梦话，AstrBot 也会自己起念头找你说话——可能没有事由，" +
+    "也可能接上你们最近聊的话题。它睡着时绝不会打扰；每天能说多少句、" +
     "间隔多久，和活动分享共用同一个额度。";
   card.appendChild(hint);
 
@@ -1170,7 +1228,7 @@ function initiativeCard() {
   // 主动程度三档（写 base_probability，不暴露裸数字）
   const levelLabel = document.createElement("p");
   levelLabel.className = "slider-label";
-  levelLabel.textContent = "主动程度——她多常主动找你说话";
+  levelLabel.textContent = "主动程度——它多常主动找你说话";
   const levelRow = document.createElement("div");
   levelRow.className = "option-row";
   const currentP = typeof ini.base_probability === "number"
@@ -1193,10 +1251,10 @@ function initiativeCard() {
   }
   detail.append(levelLabel, levelRow);
 
-  // 未回应收敛开关（主人定稿文案）
+  // 未回应收敛开关（定稿文案）
   const backoffLabel = document.createElement("p");
   backoffLabel.className = "slider-label";
-  backoffLabel.textContent = "你不理她时，她会慢慢安静下来（不会完全不理你）";
+  backoffLabel.textContent = "你不理它时，它会慢慢安静下来（不会完全不理你）";
   const backoffRow = document.createElement("div");
   backoffRow.className = "option-row";
   const backoff = ini.unanswered_backoff !== false;
@@ -1235,7 +1293,7 @@ function scheduleCard() {
   const hint = document.createElement("p");
   hint.className = "hint";
   hint.textContent =
-    "感知你的起床约定——你说\"明早 8 点起\"，他会记在心里。像人一样：" +
+    "感知你的起床约定——你说\"明早 8 点起\"，它会记在心里。像人一样：" +
     "说了早起可能早睡，也可能熬夜睡过头。";
   card.appendChild(hint);
 
@@ -1255,6 +1313,7 @@ function scheduleCard() {
       setDirty(true);
       row.querySelectorAll(".option").forEach((el) => el.classList.remove("selected"));
       btn.classList.add("selected");
+      refreshStatusViews("sleep.schedule_reminder_enabled"); // M27-补丁1 7.2（E6 档位）
       sliderWrap.classList.toggle("hidden", value === false);
     });
     row.appendChild(btn);
@@ -1317,6 +1376,7 @@ function buildControl(group, key, item, container) {
     if (!state.values.advanced[group]) state.values.advanced[group] = {};
     state.values.advanced[group][key] = v;
     setDirty(true);
+    refreshStatusViews(`${group}.${key}`); // M27-补丁1 7.2：状态点实时重算
   };
   const t = item.type;
   if (t === "bool") {
@@ -1487,6 +1547,18 @@ function buildControl(group, key, item, container) {
       onChange: (v) => set(v),
       emptyLabel: "（留空 = 与聊天共用模型）",
     }));
+  } else if (group === "judge" && key === "provider_id") {
+    // M27-补丁1 7.1：判断模型 provider 改下拉（此前没有分支、落到默认
+    // text 手填）。留空语义与 model 不同：不是回退聊天模型，而是整条判断
+    // 链不工作——emptyStatus/emptyWarn/missingWarn 用 judge 专属文案。
+    container.appendChild(providerPickerControl({
+      value: value ?? "",
+      onChange: (v) => set(v),
+      emptyLabel: "（留空 = 不判断）",
+      emptyStatus: "当前实际生效：不判断（输入建议与输出检查都不运行）",
+      emptyWarn: "⚠ 还没选 provider：判断链整条不工作（日志记 WARNING，不影响聊天）。建议选一个便宜快速的小模型 provider。",
+      missingWarn: "⚠ 该 provider id 不在已启用的 provider 列表里，判断时会跳过本轮并在日志留痕。请核对拼写，或到 provider 管理页启用它。",
+    }));
   } else if (group === "autonomy" && key === "workspace_dir") {
     // M20-补丁1 F2：工作区目录可视化选择（服务端列目录，只读限根）
     container.appendChild(workspaceDirControl({ value: value ?? "", onChange: (v) => set(v) }));
@@ -1516,6 +1588,7 @@ function buildControl(group, key, item, container) {
   } else if (group === "capabilities" && key === "agent_tools") {
     // M20-补丁1 F3：本体工具白名单改多选（选项=本体已注册工具，动态）。
     // 注册表里没有但已配置的值原样保留显示（F4：不静默规范化用户已存值）
+    // M27-补丁1 7.3：每行附中文说明；未知工具标注（当前注册表里没有，请核对）
     const current = String(value ?? "").split(",").map((s) => s.trim()).filter(Boolean);
     const registry = state.agent_tools || [];
     const extras = current.filter((v) => !registry.includes(v));
@@ -1528,6 +1601,11 @@ function buildControl(group, key, item, container) {
       hint.textContent = "（本体当前没有已注册的工具——custom 档将得到空工具集）";
       wrap.appendChild(hint);
     }
+    const labelOf = (name) => {
+      if (extras.includes(name)) return `${name}（当前注册表里没有，请核对）`;
+      const desc = AGENT_TOOL_DESCRIPTIONS[name];
+      return desc ? `${name}（${desc}）` : name;
+    };
     for (const name of names) {
       const row = document.createElement("label");
       row.className = "multi-choice";
@@ -1540,7 +1618,7 @@ function buildControl(group, key, item, container) {
         current.length = 0;
         current.push(...selected);
       });
-      row.append(box, document.createTextNode(extras.includes(name) ? `${name}（注册表中没有，请核对）` : name));
+      row.append(box, document.createTextNode(labelOf(name)));
       wrap.appendChild(row);
     }
     container.appendChild(wrap);
@@ -1683,11 +1761,14 @@ function buildKeyRow(group, key, item, keyStatus, showDot) {
   // M26-补丁1：key-side（生效链按钮）仍仅 requires 键显示（密度纪律），
   // 但 label 的挂载必须在分支外——M25 提取本函数时把挂载误圈进了 if，
   // 导致 121 个无 requires 键的标签整体丢失（回归，修前必红见 test_m26_patch1）。
+  // M27-补丁1 2.1：chain-panel 必须与按钮一起挂进 DOM——此前只 append 了
+  // 按钮，面板是游离节点，点击切换的是文档外节点（按钮永远"没反应"）。
   let side = null;
   if (Array.isArray(item.requires) && item.requires.length) {
     side = document.createElement("div");
     side.className = "key-side";
-    side.append(chainToggleBtn(chainPanelEl(`${item.description || key} 的生效链`, item)));
+    const panel = chainPanelEl(`${item.description || key} 的生效链`, item);
+    side.append(chainToggleBtn(panel), panel); // 次序：按钮 → 面板
   }
   const ctrl = document.createElement("div");
   ctrl.className = "key-control";
@@ -1756,11 +1837,13 @@ function buildGroup(secDecl, gDecl, entries, ctx) {
     body.appendChild(note);
   }
 
-  // C5：组级生效链（组头按钮，默认折叠）
+  // C5：组级生效链（组头按钮，默认折叠）。M27-补丁1 2.1：面板与按钮一起
+  // 挂载（此前只挂按钮，面板游离在文档外，点击无反应——与键级同一根因）。
   if ((gDecl.requires || []).length) {
     const chainWrap = document.createElement("div");
     chainWrap.className = "group-chain";
-    chainWrap.append(chainToggleBtn(chainPanelEl(`${gDecl.title || gDecl.id} 的生效链`, gDecl)));
+    const panel = chainPanelEl(`${gDecl.title || gDecl.id} 的生效链`, gDecl);
+    chainWrap.append(chainToggleBtn(panel), panel); // 次序：按钮 → 面板
     body.appendChild(chainWrap);
   }
 
@@ -1953,7 +2036,7 @@ function renderExpert() {
   }
 }
 
-/* C8 全局状态行：她现在会主动做的事（七条出口各带状态）。4 条过闸门
+/* C8 全局状态行：AstrBot 现在会主动做的事（七条出口各带状态）。4 条过闸门
  * （活动分享/梦话/睡过头交代共用 _maybe_share + 主动搭话）+ 3 条直发
  * （晚安/唤醒确认/醒来补回复）——文案逐字来自 panel_layout.json。 */
 function renderGlobalStatus() {
@@ -1968,7 +2051,7 @@ function renderGlobalStatus() {
   host.innerHTML = "";
   const lead = document.createElement("span");
   lead.className = "global-status-lead";
-  lead.textContent = "她现在会主动做的事：";
+  lead.textContent = "AstrBot 现在会主动做的事：";
   host.appendChild(lead);
   lines.forEach((item, i) => {
     const meta = STATUS_META[item.status] || STATUS_META.unknown;
@@ -2158,7 +2241,7 @@ async function renderMoodSection() {
   const moodHint = document.createElement("p");
   moodHint.className = "hint";
   moodHint.textContent =
-    "兴趣权重影响他自主选话题的倾向。改动立即生效（无需保存）；清空后" +
+    "兴趣权重影响它自主选话题的倾向。改动立即生效（无需保存）；清空后" +
     "会随活动和时间重新自然积累。";
   body_el.appendChild(moodHint);
 
@@ -2375,7 +2458,7 @@ function styleAddForm(onChanged) {
   wrap.className = "style-add";
   const ta = document.createElement("textarea");
   ta.rows = 3;
-  ta.placeholder = "粘贴你希望她学的说话语料（评论区、聊天记录、一段文字…）";
+  ta.placeholder = "粘贴你希望它学的说话语料（评论区、聊天记录、一段文字…）";
   const note = document.createElement("input");
   note.type = "text";
   note.placeholder = "备注（可选，比如来源）";
@@ -2434,7 +2517,7 @@ function styleMaterialsList(materials, onChanged) {
   if (!materials.length) {
     const empty = document.createElement("p");
     empty.className = "hint";
-    empty.textContent = "素材库还是空的。把你希望她学的语料粘贴进去（上面的输入框）。";
+    empty.textContent = "素材库还是空的。把你希望它学的语料粘贴进去（上面的输入框）。";
     wrap.appendChild(empty);
     return wrap;
   }
@@ -2475,7 +2558,7 @@ function styleCorpusList(corpus, { editable = false, onChanged = null } = {}) {
   if (!corpus.length) {
     const empty = document.createElement("p");
     empty.className = "hint";
-    empty.textContent = "语料库还是空的——她读完网页学到第一条风格后，会出现在这里。";
+    empty.textContent = "语料库还是空的——它读完网页学到第一条风格后，会出现在这里。";
     wrap.appendChild(empty);
     return wrap;
   }
@@ -2563,7 +2646,7 @@ function styleFeaturesList(features) {
   if (!features.length) {
     const empty = document.createElement("p");
     empty.className = "hint";
-    empty.textContent = "沉淀层还没有内容——等每日复盘累计足够好评后，会归纳出她的稳定说话方式。";
+    empty.textContent = "沉淀层还没有内容——等每日复盘累计足够好评后，会归纳出它的稳定说话方式。";
     wrap.appendChild(empty);
     return wrap;
   }
@@ -2612,7 +2695,7 @@ function styleLibraryAdmin() {
     name.textContent = "语料库 / 素材库管理";
     const hint = document.createElement("div");
     hint.className = "hint";
-    hint.textContent = "语料库=她学到的风格片段；素材库=你手动投入的原始语料；调用记录=取用事实（不进记忆）。";
+    hint.textContent = "语料库=它学到的风格片段；素材库=你手动投入的原始语料；调用记录=取用事实（不进记忆）。";
     label.append(name, hint);
     const ctrl = document.createElement("div");
     ctrl.className = "key-control style-admin-body";
@@ -2666,11 +2749,11 @@ function styleDataCard() {
   const card = document.createElement("div");
   card.className = "knob-card style-card";
   const title = document.createElement("h3");
-  title.textContent = "语料与素材（她想学谁的说话方式，你说了算）";
+  title.textContent = "语料与素材（它想学谁的说话方式，你说了算）";
   card.appendChild(title);
   const hint = document.createElement("p");
   hint.className = "hint";
-  hint.textContent = "把你想让她学的语料丢进素材库，她下次活动结束（或你点「立即处理」）就会提炼成自己的说话方式。学到的都存在语料库里，随时可看可删。";
+  hint.textContent = "把你想让它学的语料丢进素材库，它下次活动结束（或你点「立即处理」）就会提炼成自己的说话方式。学到的都存在语料库里，随时可看可删。";
   card.appendChild(hint);
   card.appendChild(styleChainBlock()); // M25-补丁1 配套 b：素材卡上直接显示生效链
 
@@ -2690,7 +2773,7 @@ function styleDataCard() {
       body.appendChild(head);
       body.appendChild(styleMaterialsList(data.materials, render));
       const corpusHead = document.createElement("h4");
-      corpusHead.textContent = `她学到的语料（${data.corpus.length} 条）`;
+      corpusHead.textContent = `它学到的语料（${data.corpus.length} 条）`;
       body.appendChild(corpusHead);
       body.appendChild(styleCorpusList(data.corpus, { editable: false }));
     } catch (e) {

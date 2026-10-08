@@ -137,7 +137,7 @@ def test_on_any_message_registered_with_event_filter():
 def test_on_any_message_no_duplicate_schedule_call():
     """on_any_message 体内不再 create_task 调 _extract_schedule_safe。
 
-    该调用块传参与凛 1ecef9c 修好的签名 (self, event) 失配，恢复注册后
+    该调用块传参与 1ecef9c 修好的签名 (self, event) 失配，恢复注册后
     每条消息都会 TypeError；约定提取已由装饰器路径覆盖（上一条测试锁定）。
     """
     import inspect
@@ -243,7 +243,7 @@ def _seed_rows():
         # 原生侧对话记忆：防误伤（任务书 B4/验收#5）
         (
             4,
-            "主人发来的消息总结",
+            "用户发来的消息总结",
             {"session_id": NATIVE_SESSION},
         ),
     ]
@@ -332,7 +332,7 @@ def test_backfill_without_db_connection_is_safe():
 def test_remember_self_identity_schedules_backfill(tmp_path):
     """端到端：真实事件 → 身份缓存 → 后台回填任务自动执行。
 
-    主人场景（清空记忆 → 第一条真实消息 → 身份可用 → 存量并回图谱）
+    认主场景（清空记忆 → 第一条真实消息 → 身份可用 → 存量并回图谱）
     的自动化版本；任务引用被实例持有（防 GC），完成后可断言落库调用。
     """
     async def flow():

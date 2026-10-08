@@ -131,7 +131,7 @@ def make_engine(config=None, gate=None, rng=None, llm=None, mood=None,
         llm_call=llm if llm is not None else FakeLLM([LINE]),
         mood=mood if mood is not None else FakeMood(),
         sender=sender if sender is not None else FakeSender(),
-        persona_getter=lambda: "你是小凛。",
+        persona_getter=lambda: "你是小澄。",
         session_getter=lambda: session,
         speech_writer=writer if writer is not None else FakeWriter(),
         rng=rng if rng is not None else ScriptedRng([0.0, 0.0]),
@@ -371,4 +371,4 @@ def test_initiative_level_mapping_pure_function_boundaries():
 
 
 def test_novice_backoff_copy_uses_master_wording():
-    assert "你不理她时，她会慢慢安静下来（不会完全不理你）" in APP_JS
+    assert "你不理它时，它会慢慢安静下来（不会完全不理你）" in APP_JS

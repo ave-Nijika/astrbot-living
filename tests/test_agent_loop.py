@@ -369,7 +369,10 @@ def test_peek_and_reminisce_never_use_agent():
     ctx = _ctx_with_agent(agent)
     ctx.gate = Gate()
     peek = asyncio.run(PeekFeedbackActivity().run(ctx))
-    assert peek.summary is None and gate_calls == [1]
+    # M27-补丁1 7.4：peek 改造后不再空走发送闸门（gate_calls == []），
+    # 改为读状态留经历；仍然不发送（summary 恒 None）
+    assert peek.summary is None and gate_calls == []
+    assert peek.memory_content
 
     memory = FakeMemory(rows=[{"content": "旧回忆", "score": 1}])
     ctx2 = _ctx_with_agent(agent)

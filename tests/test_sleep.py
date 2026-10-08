@@ -137,7 +137,7 @@ def test_wake_triggers_once_per_burst():
 
 
 def test_wake_source_owner_only_filters_strangers():
-    """owner_only：陌生人的消息不计入吵醒，主人的算。"""
+    """owner_only：陌生人的消息不计入吵醒，认领用户的算。"""
     config = {
         **CONFIG,
         "sleep": {**CONFIG["sleep"], "wake_source": "owner_only",
@@ -149,14 +149,14 @@ def test_wake_source_owner_only_filters_strangers():
     manager.register_message(datetime(2026, 9, 8, 4, 0, 30), "stranger2")
     wake_stranger, _ = manager.register_message(datetime(2026, 9, 8, 4, 1, 0), "stranger3")
     assert wake_stranger is False
-    # 主人连发 3 条（窗内前两条陌生消息不算数，但同在滑动窗里——
-    # 主人 3 条达标：04:02/04:03/04:04）
+    # 用户连发 3 条（窗内前两条陌生消息不算数，但同在滑动窗里——
+    # 用户 3 条达标：04:02/04:03/04:04）
     manager.register_message(datetime(2026, 9, 8, 4, 2, 0), "master001")
     manager.register_message(datetime(2026, 9, 8, 4, 3, 0), "master001")
     wake_owner, _ = manager.register_message(datetime(2026, 9, 8, 4, 4, 0), "master001")
     asyncio.run(gate.close())
     # 注意：陌生消息也在窗内（counts_toward_wake 只影响触发判定，不删除计数）——
-    # 此时窗内总数 >= 3，但陌生人消息不参与触发判定，主人 3 条已达标
+    # 此时窗内总数 >= 3，但陌生人消息不参与触发判定，用户 3 条已达标
     assert wake_owner is True
 
 

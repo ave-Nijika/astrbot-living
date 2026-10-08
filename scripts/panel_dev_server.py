@@ -107,9 +107,9 @@ LEARNER._pool.append({
     "base_weight": 1.0, "learned_at": "2026-10-06T12:00:00",
     "used_count": 3, "last_used_at": "2026-10-06T13:00:00",
     "importance": 1.1, "retention": 1.3, "manual": True,
-    "review_note": "主人没反感，聊天氛围正常", "review_good": 2,
+    "review_note": "用户没反感，聊天氛围正常", "review_good": 2,
 })
-LEARNER.add_material("主人手动丢进来的语料：这事儿吧，说实话得先看数据。", note="评论区精华")
+LEARNER.add_material("用户手动丢进来的语料：这事儿吧，说实话得先看数据。", note="评论区精华")
 
 # M19-补丁1 E1：mock 判断记录（内存态，刷新页面仍在、重启即清）
 MOCK_JUDGE_RECORDS = [

@@ -167,7 +167,7 @@ def test_t1_learned_item_has_six_dims():
     assert set(DIMS_ORDER) <= set(entry["dims"]) or set(entry["dims"]) <= set(DIMS_ORDER)
     assert all(entry["dims"].get(k) for k in
                ("wording", "syntax", "thinking", "emotion_style", "interaction", "avoid"))
-    # 重点维度（主人原话"不只口癖"）必须被认真提炼
+    # 重点维度（需求原话"不只口癖"）必须被认真提炼
     assert "判断" in entry["dims"]["thinking"]
     assert "接" in entry["dims"]["interaction"] or "夸" in entry["dims"]["interaction"]
 
@@ -734,7 +734,7 @@ def test_t14_no_pending_means_zero_llm_calls():
 
 
 def test_t14_standby_active_skips_reply():
-    """边界：醒来时主人正在聊天（待机期活跃）→ 不插补回复。"""
+    """边界：醒来时用户正在聊天（待机期活跃）→ 不插补回复。"""
     manager = FakePendingManager([
         {"session": MASTER, "text": "睡了？", "at": NOW.isoformat()},
     ])

@@ -112,21 +112,76 @@ export class StubElement {
   }
 
   addEventListener(type, fn) {
-    this._listeners.push([type, fn]); // 桩不触发事件：主渲染路径不需要
+    this._listeners.push([type, fn]);
   }
 
-  /* 有限选择器：仅支持 ".cls"（递归后代查找，不含自身）——主渲染路径
-   * 的 querySelector(All) 都是单类查询（如 grid.querySelectorAll(".knob-card")） */
-  _matchesSelector(sel) {
-    const m = /^\.([A-Za-z0-9_-]+)$/.exec(String(sel || ""));
-    return !!m && this._cls.has(m[1]);
+  /* M27-补丁1：事件探针——把注册的监听器真正跑起来（渲染期不触发，
+   * 仅供 harness 在渲染完成后模拟用户点击/改值）。 */
+  dispatch(type) {
+    const evt = { type, target: this, preventDefault() {}, stopPropagation() {} };
+    for (const [t, fn] of [...this._listeners]) {
+      if (t === type) fn(evt);
+    }
+  }
+
+  click() {
+    this.dispatch("click");
+  }
+
+  /* M27-补丁1：有限选择器，支持三种形态——
+   *   ".cls"           单类（如 .knob-card）
+   *   "tag"            裸标签（如 button / textarea，styleCorpusList 编辑器在用）
+   *   ".a ~ .b"        一般兄弟组合器（renderNovice 的
+   *                     .novice-detail-toggle ~ .knob-card）
+   * 其余一律**抛错**（不再静默返回 []——静默会掩盖装配回归，M27 的生效链
+   * 面板未挂载问题正是被它盖住的盲区之一）。 */
+  _parseSelector(sel) {
+    const raw = String(sel ?? "").trim();
+    const partRe = /^(?:\.([A-Za-z0-9_-]+)|([a-z][a-z0-9-]*))$/;
+    if (!raw) throw new Error("dom_stub: 空选择器");
+    if (!raw.includes("~")) {
+      const m = partRe.exec(raw);
+      if (!m) throw new Error(`dom_stub: 不支持的选择器 ${raw}(仅支持 .cls / tag / .a ~ .b)`);
+      return { kind: "simple", cls: m[1] || null, tag: m[1] ? null : m[2].toUpperCase() };
+    }
+    const parts = raw.split("~").map((p) => p.trim());
+    if (parts.length !== 2) {
+      throw new Error(`dom_stub: 不支持的选择器 ${raw}(~ 组合器仅支持两段 .a ~ .b)`);
+    }
+    const [l, r] = parts.map((p) => partRe.exec(p));
+    if (!l || !r) {
+      throw new Error(`dom_stub: 不支持的选择器 ${raw}(~ 两段都必须是 .cls 或 tag)`);
+    }
+    return {
+      kind: "sibling",
+      left: { cls: l[1] || null, tag: l[1] ? null : l[2].toUpperCase() },
+      right: { cls: r[1] || null, tag: r[1] ? null : r[2].toUpperCase() },
+    };
+  }
+
+  _matchesPart(part) {
+    if (part.cls !== null) return this._cls.has(part.cls);
+    return this.tagName === part.tag;
+  }
+
+  _matchesParsed(parsed) {
+    if (parsed.kind === "simple") return this._matchesPart(parsed);
+    // 一般兄弟：自身匹配右段，且同一父节点下、自身之前存在匹配左段的元素兄弟
+    if (!this._matchesPart(parsed.right)) return false;
+    // （守卫 undefined：渲染回退路径会 append 空槽位——如 detailHeads[hi++]
+    //   在无布局时为 undefined，walk 有守卫，这里同样要防）
+    const sibs = ((this.parentNode && this.parentNode.children) || [])
+      .filter((n) => n && n.kind === "element");
+    const idx = sibs.indexOf(this);
+    if (idx <= 0) return false;
+    return sibs.slice(0, idx).some((s) => s._matchesPart(parsed.left));
   }
 
   querySelectorAll(sel) {
+    const parsed = this._parseSelector(sel);
     const out = [];
     for (const c of this.children || []) {
-      const sub = findAllIn(c, (n) => n._matchesSelector(sel));
-      out.push(...sub);
+      findAllParsed(c, parsed, out);
     }
     return out;
   }
@@ -169,7 +224,10 @@ export function installDomStub() {
     createTextNode: (text) => new StubTextNode(text),
     querySelector: (sel) => {
       const m = /^#([A-Za-z0-9_-]+)$/.exec(String(sel || ""));
-      return m ? (byId[m[1]] ?? null) : null;
+      // M27-补丁1：非 #id 选择器抛错（$() 只在 index.html 固定 id 上用；
+      // 其它形态静默返回 null 会掩盖装配回归）
+      if (!m) throw new Error(`dom_stub: document.querySelector 仅支持 #id，收到 ${sel}`);
+      return byId[m[1]] ?? null;
     },
   };
   const localStorageStub = {
@@ -202,12 +260,10 @@ export function walk(node, fn) {
   for (const c of node.children || []) walk(c, fn);
 }
 
-function findAllIn(node, pred) {
-  const out = [];
+function findAllParsed(node, parsed, out) {
   walk(node, (n) => {
-    if (pred(n)) out.push(n);
+    if (n._matchesParsed(parsed)) out.push(n);
   });
-  return out;
 }
 
 export function findAll(root, cls, excludeCls) {

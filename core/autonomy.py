@@ -14,7 +14,7 @@ from typing import Any
 #   1 观看 = + 浏览器五件套
 #   2 居家 = + 工作区文件三件套（读/写/列）
 #   3 自由 = 同 2（文件能力的顶，不含命令行）
-#   4 命令行 = + 本机命令行（等价于把这台电脑交给她，须 write_level>=2）
+#   4 命令行 = + 本机命令行（等价于把这台电脑交给AstrBot，须 write_level>=2）
 TIER_NAMES = {0: "静养", 1: "观看", 2: "居家", 3: "自由", 4: "命令行"}
 WRITE_LEVEL_NAMES = {0: "只读", 1: "浏览交互", 2: "轻写入", 3: "全权"}
 
@@ -136,7 +136,7 @@ def check_action_kind(write_level: int, action_kind: str | None) -> "tuple[bool,
 
     保守拒绝策略：write_level < 3 时未提供 action_kind 或取值 unknown 一律
     拒绝——LLM 没标注的操作按"无法确认风险"对待，宁可让它重标一次也不
-    静默放行；write_level=3（主人明示全权，见总纲 D12）不设限，未标注也
+    静默放行；write_level=3（用户明示全权，见总纲 D12）不设限，未标注也
     放行。放行时第二项为空串。
     """
     allowed = _WRITE_LEVEL_ALLOWED.get(clamp_write_level(write_level, 0), frozenset())
@@ -147,7 +147,7 @@ def check_action_kind(write_level: int, action_kind: str | None) -> "tuple[bool,
         return False, (
             "当前权限无法确认该操作的风险等级，已拒绝。"
             "请在调用时标明 action_kind（navigate/fill/submit_form/comment/"
-            "post/message/purchase）；发帖、私信、下单等高风险动作需要主人把 "
+            "post/message/purchase）；发帖、私信、下单等高风险动作需要用户把 "
             "write_level 调到 3。"
         )
     if kind in allowed:
@@ -155,5 +155,5 @@ def check_action_kind(write_level: int, action_kind: str | None) -> "tuple[bool,
     return False, (
         f"当前写层级（write_level={write_level}）不允许 {kind} 这类操作，已拒绝。"
         "填表/跳转需要 write_level>=1，评论/提交表单等轻写入需要 >=2，"
-        "发帖/私信/下单需要 3（需联系主人调整）。"
+        "发帖/私信/下单需要 3（需联系用户调整）。"
     )

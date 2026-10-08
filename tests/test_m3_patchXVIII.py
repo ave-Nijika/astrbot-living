@@ -115,7 +115,7 @@ def test_preset_knobs_in_schema():
         knob = items[name]
         assert knob.get("hint"), f"{name} 缺大白话 hint"
         assert knob.get("options") or name == DIRECT_KNOB  # preset_model 是直通文本键
-    # life_extra 挪进新手组（主人最常改）
+    # life_extra 挪进新手组（最常改的键）
     assert items["life_extra"]["type"] == "text"
     assert items["life_extra"].get("hint")
 

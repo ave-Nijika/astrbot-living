@@ -8,7 +8,7 @@ C3 长度与异常形态防线；C4 final_review_enabled 关闭时 SKIP 指令�
 D 组：概率 = 基础 × 心境调制 × 收敛因子（M14-补丁2 起无固定时窗，节流
 完全复用共享闸门）；念头发送消耗共享配额。
 E 组：双写复用 M13-补丁1 抽象（E1 重构后活动侧行为逐字不变）。
-F 组：未回应收敛——每念头一次结算（F3 口径）、主人消息即时清零（F2）、
+F 组：未回应收敛——每念头一次结算（F3 口径）、用户消息即时清零（F2）、
 衰减带下限永不为零（补丁2 D）、状态持久化。
 G/I 组：INFO 审计（台词只留 20 字预览）；心跳接入与睡眠静默。
 （补丁2 删除的独立间隔/每日上限/固定时窗/硬静默用例随实现一并移除。）
@@ -154,7 +154,7 @@ def make_engine(config=None, gate=None, rng=None, llm=None, mood=None,
         llm_call=llm,
         mood=mood,
         sender=sender,
-        persona_getter=(lambda: "你是小凛，温和有点慢热。") if persona is None
+        persona_getter=(lambda: "你是小澄，温和有点慢热。") if persona is None
         else persona,
         session_getter=(lambda: session) if not callable(session) else session,
         contexts_getter=(lambda: contexts) if not callable(contexts)

@@ -348,7 +348,7 @@ def test_selfheal_detect_fix_and_idempotency(tmp_path):
 def test_selfheal_never_touches_native_memories(tmp_path):
     """原生记忆（aiocqhttp:/cron: 身份）绝不被修正或删除。"""
     rows = [
-        FakeRow(201, "主人说早安", [{
+        FakeRow(201, "用户说早安", [{
             "identity_key": "aiocqhttp:11112222", "sender_id": "11112222",
             "platform": "aiocqhttp", "is_bot": False,
         }]),

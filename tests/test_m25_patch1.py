@@ -11,7 +11,7 @@ B 组（JS 状态引擎行为级，node 桥）：judge 三件套链（验收 1�
    （验收 5）/ 配套 a novicePlan、b 素材链、e judge.mode=local 未实现、
    C7 计数、C8 七条出口（4 过闸门 + 3 直发）；
 C 组（源码锚点）：配套 c/f/d/h + 红线（保存差量零改动 / mapped-chip 保留 /
-   「六条出口」禁语 / 主人三极值相关键不在本轮语义内）。
+   「六条出口」禁语 / 三极值相关键不在本轮语义内）。
 
 验收 8（零回归）由全量测试承担；node 缺失时 B 组整体 skip（本机 v25.9.0 可跑）。
 """
@@ -365,7 +365,7 @@ def test_b6_novice_plan_first_tier_eight_knobs():
     assert plan["firstTierKnobCount"] == 8
     assert "life_extra" not in [k for g in plan["knobGroups"] for k in g["knobs"]]
     titles = {g["title"] for g in plan["knobGroups"]}
-    assert {"她的大脑", "她的手脚", "她独处时干什么", "她什么时候开口"} <= titles
+    assert {"AstrBot 的大脑", "AstrBot 的手脚", "AstrBot 独处时干什么", "AstrBot 什么时候开口"} <= titles
     cards = [c for g in plan["cardGroups"] for c in g["cards"]]
     assert len(cards) == 13
     assert set(cards) == {
@@ -520,7 +520,7 @@ def test_c4_fallback_and_mapping_chips():
 
 def test_c5_redlines_untouched():
     """红线锚点：保存差量逻辑 / 旋钮映射表 / 热重载路径零改动；
-    「六条出口共享闸门」禁语；主人三极值键的 UI 呈现不带钳制文案。"""
+    「六条出口共享闸门」禁语；三极值键的 UI 呈现不带钳制文案。"""
     assert "function buildSavePayload()" in APP_JS
     assert "function diffSection(current, loaded)" in APP_JS
     assert "KNOB_MAPPED_KEYS = new Set" in APP_JS
@@ -534,7 +534,7 @@ def test_c5_redlines_untouched():
     # E4 直发说明（晚安有自己的开关，不动 D1）
     e4 = layout_group("E", "E4")
     assert "不受 D1" in e4["summary"]
-    # 主人三极值：预算/轮数/冲动上限仅在 C4 呈现参数本体，无任何新增钳制
+    # 三极值：预算/轮数/冲动上限仅在 C4 呈现参数本体，无任何新增钳制
     c4 = layout_group("C", "C4")
     assert "硬闸" in c4["summary"]
 
@@ -543,7 +543,7 @@ def test_c6_global_status_row_anchor():
     """C8：全局状态行容器与渲染接线。"""
     html = (WORKDIR / "pages" / "config" / "index.html").read_text(encoding="utf-8")
     assert 'id="global-status"' in html
-    assert "她现在会主动做的事：" in APP_JS
+    assert "AstrBot 现在会主动做的事：" in APP_JS
     assert "renderGlobalStatus();" in APP_JS
 
 
@@ -559,7 +559,7 @@ def test_c7_novice_preset_knobs_not_marked_detail():
     之后的功能卡），首层 preset 旋钮在 toggle 之前、不被标记、默认可见。
 
     局限：本断言是源码锚点（纯文本匹配），不替代浏览器渲染实测——
-    DOM 结构、CSS 层叠、grid 布局等观感由凛在 Chromium 实测验证。"""
+    DOM 结构、CSS 层叠、grid 布局等观感由维护者在 Chromium 实测验证。"""
     idx = APP_JS.index("function renderNovice()")
     body = APP_JS[idx:]
     # 旧的 blanket 选择器（无排他）在全文件不得残留——它会误把首层 preset

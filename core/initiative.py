@@ -2,7 +2,7 @@
 
 主动出口的第二条通路（与五条既有分享链路完全独立，红线 1）：念头台词
 本身就是人格化输出，不走分享改写器；发送成功后复用 M13-补丁1 的双存储
-落点进她的工作记忆（E2）。
+落点进它的工作记忆（E2）。
 
 复用地基（M14-补丁2 总原则：已有的相似模块一律复用，不自带第二套）：
   - 睡眠/静默 → 睡眠模块（loop 清醒分支才评估 + 引擎 sleeping 兜底）；
@@ -10,12 +10,12 @@
     同池，默认 10 次/天 + 30 分钟间隔，默认值不改）；念头自身零独立配额；
   - 心境/精力 → mood 模块（energy/digest）；会话解析 → _resolve_target_
     sessions；双写 → _write_speech_to_stores。
-念头自身只保留：基础概率、心境调制、未回应收敛（主人定制：越不理越少
-但**永远不为零**）、候选池/生成/终审、审计。无固定时窗——深夜她若醒着，
-找不找主人说话由她自己的作息与心情决定，不由固定时钟决定。
+念头自身只保留：基础概率、心境调制、未回应收敛（定制口径：越不理越少
+但**永远不为零**）、候选池/生成/终审、审计。无固定时窗——深夜它若醒着，
+找不找用户说话由它自己的作息与心情决定，不由固定时钟决定。
 
-未回应收敛口径：每个念头只结算一次——发出后的第一次评估时，主人自发
-出后无任何消息 → streak +1；主人消息到达即时清零（note_owner_message）；
+未回应收敛口径：每个念头只结算一次——发出后的第一次评估时，用户自发
+出后无任何消息 → streak +1；用户消息到达即时清零（note_owner_message）；
 streak 跨日每天 -1（时间冲淡）；概率乘 0.5^(streak//3)，下限 0.1。
 """
 
@@ -36,28 +36,28 @@ from .share_rewriter import _strip_wrapping_quotes
 INITIATIVE_TEXT_MAX = 120
 # G2：审计行里的台词预览截断（防日志泄漏长文本）
 AUDIT_TEXT_PREVIEW = 20
-# D2：收敛倍率下限（主人 10-03 定稿：越不理越少，但永远不为零）
+# D2：收敛倍率下限（10-03 定稿：越不理越少，但永远不为零）
 BACKOFF_MULTIPLIER_FLOOR = 0.1
 
 # ---- M19-补丁1 D2：提示词搬上面板（schema 键 initiative.prompt_*）----
 # 默认值与搬之前的硬编码拼接逐字一致（T11 验证）；判定逻辑（SKIP/OOC/
 # 长度检查）不动（红线 8：只把提示词提出来）。
 DEFAULT_PROMPT_OPEN_TOPIC = (
-    "下面是你和主人最近的聊天记录（节选）：\n"
+    "下面是你和用户最近的聊天记录（节选）：\n"
     "{context_block}\n\n"
     '从中找一个"可以自然接上、继续聊下去"的话题，'
     "用一句短语概括（20 字以内）。\n"
-    "要求：必须是还没聊完的话题；不能是需要主人回答的追问；"
+    "要求：必须是还没聊完的话题；不能是需要对方回答的追问；"
     "不要重复已经聊完了的话题。\n"
     "如果没有合适的话题，只输出 NONE。"
 )
 DEFAULT_PROMPT_LINE = (
     "当前时间：{now_text}。\n"
     "{material}\n\n"
-    "写一句你主动发给主人的话。要求：\n"
+    "写一句你主动发给用户的话。要求：\n"
     "- 用你自己的口吻，30 字以内\n"
-    '- 这是主动搭话，不是回答他：不要"你说""发过来"这类回应式措辞，'
-    "不要问主人要任何东西，不要催促\n"
+    '- 这是主动搭话，不是回答对方：不要"你说""发过来"这类回应式措辞，'
+    "不要问对方要任何东西，不要催促\n"
     "- 像朋友间随口聊天：不要标题、列表、Markdown、链接，"
     "只输出这句话本身{skip_rule}"
 )
@@ -95,7 +95,7 @@ def mood_energy_factor(mood: Any) -> float:
 
 
 def _looks_like_ooc(text: str) -> bool:
-    """C3：URL/代码块等异常形态 → 不像她会说的话，直接 SKIP。"""
+    """C3：URL/代码块等异常形态 → 不像它会说的话，直接 SKIP。"""
     lowered = text.lower()
     return any(marker in lowered for marker in _OOC_MARKERS)
 
@@ -126,7 +126,7 @@ class InitiativeEngine:
         self._llm_call = llm_call  # async (prompt, system) -> str | None
         self._mood = mood
         self._sender = sender
-        self._session_getter = session_getter  # () -> 主人 umo | None
+        self._session_getter = session_getter  # () -> 用户 umo | None
         self._contexts_getter = contexts_getter  # async () -> [dict] | None
         # async (text, dedup_key) -> None：双存储落库（E1/E2，main 接线到
         # LivingLoop._write_speech_to_stores，占位与标签在接线层固定）
@@ -226,7 +226,7 @@ class InitiativeEngine:
     # 未回应收敛（F2/F3 + M14-补丁2 D：不归零）
     # ------------------------------------------------------------------
     async def note_owner_message(self, now: datetime | None = None) -> None:
-        """F2：主人消息到达 → 视为已回应，连续未回应计数清零。
+        """F2：用户消息到达 → 视为已回应，连续未回应计数清零。
 
         由 on_any_message 旁路调用（I2，main 负责只对念头目标会话调用）。
         同步更新内存 + 异步落库；任何异常由调用方兜（不影响消息主链路）。
@@ -238,7 +238,7 @@ class InitiativeEngine:
         self._pending_settle_at = None
         if self._streak > 0:
             logger.debug(
-                f"[Initiative] 主人说话了，未回应计数清零（原 {self._streak}）"
+                f"[Initiative] 用户说话了，未回应计数清零（原 {self._streak}）"
             )
         self._streak = 0
         self._streak_date = now.date()
@@ -271,7 +271,7 @@ class InitiativeEngine:
     async def _settle_unanswered(self, now: datetime) -> None:
         """F3 结算：每个念头只结算一次（发出后的第一次评估时）。
 
-        主人自发出后无任何消息 → streak +1（该念头计为未回应）；有消息
+        用户自发出后无任何消息 → streak +1（该念头计为未回应）；有消息
         （通常已被 note_owner_message 即时清零）→ 保持 0。两种结果都刷新
         streak 更新日（D3 跨日衰减的计时锚点）。
         """
@@ -299,7 +299,7 @@ class InitiativeEngine:
     def _probability(self, cfg: dict) -> float:
         """D1/D3/F4+补丁2 D：基础概率 × 心境调制 × 收敛倍率，夹在 [0,1]。
 
-        收敛倍率 = 0.5^(streak//3)，下限 0.1（主人定稿：越不理越少，
+        收敛倍率 = 0.5^(streak//3)，下限 0.1（定稿口径：越不理越少，
         永远不为零）；unanswered_backoff=false 时倍率与下限整体不生效。
         """
         base = max(self._conf_float(cfg, "base_probability", 0.18), 0.0)
@@ -341,7 +341,7 @@ class InitiativeEngine:
             content = str(message.get("content") or "").strip()
             if not content:
                 continue
-            who = "主人" if message.get("role") == "user" else "你"
+            who = "用户" if message.get("role") == "user" else "你"
             lines.append(f"{who}：{content[:60]}")
         if not lines:
             return None
@@ -408,7 +408,7 @@ class InitiativeEngine:
         material = (
             f"你们之前聊到过：{topic}——可以从它自然接上，也可以只字不提。"
             if topic
-            else "没有什么特别的事由，就是忽然想找他说句话。"
+            else "没有什么特别的事由，就是忽然想找用户说句话。"
         )
         skip_rule = (
             "\n- 如果此刻其实不该说话、或者这话不像你会说的，只输出 SKIP"
@@ -498,7 +498,7 @@ class InitiativeEngine:
             return {"sent": False, "reason": "disabled"}
 
         # A2：睡眠期静默（loop 只在清醒分支调用，这里是直接调用时的兜底）。
-        # 静默语义的最终形态（M14-补丁2 A4）：仅由睡眠模块负责——深夜她
+        # 静默语义的最终形态（M14-补丁2 A4）：仅由睡眠模块负责——深夜它
         # 若醒着，就按正常概率评估，不由固定时钟决定
         asleep_check = getattr(self._gate, "is_asleep_now", None)
         if callable(asleep_check):
@@ -601,7 +601,7 @@ class InitiativeEngine:
                 reason="send_failed",
             )
 
-        # E2：双写落库（对话上下文 + livingmemory 会话，主人真实 umo；
+        # E2：双写落库（对话上下文 + livingmemory 会话，用户真实 umo；
         # 失败只 DEBUG，在 writer 内部处理，这里再兜一层）
         if self._speech_writer is not None:
             try:

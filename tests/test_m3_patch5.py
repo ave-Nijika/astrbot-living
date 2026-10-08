@@ -161,7 +161,7 @@ def test_bot_identity_prefers_native_memory_identity(tmp_path):
         "is_bot": True,
     }
     engine = FakeEngine(rows=[
-        {"content": "主人让我查天气", "score": 1.0,
+        {"content": "用户让我查天气", "score": 1.0,
          "metadata": {"participant_identities": [native_participant]}},
     ])
     plugin = make_identity_plugin(engine=engine, tmp_path=tmp_path)
@@ -183,7 +183,7 @@ def test_bot_identity_native_rows_without_bot_skipped():
         "is_bot": False,
     }
     engine = FakeEngine(rows=[
-        {"content": "主人说话", "score": 1.0,
+        {"content": "用户说话", "score": 1.0,
          "metadata": {"participant_identities": [human_only]}},
     ])
     plugin = make_identity_plugin(engine=engine)

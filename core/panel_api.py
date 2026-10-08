@@ -339,7 +339,7 @@ def apply_style_corpus_action(learner: Any, payload: Any) -> dict:
 
 
 def apply_style_materials_action(learner: Any, payload: Any) -> dict:
-    """J2：素材库操作。add（只由主人添加）/ delete / clear（需 confirm）。"""
+    """J2：素材库操作。add（只由用户添加）/ delete / clear（需 confirm）。"""
     if not isinstance(payload, dict):
         raise PanelApiError("请求体必须是 JSON 对象")
     action = payload.get("action")

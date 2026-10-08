@@ -8,7 +8,7 @@
 - C 产物回应式过滤：_is_responsive_style 纯函数正反例；rewrite 命中过滤
   返回 None；调用方降级发送原始 report。
 
-全部走真实 ShareRewriter（llm_call 用可控替身），时钟显式传入（凛手改
+全部走真实 ShareRewriter（llm_call 用可控替身），时钟显式传入（手改
 记录：禁止依赖真实时钟）。
 """
 
@@ -296,7 +296,7 @@ def test_rewrite_passes_normal_output():
 
 
 def test_loop_skips_share_when_output_filtered():
-    """M9-补丁4（主人 2026-09-24 拍板）：产物被过滤 → 整条分享静默跳过，
+    """M9-补丁4（2026-09-24 拍板）：产物被过滤 → 整条分享静默跳过，
     不再降级发送原文——原文是工作汇报体，发进聊天框就是 OOC。"""
     llm = FakeLLM(text=RESPONSIVE_OUTPUT)
     sender = FakeSender()
@@ -318,7 +318,7 @@ def test_default_template_active_voice_assertions():
     """D3/验收4：模板含角色框定/材料边界/主动语态，不含旧误判诱因。"""
     t = DEFAULT_PROMPT_TEMPLATE
     # 材料边界 + 角色框定
-    assert "主人看不到" in t
+    assert "用户看不到" in t
     assert "主动" in t
     assert MATERIAL_BEGIN in t and MATERIAL_END in t
     # 占位符在位（{report} 位于两分隔行之间，{mood} 在口吻段）
@@ -327,8 +327,8 @@ def test_default_template_active_voice_assertions():
     # B3：旧误判诱因字样必须消失
     assert "今天的活动记录" not in t
     # 主动语态指令逐字在位
-    assert ("这是你主动想跟他说的话，不是回答他的问题" in t)
-    assert "也不要问主人要任何东西" in t
+    assert ("这是你主动想跟对方说的话，不是回答对方的问题" in t)
+    assert "也不要问对方要任何东西" in t
     # 口吻/长度要求段保留
     assert "像朋友间随口聊天" in t
     assert "只输出要说的话本身" in t

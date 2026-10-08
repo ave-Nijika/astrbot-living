@@ -17,6 +17,7 @@ M3 起活动有两条执行路径（任务书 C1）：
 
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -41,7 +42,7 @@ SEARCH_DEPENDENT_ACTIVITIES = ("surf", "read")
 
 # M16-补丁1 C1：本体 agent runner（tool_loop_agent_runner）被 request_stop
 # 中断时把 completion_text 换成的固定占位语——它们不含任何活动信息，
-# 不该混进她的经历（"我印象里没有"现象链的根因 C 之一）。
+# 不该混进它的经历（"我印象里没有"现象链的根因 C 之一）。
 _INTERRUPTION_MARKERS = {"output stopped", "stop output"}
 
 # ---- M19-补丁1 D6：活动意图模板搬上面板（schema 键 decision.prompt_intent_*）
@@ -336,7 +337,7 @@ class Activity(ABC):
             # M16-补丁1 C1：被掐断时 final text 常是本体 runner 的固定占位
             # 语（"Output stopped."）——纯中断串不算经历，退化为不含
             # partial 的完整句式；有真内容时上限 80→200（经历更饱满，
-            # 她下次才回想得起这次具体在玩什么）。
+            # 它下次才回想得起这次具体在玩什么）。
             partial = text[:200] if _informative_partial(text) else ""
             memory = (
                 f"{ctx.date_prefix()}我{self.description}，"
@@ -580,20 +581,84 @@ class MiniGameActivity(Activity):
 
 
 class PeekFeedbackActivity(Activity):
-    """看评价（弱触发）：只空走消息闸门验证链路，不真正发送。
+    """看留言（M27-补丁1 7.4 改造）：真的去看一眼"我上一条主动说的话，
+    对方回了没有"，并把结论写成一段第一人称经历留在记忆里。仍然不发言：
+    产出不带 summary（不进 _maybe_share 分享链），发送一律由 LivingLoop
+    统一管理；本活动零新增存储、零新增发送路径。
 
-    这个活动只调 should_send_message 看看"现在能不能说话"，把结果留在
-    DEBUG 日志里；真正的发送由 LivingLoop._maybe_share 统一管理。
-    保持脚本模式（没有可 agent 化的部分）。
+    数据源（既有状态键，只读）：
+    - living_state 的 last_message_at（KEY_LAST_MESSAGE_AT）：
+      最后一条主动消息的时间；缺失 = 还没有过主动消息；
+    - initiative 状态的 initiative_unanswered_streak（STATE_KEY_STREAK）：
+      连续未回应计数（对方来消息即被 note_owner_message 清零）——
+      streak ≥ 1 即"上一条还没被理"。
+    三种情形各给一种口吻：惦记（有未回）/ 安心（已被回应）/ 期待（无历史）。
     """
 
     name = "peek"
     description = "看看有没有人给我留了话（不发言，只是看一眼）"
 
+    @staticmethod
+    async def _read_state(getter: Any, key: str) -> Any:
+        """gate 状态键的宽容读取（键缺失/坏值/不支持 → None，不抛出）。"""
+        if not callable(getter):
+            return None
+        try:
+            raw = getter(key)
+            if asyncio.iscoroutine(raw):
+                raw = await raw
+            return raw
+        except Exception:
+            return None
+
+    def _compose(self, ctx: ActivityContext, streak: int, last_at: Any) -> str:
+        """三情形经历文本（纯逻辑便于测试；"对方"为中性指代，不写称谓）。"""
+        prefix = ctx.date_prefix()
+        if last_at is None:
+            return (
+                f"{prefix}翻了翻对话框，还没翻到我主动开过口的记录——"
+                "第一句话说什么，到时候看心情。"
+            )
+        if streak >= 1:
+            return (
+                f"{prefix}翻了翻聊天，我上一条主动说的话，对方好像还没回。"
+                "不催，先把这件事记在心里。"
+            )
+        return (
+            f"{prefix}看了一眼对话，上次主动说的那句，对方接了。挺好。"
+        )
+
     async def _run_script(self, ctx: ActivityContext) -> ActivityOutcome:
-        allow, reason = await ctx.gate.should_send_message(ctx.now)
-        logger.debug(f"[PeekFeedback] 空走消息闸门 allow={allow} reason={reason}")
-        return ActivityOutcome(name=self.name)
+        # 惰性导入（本文件惯例）：状态键常量复用既有模块，零新增存储
+        from .initiative import STATE_KEY_STREAK
+        from .living_state import KEY_LAST_MESSAGE_AT
+
+        getter = getattr(ctx.gate, "state_get", None)
+        raw_last = await self._read_state(getter, KEY_LAST_MESSAGE_AT)
+        raw_streak = await self._read_state(getter, STATE_KEY_STREAK)
+        last_at = None
+        if raw_last:
+            try:
+                last_at = datetime.fromisoformat(str(raw_last))
+            except ValueError:
+                last_at = None
+        try:
+            streak = max(int(raw_streak or 0), 0)
+        except (TypeError, ValueError):
+            streak = 0
+        memory = self._compose(ctx, streak, last_at)
+        logger.debug(
+            f"[PeekFeedback] 看留言 streak={streak} "
+            f"last_message_at={'有' if last_at else '无'}（不发言，只留经历）"
+        )
+        # summary 保持 None：绝不进分享链（不发送是本活动的定位，不是遗漏）
+        return ActivityOutcome(
+            name=self.name,
+            summary=None,
+            memory_content=memory,
+            importance=0.3,
+            topics=["看留言"],
+        )
 
 
 class MemoryBrowsingActivity(Activity):
@@ -647,7 +712,7 @@ class FreeActivity(Activity):
         # M15-补丁3 A3：工具清单按 ctx 实际能力现场生成——searcher/
         # fetcher/sandbox/memory 与 build_living_tools 的挂载同源（都出自
         # abilities 装配），web_search 还要看 search_enabled 快照。搜索
-        # 关闭时不再告诉 LLM"可以搜"（她去找又找不到，只能"翻别的"）。
+        # 关闭时不再告诉 LLM"可以搜"（它去找又找不到，只能"翻别的"）。
         tools: list[str] = []
         if ctx.searcher is not None and ctx.search_enabled:
             tools.append("web_search")

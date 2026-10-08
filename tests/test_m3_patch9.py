@@ -287,7 +287,7 @@ def test_mute_log_is_info_with_context(tmp_path, monkeypatch):
     asyncio.run(handler(event))
 
     mute_logs = [m for m in rl.infos if "睡眠期消息已拦截" in m]
-    assert mute_logs, "拦截动作必须 INFO 可见（否则主人会误判插件故障）"
+    assert mute_logs, "拦截动作必须 INFO 可见（否则用户会误判插件故障）"
     assert "在睡期第" in mute_logs[0]
     assert "再发" in mute_logs[0]
     assert "living_wake_now" in mute_logs[0]

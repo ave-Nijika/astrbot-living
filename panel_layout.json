@@ -4,7 +4,7 @@
     "sections": [
         {
             "id": "A",
-            "title": "她的大脑",
+            "title": "AstrBot 的大脑",
             "subtitle": "上游配不好，下面全线哑火（日常最少碰）",
             "collapsed": true,
             "groups": [
@@ -71,7 +71,7 @@
         },
         {
             "id": "B",
-            "title": "她的手脚",
+            "title": "AstrBot 的手脚",
             "subtitle": "能力档位与工具边界",
             "collapsed": false,
             "groups": [
@@ -91,7 +91,7 @@
         },
         {
             "id": "C",
-            "title": "她独处时干什么",
+            "title": "AstrBot 独处时干什么",
             "subtitle": "心跳节奏、兴趣口味、活动池与预算护栏",
             "collapsed": false,
             "groups": [
@@ -129,8 +129,8 @@
         },
         {
             "id": "D",
-            "title": "她什么时候开口",
-            "subtitle": "能到她 QQ 的通路：分享链与搭话过闸门，晚安/唤醒确认/补回复直发",
+            "title": "AstrBot 什么时候开口",
+            "subtitle": "能到 QQ 的通路：分享链与搭话过闸门，晚安/唤醒确认/补回复直发",
             "collapsed": false,
             "groups": [
                 {
@@ -157,7 +157,7 @@
         },
         {
             "id": "E",
-            "title": "她的作息",
+            "title": "AstrBot 的作息",
             "subtitle": "睡眠需求、小睡、睡前睡中互动与起床约定",
             "collapsed": false,
             "groups": [
@@ -183,7 +183,7 @@
                 {
                     "id": "E4",
                     "title": "睡前晚安",
-                    "summary": "直发出口——不受 D1 每日限额约束；想让她闭嘴改这里的档位，不用动 D1",
+                    "summary": "直发出口——不受 D1 每日限额约束；想让 AstrBot 闭嘴改这里的档位，不用动 D1",
                     "switch": "sleep.farewell_mode",
                     "requires": [],
                     "offValue": "off"
@@ -205,7 +205,7 @@
         },
         {
             "id": "F",
-            "title": "她学我说话",
+            "title": "AstrBot 学你说话",
             "subtitle": "风格学习：总闸不开，下面整区休眠",
             "collapsed": false,
             "groups": [
@@ -279,7 +279,7 @@
         },
         {
             "id": "G",
-            "title": "她的记忆",
+            "title": "AstrBot 的记忆",
             "subtitle": "记忆后端与兴趣管理（运行时数据）",
             "collapsed": false,
             "groups": [
@@ -350,7 +350,7 @@
         ]
     },
     "exits": {
-        "doc": "C8 全局状态行：她现在会主动做的事（七条出口）。4 条过闸门（活动分享/梦话/睡过头交代共用 _maybe_share：core/living_loop.py:1908；主动搭话：core/initiative.py:529）+ 3 条直发（晚安 core/living_loop.py:608/681、唤醒确认 :536、补回复 :1050）。runtime 分享计数无既有端点，不展示（零新后端）。",
+        "doc": "C8 全局状态行：AstrBot 现在会主动做的事（七条出口）。4 条过闸门（活动分享/梦话/睡过头交代共用 _maybe_share：core/living_loop.py:1908；主动搭话：core/initiative.py:529）+ 3 条直发（晚安 core/living_loop.py:608/681、唤醒确认 :536、补回复 :1050）。runtime 分享计数无既有端点，不展示（零新后端）。",
         "items": [
             {
                 "id": "share",

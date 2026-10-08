@@ -1,4 +1,4 @@
-"""M9 补丁 1 测试：主人身份自动认领（Part A）+ 心境与兴趣面板管理（Part B）。
+"""M9 补丁 1 测试：用户身份自动认领（Part A）+ 心境与兴趣面板管理（Part B）。
 
 Part A 走真实 LivingLoop / SleepManager（gate/sender 用可控替身）+ 真实
 derive_admin_identity 派生函数；Part B 走真实 MoodState（临时 db）+ 真实
@@ -177,12 +177,12 @@ def test_short_text_guard_precedes_derivation():
 # Part A：owner_id 派生（验收 4）与既有语义
 # ---------------------------------------------------------------------------
 def test_owner_wake_derived_from_first_admin():
-    """验收 4：wake_source=owner_only 且 owner_id 显式空 → 生效主人为
+    """验收 4：wake_source=owner_only 且 owner_id 显式空 → 生效用户为
     admins_id[0]。"""
     config = {"sleep": {"wake_source": "owner_only", "owner_id": ""}}
     manager = make_manager(config=config)
     assert manager.counts_toward_wake("111") is True
-    assert manager.counts_toward_wake("222") is False  # 第二位管理员不算主人
+    assert manager.counts_toward_wake("222") is False  # 第二位管理员不算认领的用户
     assert manager.counts_toward_wake("333") is False
     assert manager.counts_toward_wake(None) is False
 

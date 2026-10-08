@@ -20,7 +20,7 @@ from typing import Any
 
 from astrbot.api import logger
 
-# 更新规则常量（任务书 M2-A）：数值集中一处，方便凛调参
+# 更新规则常量（任务书 M2-A）：数值集中一处，方便调参
 DELTA_VALENCE_OK = 0.05
 DELTA_VALENCE_FAIL = -0.08
 DELTA_ENERGY_OK = -0.1

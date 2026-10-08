@@ -186,8 +186,8 @@ def test_t2_sleep_circadian_hint_nested():
 
 
 def test_t2_sleep_farewell_mode_llm_nested():
-    """主人切 llm 档的行为级锁定：advanced.sleep.farewell_mode=llm →
-    走 LLM 档（她现场斟酌），不再落回 probability 档的固定文案路径。"""
+    """切 llm 档的行为级锁定：advanced.sleep.farewell_mode=llm →
+    走 LLM 档（它现场斟酌），不再落回 probability 档的固定文案路径。"""
     sent: list[tuple[str, str]] = []
 
     class FakeSender:
@@ -277,12 +277,12 @@ def test_t4_agent_max_tool_rounds_nested():
 
 # ---- output_gate.*（T5）----
 def test_t5_share_rewrite_prompt_nested():
-    cfg = nested_cfg({"output_gate": {"share_rewrite_prompt": "主人自定义模板"}})
+    cfg = nested_cfg({"output_gate": {"share_rewrite_prompt": "用户自定义模板"}})
     rw = ShareRewriter(
         llm_call=None, config_getter=lambda: cfg,
         persona_getter=None, life_extra_getter=None, mood=None,
     )
-    assert rw._prompt_template() == "主人自定义模板"
+    assert rw._prompt_template() == "用户自定义模板"
 
 
 def test_t5_share_max_length_nested():
@@ -399,7 +399,7 @@ NORMAL_SAMPLES = [
     "",
     None,
     "今天逛到了一个很有意思的手办，分享给你看看",
-    # M22 核验收尾（凛）：以下三条曾被过宽模式误杀，收窄后必须放行
+    # M22 核验收尾：以下三条曾被过宽模式误杀，收窄后必须放行
     "抱歉，我不能参加这个聚会了",
     "对不起，我不能吃辣",
     "I'm unable to go today, see you tomorrow",

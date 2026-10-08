@@ -1,10 +1,10 @@
 """M13-补丁1：活动经历进对话上下文（双存储落点）。
 
-A 组：活动结束 → AstrBot 对话上下文（主人当前对话）追加一对 OpenAI 格式
+A 组：活动结束 → AstrBot 对话上下文（用户当前对话）追加一对 OpenAI 格式
 消息：占位 user "(自主活动：{活动名})"（maxlen 50）+ 第一人称自述
 assistant（maxlen 400）。写入挂在"活动结束"，与是否分享无关（A6）；
 先写后分享（A4）；失败路径 DEBUG 降级不影响分享（A3/D2）。
-B 组：同文本写入 livingmemory 会话消息存储（session_id=主人真实 umo，
+B 组：同文本写入 livingmemory 会话消息存储（session_id=用户真实 umo，
 role=assistant、is_bot_message=True）——MemoryReflection 的总结数据源；
 绝不写 ghost 会话（D3）。
 C 组：直塞 LivingMemory 的 memory.add 从活动路径消失——活动周期零 add
@@ -258,7 +258,7 @@ def test_context_write_failure_share_still_sends():
 
 
 def test_write_happens_before_share():
-    """A4：先写上下文后发分享——主人看到分享时上下文已含自述。"""
+    """A4：先写上下文后发分享——用户看到分享时上下文已含自述。"""
     act = ScriptedActivity(outcome=_outcome())
     events = []
     mgr = FakeCtxMgr(events=events)
@@ -373,15 +373,15 @@ def test_exception_failure_narration_redacts_secrets():
 # B 组：livingmemory 会话消息写入
 # ---------------------------------------------------------------------------
 def test_lm_message_uses_master_umo_and_assistant_role():
-    """D3：session_id=主人真实 umo（绝不 ghost）、role=assistant、
+    """D3：session_id=用户真实 umo（绝不 ghost）、role=assistant、
     is_bot_message=True；身份注入时 sender 用 bot 身份。"""
     act = ScriptedActivity(outcome=_outcome())
     identity = {
         "identity_key": "aiocqhttp:10001",
         "sender_id": "10001",
         "platform": "aiocqhttp",
-        "display_name": "小凛",
-        "aliases": ["小凛"],
+        "display_name": "小澄",
+        "aliases": ["小澄"],
         "is_bot": True,
     }
     loop, mgr, lm, sender, memory = make_loop(act, identity=identity)
@@ -396,7 +396,7 @@ def test_lm_message_uses_master_umo_and_assistant_role():
     assert call["is_bot_message"] is True
     assert call["content"] == NARRATION
     assert call["sender_id"] == "10001"
-    assert call["sender_name"] == "小凛"
+    assert call["sender_name"] == "小澄"
     # 与 A 落点同文本（单一事实来源：两处一致，图谱只从 reflection 来）
     assert call["content"] == mgr.pairs[0][2]["content"]
 

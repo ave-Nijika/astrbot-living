@@ -64,7 +64,7 @@ MIN_SHARE_TEXT_LEN = 4
 DEFAULT_PROMPT_FAREWELL = (
     "现在是 {now_text}，你准备去睡了。"
     "你现在的状态：{mood_digest}。\n\n{chat_block}\n\n"
-    "考虑一下今晚要不要跟他道声晚安：如果今天聊得开心、被关心，"
+    "考虑一下今晚要不要跟对方道声晚安：如果今天聊得开心、被关心，"
     "就自然地道声晚安；如果今天有不愉快、你还在气头上，可以不说；"
     "如果你想缓和关系，也可以借这句晚安说点什么。"
     "像人一样自己斟酌，不是每次都非说不可。\n"
@@ -115,7 +115,7 @@ def _conf_group(config: Any, group: str) -> dict:
 
 def derive_admin_identity(global_config: Any) -> dict:
     """从 AstrBot 全局配置（context.astrbot_config，即 cmd_config.json）提取
-    管理员与平台信息（M9-补丁1 A2）——主人身份自动认领的数据源。
+    管理员与平台信息（M9-补丁1 A2）——用户身份自动认领的数据源。
 
     返回 {"admins_id": [去空白后的管理员列表], "platform_id": 第一个
     enable=True 的适配器 id 或 None}；任何取不到的情形返回空列表/None，
@@ -194,7 +194,7 @@ class LivingLoop:
         # M5-补丁4：起床约定（ScheduleManager）——睡过头认知/催醒加重的数据源
         self._schedule = schedule
         # M9-补丁1 A1：AstrBot 全局配置（context.astrbot_config）的动态读取——
-        # 主人身份自动认领（owner_id / target_sessions 派生）的数据源。
+        # 用户身份自动认领（owner_id / target_sessions 派生）的数据源。
         # None = 不派生，维持旧的手填语义（向后兼容）
         self._global_config_getter = global_config_getter
         # M12-补丁1：AstrBot ConversationManager（真实聊天的 history 所在）——
@@ -207,7 +207,7 @@ class LivingLoop:
         # 不存在（既有测试/旧装配零影响）；心跳 tick 在清醒分支调用（I1）
         self.initiative = initiative
         # M15-补丁1 A3：人格 getter（晚安 LLM 档的 system prompt 原料）。
-        # None = 晚安 prompt 不带人格（仍可用，少了点"她"的味道）
+        # None = 晚安 prompt 不带人格（仍可用，少了点"它是谁"的味道）
         self._persona_getter = persona_getter
         # M17-补丁1：风格学习引擎（A 组）——A7 学习触发与 A5 梦话注入
         # 都经它；None = 该链路不存在（既有测试/旧装配零影响）
@@ -412,7 +412,7 @@ class LivingLoop:
     async def heartbeat_once_detailed(
         self, now: datetime | None = None, force: bool = False
     ) -> tuple[bool, str, str | None]:
-        """带详情的心跳：/living_wake 命令用反馈给主人（唤醒/拦截原因）。"""
+        """带详情的心跳：/living_wake 命令用反馈给用户（唤醒/拦截原因）。"""
         now = now or datetime.now()
 
         # 清醒待机（补丁 II 三）：刚过期则清除（M6-补丁1：fixed 翻转段
@@ -454,7 +454,7 @@ class LivingLoop:
 
         if reason == "woken_from_sleep":
             # 吵醒结算（任务书 B3）：起床气 + 睡眠债，然后带着情绪醒来；
-            # 随后进入清醒待机（补丁 II 一）并立刻回主人一句确认（补丁 II 二）
+            # 随后进入清醒待机（补丁 II 一）并立刻回用户一句确认（补丁 II 二）
             if self._sleep_manager is not None:
                 # M6-补丁1：fixed 结算已随机制移除，自主结算是唯一路径
                 state = self._gate.sleep_state(now)
@@ -513,7 +513,7 @@ class LivingLoop:
         )
 
     async def _send_wake_ack(self, now: datetime) -> None:
-        """唤醒确认消息（补丁 II 二）：零延迟回主人一句，纯 sender 零 token。
+        """唤醒确认消息（补丁 II 二）：零延迟回用户一句，纯 sender 零 token。
 
         发往触发吵醒的最后一个会话；留空配置/无会话/发送失败一律静默
         （WARNING），不影响后续活动周期。M16-补丁1 A5：发送成功后落双
@@ -560,9 +560,9 @@ class LivingLoop:
           - probability（默认）：掷骰一次（沿用注入 rng），命中发
             sleep_farewell_message 固定文案；未命中 DEBUG 审计不发；
           - llm：调 LLM 一次判断"今晚该不该说 + 说什么"（材料：心境摘要、
-            今天与主人的最近聊天上下文、当前时间；人格可注入时一并带上），
+            今天与用户的最近聊天上下文、当前时间；人格可注入时一并带上），
             输出 SKIP = 不发；异常/空静默不发；发出后走 M13 双写落库（A4，
-            她主动说的晚安进她的工作记忆）；
+            它主动说的晚安进它的工作记忆）；
           - off：从不发。
         两档共同：无活跃会话不发、发送失败静默不影响入睡。
         """
@@ -571,7 +571,7 @@ class LivingLoop:
         if mode == "off":
             return
         if mode not in ("probability", "llm"):
-            mode = "probability"  # 未知/缺失值回默认档（主人 10-03 定：默认投骰）
+            mode = "probability"  # 未知/缺失值回默认档（10-03 定：默认投骰）
         if mode == "probability":
             await self._farewell_probability_mode(now, cfg)
         else:
@@ -612,7 +612,7 @@ class LivingLoop:
         if not sent:
             logger.warning("[LivingLoop] 入睡告别消息未送达（无匹配平台）")
             return
-        # M16-补丁1 A4：她说出口的晚安也落双存储。固定文案的 dedup 必须
+        # M16-补丁1 A4：它说出口的晚安也落双存储。固定文案的 dedup 必须
         # 含时间戳（同一句话每晚都要各落一次，内容哈希会导致只有第一次落）；
         # 落库失败只 WARNING，不影响已完成的发送。
         try:
@@ -653,9 +653,9 @@ class LivingLoop:
                 f"{m.get('role', '?')}: {m.get('content', '')}"
                 for m in contexts
             ]
-            chat_block = "今天和主人的最近聊天：\n" + "\n".join(chat_lines)
+            chat_block = "今天和用户的最近聊天：\n" + "\n".join(chat_lines)
         else:
-            chat_block = "今天还没和主人聊过天。"
+            chat_block = "今天还没和用户聊过天。"
         # M19-补丁1 D3：提示词搬面板（默认逐字一致）
         prompt = render_template(
             self._sleep_prompt("prompt_farewell", DEFAULT_PROMPT_FAREWELL),
@@ -675,7 +675,7 @@ class LivingLoop:
         line = str(raw or "").strip()
         # SKIP/空 = 今晚不说（与念头终审同款判定口径）
         if not line or line.upper() == "SKIP":
-            logger.debug("[LivingLoop] 晚安 llm 档：她决定今晚不说（SKIP）")
+            logger.debug("[LivingLoop] 晚安 llm 档：它决定今晚不说（SKIP）")
             return
         try:
             sent = await self._sender.send(session, line)
@@ -685,7 +685,7 @@ class LivingLoop:
         except Exception as e:
             logger.warning(f"[LivingLoop] 晚安消息发送失败: {e}")
             return
-        # A4：她主动说的晚安进她的工作记忆（M13 双写，与念头先例一致）
+        # A4：它主动说的晚安进它的工作记忆（M13 双写，与念头先例一致）
         try:
             await self._write_speech_to_stores(
                 line,
@@ -746,7 +746,7 @@ class LivingLoop:
                         f"（精力 {detail['energy']:.2f}）"
                     )
             await self._gate.exit_autonomous_sleep(now)
-            # M17-补丁1 C2：自然醒结算——她在睡期收到的未回消息，由 LLM
+            # M17-补丁1 C2：自然醒结算——它在睡期收到的未回消息，由 LLM
             # 一次判断回不回（不回是合法结果）。长睡与小睡都结算；任何
             # 失败只 DEBUG，不影响醒来的恢复流程
             await self._settle_pending_replies(now, actual_h)
@@ -784,13 +784,13 @@ class LivingLoop:
         #    旧顺序"先小睡后长睡"让小睡分支恒先命中并 return，长睡不可达。
         #
         # M15-补丁1 B1/B2：待机期保护（"聊天中不入睡"）。待机期的语义就是
-        # "她在陪你聊天"（主人发消息即开启/刷新，静默 30 分钟自然过期）——
-        # 聊得正热时睡意再达标也不当场入睡；主人安静下来待机过期后，下个
+        # "它在陪你聊天"（用户发消息即开启/刷新，静默 30 分钟自然过期）——
+        # 聊得正热时睡意再达标也不当场入睡；用户安静下来待机过期后，下个
         # 心跳才恢复入睡评估。与"吵醒"机制互补：那是入睡后的补救，这是
         # 事前预防。standby_blocks_sleep=false 时关闭保护（可回退旧行为）。
         if self._standby_blocks_sleep(now):
             logger.debug(
-                "[LivingLoop] 待机期保护（standby_blocks_sleep）：她正在陪主人"
+                "[LivingLoop] 待机期保护（standby_blocks_sleep）：它正在陪用户"
                 "聊天，跳过本次入睡评估（长睡与小睡都不入）"
             )
             return
@@ -872,7 +872,7 @@ class LivingLoop:
         C3 兑现或过期后从存储清除；清除同时是幂等保证：同一约定只结算
         一次）。迟到超过 15 分钟容差 → 写第一人称"睡过头"认知记忆
         （importance 0.5、身份注入，按 M5-补丁2 后写入规范），并以 0.5
-        概率经既有 _maybe_share 主动向主人交代。任何失败只 WARNING。"""
+        概率经既有 _maybe_share 主动向用户交代。任何失败只 WARNING。"""
         if self._schedule is None:
             return False
         try:
@@ -942,10 +942,10 @@ class LivingLoop:
     ) -> None:
         """自然醒结算：取出睡眠期未回消息 → 一次 LLM 判断三档 → 处理。
 
-        - 不回（SKIP）→ 只记 DEBUG，无任何输出（主人定稿：不回是合法结果）；
-        - 认真回 / 糊弄回 → 发送（走既有 _sender）+ M16 双写落库（她说的话
+        - 不回（SKIP）→ 只记 DEBUG，无任何输出（定稿口径：不回是合法结果）；
+        - 认真回 / 糊弄回 → 发送（走既有 _sender）+ M16 双写落库（它说的话
           要能被自己回读——M16 的规矩）；
-        - 边界：醒来时主人正在聊天（待机期活跃）→ 不插这条，消息留待
+        - 边界：醒来时用户正在聊天（待机期活跃）→ 不插这条，消息留待
           正常聊天自然消化（取出即清，不重 judgment）；
         - 开关关闭 / 无消息 / LLM 通道缺失 → 零调用直接返回；
         - 任何失败只 DEBUG，绝不影响醒来的恢复流程（红线 5）。
@@ -974,12 +974,12 @@ class LivingLoop:
             return
         if not messages:
             return  # 无未回消息 → 零 LLM 调用（成本红线）
-        # 边界：主人此刻正在聊天（待机期 = 30 分钟内说过话）——刚聊过天
+        # 边界：用户此刻正在聊天（待机期 = 30 分钟内说过话）——刚聊过天
         # 的情况下突然插"我睡着时你发的…"很突兀，跳过
         try:
             if self._gate.awake_standby_active(now):
                 logger.info(
-                    "[LivingLoop] 醒来时主人正在聊天，睡眠期未回消息不做补回复"
+                    "[LivingLoop] 醒来时用户正在聊天，睡眠期未回消息不做补回复"
                 )
                 return
         except Exception:
@@ -1239,7 +1239,7 @@ class LivingLoop:
         """一次完整活动周期：起念 → 活动 → 记忆（双路径）→ 收账 → 候选分享。
 
         force_activity（/living do）：跳过决策与随机选择，直接执行指定活动；
-        force_topic 覆盖主题词。跳过概率与冷却（主人说了就做），但**每日
+        force_topic 覆盖主题词。跳过概率与冷却（用户说了就做），但**每日
         上限照拦**（红线：防刷）——拦下时不消耗配额。
 
         M3 补丁 IV-B1：全程持有互斥锁——心跳与 /living do 并发调用时排队
@@ -1379,7 +1379,7 @@ class LivingLoop:
         await self._update_mood(activity, outcome, params, duration_seconds)
         # M13-补丁1 A6：经历沉淀挂在"活动结束"，与是否分享无关——未被分享
         # 的活动同样写（三层记忆：①上下文自述 ②reflection 攒轮总结进图谱
-        # ③分享=面向主人的表达，走闸门概率）。写在分享之前（A4：主人看到
+        # ③分享=面向用户的表达，走闸门概率）。写在分享之前（A4：用户看到
         # 分享时上下文已含自述）。直塞 LivingMemory 图谱的旧路径已移除（C1）
         narration = self._activity_narration(
             activity, outcome, error_note, model_failure, ctx
@@ -1585,9 +1585,9 @@ class LivingLoop:
     ) -> None:
         """话语双存储落点（M14-补丁1 E1，活动经历与主动搭话共用）。
 
-        A：AstrBot 对话上下文（主人当前对话末尾追加一对消息）——主人追问时
+        A：AstrBot 对话上下文（用户当前对话末尾追加一对消息）——用户追问时
            LLM 直接看到话语原文（"是我先问的，我忘了问的是啥"的修复点）；
-        B：livingmemory 会话消息存储（主人真实 umo）——MemoryReflection
+        B：livingmemory 会话消息存储（用户真实 umo）——MemoryReflection
            把它当普通对话自然总结进图谱（单一事实来源）。
         两处写入任一失败都只 DEBUG，不影响发送主链路（A3/B4/E3）；开关
         关闭全部跳过（B5）。dedup_key 幂等：同一键只写一次（先占位再
@@ -1619,7 +1619,7 @@ class LivingLoop:
                 del self._experience_written[k]
         sessions, _source = self._resolve_target_sessions()
         if not sessions:
-            logger.debug(f"[LivingLoop] {label}：无主人会话，跳过写入")
+            logger.debug(f"[LivingLoop] {label}：无用户会话，跳过写入")
             return
         umo = sessions[0]  # 与分享主会话同源（M12-补丁1 先例：取第一个）
         asst_msg = text[:self._speech_store_limit()]
@@ -1629,7 +1629,7 @@ class LivingLoop:
     def _speech_store_limit(self) -> int:
         """A1（M16-补丁2）：话语落库上限 = max(400, share_max_length 配置值)。
 
-        落库上限必须 ≥ 她实际发出文本的上限（分享改写上限即
+        落库上限必须 ≥ 它实际发出文本的上限（分享改写上限即
         output_gate.share_max_length，share_rewriter.py 同源），否则用户把
         该项调大到 400 以上时就会"发出去的是完整的、自己回读到的被砍了
         尾巴"——"发出 == 回读"不成立。配置缺失/非法回落默认 120 → 上限
@@ -1661,7 +1661,7 @@ class LivingLoop:
     async def _write_context_pair(
         self, umo: str, user_msg: str, asst_msg: str, label: str = "活动经历"
     ) -> None:
-        """A：写入 AstrBot 对话上下文（主人当前对话末尾追加一对消息）。
+        """A：写入 AstrBot 对话上下文（用户当前对话末尾追加一对消息）。
 
         add_message_pair 是本体公开 API（conversation_mgr.py，OpenAI 格式
         dict 追加进 history）。A3：无当前对话则新建（new_conversation 会把
@@ -1699,7 +1699,7 @@ class LivingLoop:
         """B：写入 livingmemory 会话消息存储（MemoryReflection 的数据源）。
 
         走其会话管理器公开方法 add_message（不依赖 event 对象，B1 查证结论）：
-        session_id 用主人真实 umo——它的 session_id 本就按 unified_msg_origin
+        session_id 用用户真实 umo——它的 session_id 本就按 unified_msg_origin
         键控，ghost 会话对 reflection 永远不可见（B2）；role=assistant 且
         is_bot_message=True，与其原生助手消息同形态。上限语义（B3）：
         enforce_message_limit 在其事件处理器层于每次真实对话后例行执行、
@@ -1728,7 +1728,7 @@ class LivingLoop:
         identity = await self._bot_identity() or {}
         try:
             await mgr.add_message(
-                session_id=umo,  # B2：主人真实 umo，绝不写 ghost 会话
+                session_id=umo,  # B2：用户真实 umo，绝不写 ghost 会话
                 role="assistant",
                 content=asst_msg,
                 sender_id=identity.get("sender_id"),
@@ -1827,7 +1827,7 @@ class LivingLoop:
     async def _load_chat_contexts(self, sessions: list[str]) -> list[dict] | None:
         """分享改写的真实聊天上下文（M12-补丁1 A1-A4）。
 
-        主人诉求："分享的时候也是一个完整的、拥有记忆的"——取 Conversation
+        需求原话："分享的时候也是一个完整的、拥有记忆的"——取 Conversation
         Manager 里**真实聊天**的历史（与聊天时 AstrBot 塞给 LLM 的同源，
         `json.loads(conversation.history)`），末尾至多 N 条原样注入。
 
@@ -1879,7 +1879,7 @@ class LivingLoop:
             if not contexts:
                 return None
             logger.info(
-                f"[LivingLoop] 分享上下文：携带与主人的最近 {len(contexts)} 条"
+                f"[LivingLoop] 分享上下文：携带与用户的最近 {len(contexts)} 条"
                 "真实聊天记录"
             )
             return contexts
@@ -1916,12 +1916,12 @@ class LivingLoop:
             return
 
         # M3 补丁 VIII：角色化改写——把工作报告转成聊天口吻。闸门通过后
-        # 才改写（拦下就别浪费 token）。M9-补丁4（主人 2026-09-24 拍板）：
+        # 才改写（拦下就别浪费 token）。M9-补丁4（2026-09-24 拍板）：
         # 改写失败/未产出 → **整条分享静默跳过**（不再降级发送原文）——
         # 原文是工作汇报体，发进聊天框就是 OOC；宁可这次不说也不说错话。
         # M16-补丁1 B1（改掉旧注释的误导）：M13 双写落的是"活动经历
         # （narration）"，不是这里实际发出的分享文本——改写器可能产出
-        # 经历里没有的细节，主人追问时她必须能回读"自己实际说过的话"，
+        # 经历里没有的细节，用户追问时它必须能回读"自己实际说过的话"，
         # 所以发送成功后把 text_to_send 也落库（见下方发送循环之后）。
         # 改写器未注入（None）时保持直发原文
         # （向后兼容 M3 补丁 VIII 的开关语义）。
@@ -1961,7 +1961,7 @@ class LivingLoop:
                 # 只有真发出去才记账，失败的会话不消耗配额
                 await self._gate.note_message_sent(now)
                 sent_any = True
-        # M16-补丁1 A1：她实际发出的分享文本落双存储（AstrBot 对话上下文 +
+        # M16-补丁1 A1：它实际发出的分享文本落双存储（AstrBot 对话上下文 +
         # livingmemory 会话），下次对话近场可回读。活动分享/梦话/睡过头
         # 交代三条路径共用本入口，此单点即全覆盖（A2/A3）；循环外只落一次
         # （多会话不重复写）；dedup 用内容哈希——同一句话重试/重复触发不

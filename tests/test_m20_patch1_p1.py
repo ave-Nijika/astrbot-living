@@ -2,7 +2,7 @@
 
 覆盖：
 - I 组：语料库改名迁移（style_pool.json → style_corpus.json 一次性兼容）、
-  素材库（只由主人添加 / 有界 / FIFO 优先处理 / 不删除只标记）、人工优选
+  素材库（只由用户添加 / 有界 / FIFO 优先处理 / 不删除只标记）、人工优选
   权重（略高于 dialogue，钳位 ≤1.5 不设 2 倍以上）；
 - L 组：触发扩展（任何活动 + 本轮读网证据；素材库优先；证据时间窗）；
 - M 组：material_max_chars 等参数可配热生效；
@@ -148,9 +148,9 @@ def test_i1_no_corpus_no_legacy_means_empty(tmp_path):
 
 
 def test_p1_t1_material_priority_processed_marked(tmp_path):
-    """P1-T1：主人添加素材 → 活动结束优先处理 → 标记已处理（不删除）。"""
+    """P1-T1：用户添加素材 → 活动结束优先处理 → 标记已处理（不删除）。"""
     learner, llm = make_learner(HUMAN_DISTILL, tmp=tmp_path, samples=[sample()])
-    learner.add_material("主人手动丢进来的一段话" * 10, note="评论区精华")
+    learner.add_material("用户手动丢进来的一段话" * 10, note="评论区精华")
     entry = asyncio.run(learner.on_activity_end("game", NOW, "act_1"))
     assert entry is not None, "素材应优先于抓取样本被处理"
     assert "评论区精华" in llm.calls[0]["prompt"], "备注应进提示词"
@@ -158,7 +158,7 @@ def test_p1_t1_material_priority_processed_marked(tmp_path):
     assert material["processed"] is True
     assert material["result"] == "learned"
     assert material["processed_at"]
-    assert len(learner.materials()) == 1, "处理完不删除（主人可看状态）"
+    assert len(learner.materials()) == 1, "处理完不删除（用户可看状态）"
     assert entry["manual"] is True
 
 
@@ -316,8 +316,8 @@ def make_reviewer(learner, llm, reactions=None, config=None):
 
 REVIEW_OK = (
     '{"entries": ['
-    '{"id": "ID1", "verdict": "good", "reason": "主人没反感"}, '
-    '{"id": "ID2", "verdict": "bad", "reason": "主人说别这样说话"}, '
+    '{"id": "ID1", "verdict": "good", "reason": "用户没反感"}, '
+    '{"id": "ID2", "verdict": "bad", "reason": "用户说别这样说话"}, '
     '{"id": "ID3", "verdict": "neutral", "reason": "信息不足"}]}'
 )
 
@@ -344,7 +344,7 @@ def test_p1_t7_review_normal_path(tmp_path):
     """P1-T7：复盘正常路径（mock 判断模型）——调 1 次、结果落地。"""
     learner, llm = make_learner(REVIEW_OK, tmp=tmp_path)
     _seed_used_entries(learner, ["ID1", "ID2", "ID3"])
-    reviewer = make_reviewer(learner, llm, reactions=["主人：你今天说话怪怪的"])
+    reviewer = make_reviewer(learner, llm, reactions=["用户：你今天说话怪怪的"])
     summary = asyncio.run(reviewer.run_review(NOW))
     assert summary.get("judged") == 2, "neutral 不动，good+bad 落地"
     assert summary.get("good") == 1 and summary.get("bad") == 1
@@ -474,7 +474,7 @@ def test_p1_t10_induction_triggered_by_threshold(tmp_path):
         tmp=tmp_path, config=learner_config(feature_promote_threshold=1)
     )
     _seed_used_entries(learner, ["ID1", "ID2"])
-    reviewer = make_reviewer(learner, llm, reactions=["主人：说得好"])
+    reviewer = make_reviewer(learner, llm, reactions=["用户：说得好"])
     llm._responses.extend([REVIEW_OK, INDUCT_OK])
     summary = asyncio.run(reviewer.run_review(NOW))
     assert summary.get("inducted") == 1

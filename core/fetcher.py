@@ -20,7 +20,7 @@ DEFAULT_TIMEOUT = 15.0
 MAX_BYTES = 2 * 1024 * 1024  # 2MB 响应上限
 MAX_TEXT_CHARS = 20000  # 提取后正文上限，防止单页占用过多 token
 
-# M17-补丁1 A7：最近抓取缓冲——风格学习（style_learning）从"她这轮实际
+# M17-补丁1 A7：最近抓取缓冲——风格学习（style_learning）从"它这轮实际
 # 读到的内容"里取样的通道。为什么放 fetcher 层：脚本模式（read 的
 # ctx.fetcher.fetch）与 agent 模式（fetch_page 工具）最终都汇到
 # WebFetcher.fetch，一处记录两种执行形态统一覆盖，agent 循环零改动。

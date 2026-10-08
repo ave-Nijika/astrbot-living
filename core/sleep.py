@@ -609,7 +609,7 @@ class SleepManager(SleepManagerAutonomous):
         """记录一条消息，返回 (是否触发吵醒, 窗内计数)。
 
         只有休眠窗内、且计入吵醒（wake_source 过滤后）的消息才进滑动窗——
-        否则陌生消息会把主人的"3 条达标"时机垫早，吵醒语义就乱了。
+        否则陌生消息会把用户的"3 条达标"时机垫早，吵醒语义就乱了。
         触发吵醒时记录来源会话（唤醒确认消息的发往地）。
         """
         now = now or self._now()
@@ -664,7 +664,7 @@ class SleepManager(SleepManagerAutonomous):
         text: str | None,
         now: datetime | None = None,
     ) -> bool:
-        """她在睡觉时收到、没回的消息 → 留档，醒来后由 LLM 判断回不回。
+        """它在睡觉时收到、没回的消息 → 留档，醒来后由 LLM 判断回不回。
 
         记录条件全部满足才记：功能开着 + 此刻确实在睡 + 非本插件命令 +
         文本非空。有界：每会话最近 10 条、全局 30 条（旧的先丢）。持久化
@@ -789,7 +789,7 @@ class SleepManager(SleepManagerAutonomous):
     # 静默拦截判定（任务书 B4）
     # ------------------------------------------------------------------
     def describe_mute(self, now: datetime | None = None, count: int | None = None) -> str:
-        """拦截上下文文案（任务书 M3 补丁 IX 需求 1）：让主人在日志里一眼
+        """拦截上下文文案（任务书 M3 补丁 IX 需求 1）：让用户在日志里一眼
         看懂"为什么没回复"以及"怎么唤醒我"。
 
         形如：正在休眠（00:30-08:00），窗内第 1 条；再发 2 条可唤醒

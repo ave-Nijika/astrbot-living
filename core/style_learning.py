@@ -1,7 +1,7 @@
 """StyleLearner——风格学习系统（M17-补丁1 A 组，M20-补丁1 I/K/L/M 升级）。
 
-她在活动里读到人类文本 → **一次** LLM 调用同时判定"是不是人写的"
-（ai / uncertain 整条丢弃，主人红线：宁可少学也不让疑似 AI 的语料进来）并
+它在活动里读到人类文本 → **一次** LLM 调用同时判定"是不是人写的"
+（ai / uncertain 整条丢弃，用户红线：宁可少学也不让疑似 AI 的语料进来）并
 提炼六维风格片段 → 存进独立**语料库** style_corpus.json（与记忆/图谱/会话
 存储完全分开，不参与记忆召回——红线 2）→ 说话时按情境取 1-2 条低调注入
 （"参考语气"框架，硬上限字符数——红线 1）→ 用得多权重缓升成习惯、久不用
@@ -10,7 +10,7 @@
 M20-补丁1 分层结构（I 组）：
 - **语料库**（style_corpus.json，原 style_pool.json 改名迁移）：已提炼的
   六维片段，语义与格式不变；
-- **素材库**（style_materials.json）：主人手动投入的原始语料（只由面板
+- **素材库**（style_materials.json）：用户手动投入的原始语料（只由面板
   写入，插件自己绝不写；未经处理的按 FIFO 优先提炼——I3）；
 - **调用记录库**（feature_usage.json）：注入取用事实（K1，只记录取用，
   不记聊天内容、不进记忆）；
@@ -49,7 +49,7 @@ from typing import Any, Callable
 from astrbot.api import logger
 
 # 六个学习维度（A1）。DIMS_ORDER 决定注入顺序——思维方式与人际互动
-# 排在用词前面：主人原话"不是单单模仿一种口癖"。
+# 排在用词前面：需求原话"不是单单模仿一种口癖"。
 DIMS_ORDER = (
     "thinking",
     "interaction",
@@ -131,11 +131,11 @@ DEFAULT_PROMPT_DISTILL = (
 # {reactions_block}）。输出 JSON 协议（entries[].id/verdict/reason）是
 # 解析依赖，别改结构。
 DEFAULT_PROMPT_REVIEW = (
-    "下面是「她」说话风格库里最近被取用过的条目，以及她最近和主人的"
+    "下面是「AstrBot」说话风格库里最近被取用过的条目，以及它最近和用户的"
     "聊天摘录。请逐条判断：这条说话方式在最近的相处里效果如何？\n\n"
     "判断依据（从聊天摘录里找信号，找不到就给 neutral，不要猜）：\n"
-    "- good：主人没有表示反感、聊天氛围正常、或有正面反应\n"
-    "- bad：主人表达过「别这样说话」「你怎么突然这个腔调」之类的调整要求，"
+    "- good：用户没有表示反感、聊天氛围正常、或有正面反应\n"
+    "- bad：用户表达过「别这样说话」「你怎么突然这个腔调」之类的调整要求，"
     "或这条语气出现后明显冷场\n"
     "- neutral：没有足够信息判断\n\n"
     "严格输出一个 JSON 对象，不要输出任何其他文字：\n"
@@ -149,8 +149,8 @@ DEFAULT_PROMPT_REVIEW = (
 # ---- M20-补丁1 K2：沉淀归纳提示词（可配，占位符 {entries_block}）。
 # 输出 JSON 协议（features[].note/dims 六键）是解析依赖，别改结构。
 DEFAULT_PROMPT_INDUCT = (
-    "下面是「她」说话风格库里评分较高、反复被取用的条目。请把它们沉淀成"
-    "少数几条稳定的「她自己的说话方式」——不是复制原文，而是把共同点"
+    "下面是「AstrBot」说话风格库里评分较高、反复被取用的条目。请把它们沉淀成"
+    "少数几条稳定的「AstrBot 自己的说话方式」——不是复制原文，而是把共同点"
     "归纳成通用特征。\n\n"
     "要求：\n"
     "- 每条特征六个维度都看一遍（没有内容的给空串）：wording 用词 / "
@@ -330,7 +330,7 @@ class StyleLearner:
             return {}
 
     def enabled(self) -> bool:
-        """style_learning.enabled（默认 false——主人要先看效果再常开）。"""
+        """style_learning.enabled（默认 false——先看效果再常开）。"""
         try:
             raw = self._cfg().get("enabled", False)
         except Exception:
@@ -375,7 +375,7 @@ class StyleLearner:
         return max(_to_int(self._cfg().get("item_max_chars"), _ITEM_MAX_CHARS), 20)
 
     def manual_weight(self) -> float:
-        """I4：人工优选倍率（默认 1.2）。内部钳位 [1.0, 1.5]——主人红线
+        """I4：人工优选倍率（默认 1.2）。内部钳位 [1.0, 1.5]——红线
         "高一点点就可以了"，不设 2 倍以上。"""
         raw = _to_float(self._cfg().get("manual_weight"), 1.2)
         return min(max(raw, 1.0), 1.5)
@@ -435,7 +435,7 @@ class StyleLearner:
     def _load_legacy_pool_if_present(self) -> bool:
         """I1：一次性迁移——新库不存在而旧 style_pool.json 存在 → 读旧库。
         返回是否命中迁移；迁移数据在下次写盘时落进新文件（旧文件保留
-        不删，主人数据不动）。"""
+        不删，用户数据不动）。"""
         if not self._pool_path:
             return False
         corpus = Path(self._pool_path)
@@ -505,7 +505,7 @@ class StyleLearner:
         }
 
     # ------------------------------------------------------------------
-    # 素材库（I2：style_materials.json——只由主人经面板写入）
+    # 素材库（I2：style_materials.json——只由用户经面板写入）
     # ------------------------------------------------------------------
     def _ensure_materials_loaded(self) -> None:
         if self._materials_loaded:
@@ -540,7 +540,7 @@ class StyleLearner:
         return list(self._materials)
 
     def add_material(self, text: str, note: str = "", now: datetime | None = None) -> dict:
-        """I2：主人手动投入素材（只由面板调用；插件自己绝不写）。有界。"""
+        """I2：用户手动投入素材（只由面板调用；插件自己绝不写）。有界。"""
         now = now or self._now()
         self._ensure_materials_loaded()
         text = str(text or "").strip()
@@ -585,7 +585,7 @@ class StyleLearner:
         return count
 
     def _next_unprocessed_material(self) -> dict | None:
-        """I3：最早投入的未处理素材（FIFO——主人亲手挑的先提炼）。"""
+        """I3：最早投入的未处理素材（FIFO——用户亲手挑的先提炼）。"""
         self._ensure_materials_loaded()
         for m in self._materials:
             if not m.get("processed"):
@@ -972,7 +972,7 @@ class StyleLearner:
             return None, "parse_failed"
         kind, source_kind, dims = parsed
         if kind in ("ai", "uncertain"):
-            # 主人红线：疑似 AI 一律丢弃，宁可少学
+            # 红线：疑似 AI 一律丢弃，宁可少学
             logger.info(f"[Style] 判定 {kind}，整条丢弃（不入库）")
             return None, f"verdict_{kind}"
         if not dims:
@@ -1006,15 +1006,15 @@ class StyleLearner:
     async def _learn_from_material(
         self, material: dict, now: datetime, activity_id: str
     ) -> dict | None:
-        """I3：提炼一条主人投入的素材，并按结果回写素材库状态。
+        """I3：提炼一条用户投入的素材，并按结果回写素材库状态。
 
-        - 成功 → processed=true, result=learned（不删除，主人可看状态）；
+        - 成功 → processed=true, result=learned（不删除，用户可看状态）；
         - 稳定结局（判 AI/太短/重复/无可学片段）→ processed=true 并记录
           原因（不重试——结论不会变）；
         - 瞬时失败（LLM 调用/解析失败）→ attempts+1 留着下次重试，
           连续 3 次失败标记 failed（防无限重试烧调用）。"""
         text = str(material.get("text") or "")
-        note = str(material.get("note") or "").strip() or "主人手动投入"
+        note = str(material.get("note") or "").strip() or "用户手动投入"
         if activity_id and activity_id != "manual":
             note = f"{note}（{activity_id}）"
         entry, reason = await self._distill_detailed(text, note, now, manual=True)
@@ -1051,11 +1051,11 @@ class StyleLearner:
         """A7 触发入口（M20-补丁1 L 组扩展）：任何活动结束时调用。
 
         - 素材库优先（I3/L3）：有待处理素材时，任何活动结束都提炼一条
-          （主人亲手挑的不用等活动类型）；
+          （用户亲手挑的不用等活动类型）；
         - 否则要有"本轮真的读了网页"的证据（L1/L4）：本轮有 fetch_page
           成功留档或 browser_navigate/browser_read 成功留档（时间 >=
           started_at）。原"搜索关闭就不学"放宽为"没读到新内容就不学"
-          （L2——浏览器不依赖搜索，她仍可能读到东西）；
+          （L2——浏览器不依赖搜索，它仍可能读到东西）；
         - 一次活动最多学 1 条（I3 克制不变）。"""
         now = now or self._now()
         if not self.enabled():
@@ -1079,7 +1079,7 @@ class StyleLearner:
         return entry
 
     async def process_now(self) -> dict:
-        """J3：主人点"立即处理"——与活动触发共用同一条提炼路径
+        """J3：用户点"立即处理"——与活动触发共用同一条提炼路径
         （素材 FIFO 头一条）。限频 30s + 处理中拒绝重入。"""
         if self._processing:
             return {"ok": False, "message": "已有处理在进行中，请稍候"}
@@ -1127,7 +1127,7 @@ class StyleLearner:
 
         - 硬上限 feature_importance_cap（默认 1.5）；
         - 同类（source_kind 相同）条目重要度中位数 × 1.5 为另一道上限
-          ——"不高于同类条目的中位数太多"（K3 主人原话）；
+          ——"不高于同类条目的中位数太多"（K3 需求原话）；
         - 判差下探下限 0.5（差到一定程度就靠留存度淘汰，不再压权重）。"""
         cap = self.feature_importance_cap()
         value = _to_float(entry.get("importance"), 1.0) + delta
@@ -1274,7 +1274,7 @@ class StyleLearner:
 
     def record_used(self, entries: list[dict], now: datetime | None = None) -> None:
         """A6：取用记账——used_count 增长、权重缓升（用得顺的慢慢变成
-        她的习惯），封顶 base_weight × 1.5（来源层级不被使用率抹平）。"""
+        它的习惯），封顶 base_weight × 1.5（来源层级不被使用率抹平）。"""
         if not entries:
             return
         now = now or self._now()
@@ -1332,7 +1332,7 @@ class StyleLearner:
                 f"{body}）"
             )
             # A5 硬上限：整个注入块（含框架文案）不超过 max_inject_chars
-            # ——"注入量为硬上限"约束的是主人最终看到的注入总量
+            # ——"注入量为硬上限"约束的是用户最终看到的注入总量
             if len(block) > budget:
                 block = block[:budget]
             self.record_used(picked, now)

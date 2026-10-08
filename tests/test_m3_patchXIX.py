@@ -60,7 +60,7 @@ def test_hot_reload_still_writes(tmp_path):
 
 
 def test_hot_reload_reverse_direction(tmp_path):
-    """凛 VM 实测的反向路径：quiet → normal 也生效。"""
+    """VM 实测的反向路径：quiet → normal 也生效。"""
     state = tmp_path / "knobs_state.json"
     config = _nested_config()
     config["preset"]["preset_activity_level"] = "quiet"

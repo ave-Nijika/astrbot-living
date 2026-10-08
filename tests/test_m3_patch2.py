@@ -205,7 +205,7 @@ def test_refresh_standby_sliding_window():
     assert gate.awake_standby_active(datetime(2026, 9, 9, 3, 20)) is True
 
     refreshed = asyncio.run(
-        manager.refresh_standby(datetime(2026, 9, 9, 3, 20))  # 3:20 主人发消息
+        manager.refresh_standby(datetime(2026, 9, 9, 3, 20))  # 3:20 用户发消息
     )
     windows = (gate.awake_standby_active(datetime(2026, 9, 9, 3, 49)),
                gate.awake_standby_active(datetime(2026, 9, 9, 3, 51)))
@@ -416,7 +416,7 @@ def test_standby_entry_logs_wake_message():
 
 
 def test_standby_period_no_double_sleep_debt():
-    """红线：待机期内主人连发消息不重复扣睡眠债/起床气。"""
+    """红线：待机期内用户连发消息不重复扣睡眠债/起床气。"""
     mood = types_namespace(valence=0.2, energy=0.8, sleep_debt=0.0,
                            grouchy_calls=[], debt_adds=[])
     gate = StandbyGate()

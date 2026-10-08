@@ -31,7 +31,7 @@
             },
             "preset_capability_tier": {
                 "description": "它有多少手脚",
-                "hint": "看=只能上网浏览和搜索；玩=还能在自己的专属工作区里读写文件、写小程序；做=文件能力的顶（同玩，不含命令行）；命令行=她可以在这台电脑上执行命令——这一档等于给她本机命令行权限，请确认信任后再选。越高越能干，也越需要信任。",
+                "hint": "看=只能上网浏览和搜索；玩=还能在自己的专属工作区里读写文件、写小程序；做=文件能力的顶（同玩，不含命令行）；命令行=AstrBot 可以在这台电脑上执行命令——这一档等于给 AstrBot 本机命令行权限，请确认信任后再选。越高越能干，也越需要信任。",
                 "type": "string",
                 "options": [
                     "watch",
@@ -124,7 +124,7 @@
                 "items": {
                     "tier": {
                         "description": "能力档位（0-4）",
-                        "hint": "0=静养（仅自带搜索/抓取/沙箱/记忆）；1=观看（+浏览器）；2=居家（+工作区文件读写）；3=自由（同 2，文件能力的顶）；4=命令行（+本机命令行）。重要：第 4 档等于给她本机命令行权限——她将能在这台电脑上执行命令，请确认信任后再开；且需 write_level>=2（与写文件同级）。旧档 3 不再包含命令行。",
+                        "hint": "0=静养（仅自带搜索/抓取/沙箱/记忆）；1=观看（+浏览器）；2=居家（+工作区文件读写）；3=自由（同 2，文件能力的顶）；4=命令行（+本机命令行）。重要：第 4 档等于给 AstrBot 本机命令行权限——AstrBot 将能在这台电脑上执行命令，请确认信任后再开；且需 write_level>=2（与写文件同级）。旧档 3 不再包含命令行。",
                         "type": "int",
                         "default": 1,
                         "invisible": true,
@@ -161,7 +161,7 @@
                     },
                     "workspace_dir": {
                         "description": "工作区目录",
-                        "hint": "她的专属文件夹：tier 2+ 的文件读写与小程序产物放在这里，tier 4 命令行的默认工作目录也是这里。留空则用插件数据目录下的绝对路径（data/plugin_data/astrbot_plugin_living_home/），插件启动时会自动创建。",
+                        "hint": "AstrBot 的专属文件夹：tier 2+ 的文件读写与小程序产物放在这里，tier 4 命令行的默认工作目录也是这里。留空则用插件数据目录下的绝对路径（data/plugin_data/astrbot_plugin_living_home/），插件启动时会自动创建。",
                         "type": "string",
                         "default": "",
                         "invisible": true,
@@ -264,7 +264,7 @@
                     },
                     "free_choice_ratio": {
                         "description": "自由局配额（0-1）",
-                        "hint": "每次 LLM 选题前掷骰：命中即撤除本轮 prompt 里的全部兴趣牵引（心境兴趣行不注入、近期话题改为\"想一个不同新方向\"的正向指令），让选题纯靠当下的好奇心。0=全靠兴趣驱动，1=全靠自由发挥，0.5=各半（主人定稿默认）。",
+                        "hint": "每次 LLM 选题前掷骰：命中即撤除本轮 prompt 里的全部兴趣牵引（心境兴趣行不注入、近期话题改为\"想一个不同新方向\"的正向指令），让选题纯靠当下的好奇心。0=全靠兴趣驱动，1=全靠自由发挥，0.5=各半（默认）。",
                         "type": "float",
                         "default": 0.5,
                         "invisible": true,
@@ -280,7 +280,7 @@
                     },
                     "activity_context_write": {
                         "description": "活动经历写入对话上下文",
-                        "hint": "活动结束后把第一人称自述写入你们的对话上下文与 livingmemory 会话：你追问时它记得自己刚做了什么、问过什么；记忆图谱也改由 livingmemory 从对话自然总结。关闭后回到旧行为（活动经历只进它自己的记忆库，主人追问时它可能'忘了问的是啥'）。",
+                        "hint": "活动结束后把第一人称自述写入你们的对话上下文与 livingmemory 会话：你追问时它记得自己刚做了什么、问过什么；记忆图谱也改由 livingmemory 从对话自然总结。关闭后回到旧行为（活动经历只进它自己的记忆库，你追问时它可能'忘了问的是啥'）。",
                         "type": "bool",
                         "default": true,
                         "invisible": true,
@@ -460,7 +460,7 @@
                         "description": "分享改写提示词",
                         "hint": "改写提示词模板，支持 {report}（活动汇报）与 {mood}（心境摘要）占位符。",
                         "type": "text",
-                        "default": "你刚完成了自己的活动，正准备随手跟主人聊一句。\n\n下面是你的活动材料，仅供你自己参考，主人看不到这些：\n--- 活动材料开始 ---\n{report}\n--- 结束 ---\n\n这是你主动想跟他说的话，不是回答他的问题——绝不能出现‘你说’、‘发过来’、‘给我’这类回应式措辞，也不要问主人要任何东西。\n\n要求：\n- 像朋友间随口聊天，不是汇报；不要标题、不要列表、不要 Markdown 格式\n- 用你自己的口吻，可以带一点当天心情（你现在的状态：{mood}）\n- 只输出要说的话本身，不要任何前缀和引号",
+                        "default": "你刚完成了自己的活动，正准备随手跟用户聊一句。\n\n下面是你的活动材料，仅供你自己参考，用户看不到这些：\n--- 活动材料开始 ---\n{report}\n--- 结束 ---\n\n这是你主动想跟对方说的话，不是回答对方的问题——绝不能出现‘你说’、‘发过来’、‘给我’这类回应式措辞，也不要问对方要任何东西。\n\n要求：\n- 像朋友间随口聊天，不是汇报；不要标题、不要列表、不要 Markdown 格式\n- 用你自己的口吻，可以带一点当天心情（你现在的状态：{mood}）\n- 只输出要说的话本身，不要任何前缀和引号",
                         "invisible": true,
                         "section": ["D", "D2", 2]
                     },
@@ -481,7 +481,7 @@
                 "items": {
                     "enabled": {
                         "description": "主动搭话总开关",
-                        "hint": "开启后，她除了分享活动/说梦话，还会纯粹因为想找你说话而主动开口——可能没有事由，也可能接上你们最近聊的话题。她睡着时永远不会打扰；配额与间隔和活动分享共用同一个闸门。关闭后回到只有分享的状态。",
+                        "hint": "开启后，AstrBot 除了分享活动/说梦话，还会纯粹因为想找你说话而主动开口——可能没有事由，也可能接上你们最近聊的话题。它睡着时永远不会打扰；配额与间隔和活动分享共用同一个闸门。关闭后回到只有分享的状态。",
                         "type": "bool",
                         "default": true,
                         "invisible": true,
@@ -489,7 +489,7 @@
                     },
                     "base_probability": {
                         "description": "主动搭话的基础概率（0-1）",
-                        "hint": "她每次'要不要现在找你说话'的内心评估里掷骰的基础值，实际概率还会乘上她的心境（精力充沛时更想说话）和收敛系数。调大=更常找你；调小=更矜持。默认 0.18（新手面板的'主动程度'三档调的就是它）。",
+                        "hint": "AstrBot 每次'要不要现在找你说话'的内心评估里掷骰的基础值，实际概率还会乘上它的心境（精力充沛时更想说话）和收敛系数。调大=更常找你；调小=更矜持。默认 0.18（新手面板的'主动程度'三档调的就是它）。",
                         "type": "float",
                         "default": 0.18,
                         "invisible": true,
@@ -497,7 +497,7 @@
                     },
                     "unanswered_backoff": {
                         "description": "未回应收敛",
-                        "hint": "连续几次主动找你都没得到回应时，她会慢慢降低频率——但永远不会降到零（保底约六分之一的基础概率），你一说话就立刻恢复。关闭则频率不随回应变化。",
+                        "hint": "连续几次主动找你都没得到回应时，它会慢慢降低频率——但永远不会降到零（保底约六分之一的基础概率），你一说话就立刻恢复。关闭则频率不随回应变化。",
                         "type": "bool",
                         "default": true,
                         "invisible": true,
@@ -505,7 +505,7 @@
                     },
                     "final_review_enabled": {
                         "description": "说话前先过一遍脑子",
-                        "hint": "生成台词时附带一次自查：此刻该不该说、像不像她会说的话，不对就把话咽回去（同一次调用内完成，不多花钱）。关闭则纯生成，供调试对比。",
+                        "hint": "生成台词时附带一次自查：此刻该不该说、像不像它会说的话，不对就把话咽回去（同一次调用内完成，不多花钱）。关闭则纯生成，供调试对比。",
                         "type": "bool",
                         "default": true,
                         "invisible": true,
@@ -523,7 +523,7 @@
                         "description": "话题提取提示词（专家）",
                         "hint": "open_topic 来源从最近聊天里挑'还没聊完的话题'用的 prompt。占位符：{context_block}=聊天记录节选（每行一条，只含角色与内容）。",
                         "type": "text",
-                        "default": "下面是你和主人最近的聊天记录（节选）：\n{context_block}\n\n从中找一个\"可以自然接上、继续聊下去\"的话题，用一句短语概括（20 字以内）。\n要求：必须是还没聊完的话题；不能是需要主人回答的追问；不要重复已经聊完了的话题。\n如果没有合适的话题，只输出 NONE。",
+                        "default": "下面是你和用户最近的聊天记录（节选）：\n{context_block}\n\n从中找一个\"可以自然接上、继续聊下去\"的话题，用一句短语概括（20 字以内）。\n要求：必须是还没聊完的话题；不能是需要对方回答的追问；不要重复已经聊完了的话题。\n如果没有合适的话题，只输出 NONE。",
                         "invisible": true,
                         "section": ["D", "D3", 6]
                     },
@@ -531,7 +531,7 @@
                         "description": "搭话台词生成提示词（专家）",
                         "hint": "主动搭话台词的生成 prompt。占位符：{now_text}=当前时间（X月X日 HH:MM）；{material}=念头事由；{skip_rule}=终审自查指令（final_review_enabled 控制，可为空）。",
                         "type": "text",
-                        "default": "当前时间：{now_text}。\n{material}\n\n写一句你主动发给主人的话。要求：\n- 用你自己的口吻，30 字以内\n- 这是主动搭话，不是回答他：不要\"你说\"\"发过来\"这类回应式措辞，不要问主人要任何东西，不要催促\n- 像朋友间随口聊天：不要标题、列表、Markdown、链接，只输出这句话本身{skip_rule}",
+                        "default": "当前时间：{now_text}。\n{material}\n\n写一句你主动发给用户的话。要求：\n- 用你自己的口吻，30 字以内\n- 这是主动搭话，不是回答对方：不要\"你说\"\"发过来\"这类回应式措辞，不要问对方要任何东西，不要催促\n- 像朋友间随口聊天：不要标题、列表、Markdown、链接，只输出这句话本身{skip_rule}",
                         "invisible": true,
                         "section": ["D", "D3", 7]
                     }
@@ -702,7 +702,7 @@
                     },
                     "awake_standby_minutes": {
                         "description": "清醒待机时长（分钟）",
-                        "hint": "被吵醒后保持清醒的时长；期间主人每发一条消息都会重新计时（滑动窗口）。待机期内正常聊天不静默，结束后若仍在睡眠窗则继续睡。",
+                        "hint": "被吵醒后保持清醒的时长；期间用户每发一条消息都会重新计时（滑动窗口）。待机期内正常聊天不静默，结束后若仍在睡眠窗则继续睡。",
                         "type": "int",
                         "default": 30,
                         "invisible": true,
@@ -710,7 +710,7 @@
                     },
                     "wake_ack_message": {
                         "description": "唤醒确认消息",
-                        "hint": "被吵醒后立刻回给主人的一句话（零延迟、不经过 LLM）。留空 = 不发送。",
+                        "hint": "被吵醒后立刻回给用户的一句话（零延迟、不经过 LLM）。留空 = 不发送。",
                         "type": "string",
                         "default": "醒了，怎么了？",
                         "invisible": true,
@@ -718,7 +718,7 @@
                     },
                     "sleep_farewell_message": {
                         "description": "入睡告别消息",
-                        "hint": "清醒待机结束、继续入睡时告知主人的一句话（零 token）。留空 = 安静入睡不告知。仅 probability 档使用；llm 档由她自己现场斟酌措辞（忽略本条）。",
+                        "hint": "清醒待机结束、继续入睡时告知用户的一句话（零 token）。留空 = 安静入睡不告知。仅 probability 档使用；llm 档由它自己现场斟酌措辞（忽略本条）。",
                         "type": "string",
                         "default": "",
                         "invisible": true,
@@ -747,7 +747,7 @@
                     },
                     "standby_blocks_sleep": {
                         "description": "聊天中不入睡",
-                        "hint": "她正在陪你聊天时（待机期内）不做入睡判定——聊得再久也不会当场睡着；你安静 30 分钟后待机过期，下个心跳才恢复入睡评估。关闭则回到旧行为（睡意达标就可能聊着聊着睡着）。",
+                        "hint": "AstrBot 正在陪你聊天时（待机期内）不做入睡判定——聊得再久也不会当场睡着；你安静 30 分钟后待机过期，下个心跳才恢复入睡评估。关闭则回到旧行为（睡意达标就可能聊着聊着睡着）。",
                         "type": "bool",
                         "default": true,
                         "invisible": true,
@@ -755,7 +755,7 @@
                     },
                     "wake_source": {
                         "description": "吵醒计数来源",
-                        "hint": "all=所有消息都算吵（群聊里别人聊天也算）；owner_only=只数主人（owner_id 留空时自动取管理员 ID 的第一位）。",
+                        "hint": "all=所有消息都算吵（群聊里别人聊天也算）；owner_only=只数用户（owner_id 留空时自动取管理员 ID 的第一位）。",
                         "type": "string",
                         "options": [
                             "all",
@@ -766,8 +766,8 @@
                         "section": ["E", "E3", 9]
                     },
                     "owner_id": {
-                        "description": "主人 ID（wake_source=owner_only 时用）",
-                        "hint": "填主人的用户 ID；留空时自动认主（取 AstrBot 管理员 ID 的第一位，手填优先）。wake_source 为 all 时忽略。",
+                        "description": "用户 ID（wake_source=owner_only 时用）",
+                        "hint": "填用户的用户 ID；留空时自动取 AstrBot 管理员 ID 的第一位（手填优先）。wake_source 为 all 时忽略。",
                         "type": "string",
                         "default": "",
                         "invisible": true,
@@ -791,7 +791,7 @@
                     },
                     "schedule_reminder_enabled": {
                         "description": "起床约定感知",
-                        "hint": "感知主人消息里的起床约定（如\"明早 8 点起\"），作为入睡与醒来的软性参考。",
+                        "hint": "感知用户消息里的起床约定（如\"明早 8 点起\"），作为入睡与醒来的软性参考。",
                         "type": "bool",
                         "default": true,
                         "invisible": true,
@@ -833,7 +833,7 @@
                     },
                     "wake_random_enabled": {
                         "description": "随机吵醒阈值",
-                        "hint": "每次入睡时随机抽定\"连发几条能吵醒她\"（1-3 条中按睡眠深浅加权：刚入睡偏难叫醒，快醒时偏容易叫醒），同一次睡眠内固定不变。关闭则回到固定阈值（wake_n_messages）。（M17-补丁1 C1）",
+                        "hint": "每次入睡时随机抽定\"连发几条能吵醒它\"（1-3 条中按睡眠深浅加权：刚入睡偏难叫醒，快醒时偏容易叫醒），同一次睡眠内固定不变。关闭则回到固定阈值（wake_n_messages）。（M17-补丁1 C1）",
                         "type": "bool",
                         "default": true,
                         "invisible": true,
@@ -857,7 +857,7 @@
                     },
                     "pending_reply_enabled": {
                         "description": "醒来补回复",
-                        "hint": "她睡着时你发的消息（没吵醒她的），她醒来后会自己判断要不要回：可能认真回，可能轻描淡写接一句，也可能判断不用回就不回。默认关，先看效果再决定常开。（M17-补丁1 C2）",
+                        "hint": "它睡着时你发的消息（没吵醒它的），它醒来后会自己判断要不要回：可能认真回，可能轻描淡写接一句，也可能判断不用回就不回。默认关，先看效果再决定常开。（M17-补丁1 C2）",
                         "type": "bool",
                         "default": false,
                         "invisible": true,
@@ -874,9 +874,9 @@
                     },
                     "prompt_farewell": {
                         "description": "晚安生成提示词（专家）",
-                        "hint": "farewell_mode=llm 时的晚安 prompt（她自行斟酌说不说）。占位符：{now_text}=当前时间（YYYY-MM-DD HH:MM）；{mood_digest}=心境摘要；{chat_block}=当天聊天回顾段。",
+                        "hint": "farewell_mode=llm 时的晚安 prompt（它自行斟酌说不说）。占位符：{now_text}=当前时间（YYYY-MM-DD HH:MM）；{mood_digest}=心境摘要；{chat_block}=当天聊天回顾段。",
                         "type": "text",
-                        "default": "现在是 {now_text}，你准备去睡了。你现在的状态：{mood_digest}。\n\n{chat_block}\n\n考虑一下今晚要不要跟他道声晚安：如果今天聊得开心、被关心，就自然地道声晚安；如果今天有不愉快、你还在气头上，可以不说；如果你想缓和关系，也可以借这句晚安说点什么。像人一样自己斟酌，不是每次都非说不可。\n如果决定不说，只输出 SKIP；决定说就只输出晚安那句话本身（一两句、口语化，不要任何前缀和引号）。",
+                        "default": "现在是 {now_text}，你准备去睡了。你现在的状态：{mood_digest}。\n\n{chat_block}\n\n考虑一下今晚要不要跟对方道声晚安：如果今天聊得开心、被关心，就自然地道声晚安；如果今天有不愉快、你还在气头上，可以不说；如果你想缓和关系，也可以借这句晚安说点什么。像人一样自己斟酌，不是每次都非说不可。\n如果决定不说，只输出 SKIP；决定说就只输出晚安那句话本身（一两句、口语化，不要任何前缀和引号）。",
                         "invisible": true,
                         "section": ["E", "E4", 4]
                     },
@@ -905,7 +905,7 @@
                 "items": {
                     "enabled": {
                         "description": "风格学习总开关",
-                        "hint": "她在读文章/冲浪时从真人语料里学说话风格（句式、思维方式、待人接物，不只口癖），并在说话时低调度参考。判定为 AI 生成的语料绝不学。默认关，先看效果再决定常开。",
+                        "hint": "AstrBot 在读文章/冲浪时从真人语料里学说话风格（句式、思维方式、待人接物，不只口癖），并在说话时低调度参考。判定为 AI 生成的语料绝不学。默认关，先看效果再决定常开。",
                         "type": "bool",
                         "default": false,
                         "section": ["F", "F1", 1]
@@ -933,7 +933,7 @@
                     },
                     "decay_days": {
                         "description": "不用衰减周期（天）",
-                        "hint": "一条风格片段超过这么多天没用上，权重开始减半衰减（每过一个周期再减半），衰减到底自动淘汰——她最近学什么，说话就带什么味。",
+                        "hint": "一条风格片段超过这么多天没用上，权重开始减半衰减（每过一个周期再减半），衰减到底自动淘汰——它最近学什么，说话就带什么味。",
                         "type": "int",
                         "default": 14,
                         "section": ["F", "F2", 2]
@@ -990,7 +990,7 @@
                     },
                     "manual_weight": {
                         "description": "人工优选权重倍率",
-                        "hint": "主人手动投入的素材提炼出的语料，权重=来源权重×该倍率。只比普通语料高一点点即可（内部上限 1.5，不设 2 倍以上——防止某条独霸注入）。",
+                        "hint": "用户手动投入的素材提炼出的语料，权重=来源权重×该倍率。只比普通语料高一点点即可（内部上限 1.5，不设 2 倍以上——防止某条独霸注入）。",
                         "type": "float",
                         "default": 1.2,
                         "invisible": true,
@@ -1030,7 +1030,7 @@
                     },
                     "daily_review_time": {
                         "description": "每日复盘时间",
-                        "hint": "格式 HH:MM（24 小时制）。默认凌晨 4 点，趁你睡觉时她在后台自己复盘。",
+                        "hint": "格式 HH:MM（24 小时制）。默认凌晨 4 点，趁你睡觉时它在后台自己复盘。",
                         "type": "string",
                         "default": "04:00",
                         "invisible": true,
@@ -1054,7 +1054,7 @@
                     },
                     "feature_promote_threshold": {
                         "description": "沉淀归纳阈值",
-                        "hint": "自上次归纳以来累计判好的条目数达到该值，才触发一次沉淀归纳（把反复被取用且被判定好的特征沉淀成她自己的说话方式）。",
+                        "hint": "自上次归纳以来累计判好的条目数达到该值，才触发一次沉淀归纳（把反复被取用且被判定好的特征沉淀成它自己的说话方式）。",
                         "type": "int",
                         "default": 3,
                         "invisible": true,
@@ -1064,7 +1064,7 @@
                         "description": "每日复盘提示词（专家）",
                         "hint": "复盘判定调用的 prompt。占位符：{entries_block}=被取用条目清单；{reactions_block}=近期聊天摘录。输出 JSON 协议（entries[].id/verdict/reason，verdict 只能 good/bad/neutral）是解析依赖，别改结构。",
                         "type": "text",
-                        "default": "下面是「她」说话风格库里最近被取用过的条目，以及她最近和主人的聊天摘录。请逐条判断：这条说话方式在最近的相处里效果如何？\n\n判断依据（从聊天摘录里找信号，找不到就给 neutral，不要猜）：\n- good：主人没有表示反感、聊天氛围正常、或有正面反应\n- bad：主人表达过「别这样说话」「你怎么突然这个腔调」之类的调整要求，或这条语气出现后明显冷场\n- neutral：没有足够信息判断\n\n严格输出一个 JSON 对象，不要输出任何其他文字：\n{\"entries\": [{\"id\": \"条目id\", \"verdict\": \"good\", \"reason\": \"一句话\"}]}\n只允许对下面给出的条目 id 给判断，不要发明新 id；verdict 只能是 good / bad / neutral。\n\n最近被取用的条目：\n{entries_block}\n\n最近的聊天摘录（只看反应，不要复述）：\n{reactions_block}",
+                        "default": "下面是「AstrBot」说话风格库里最近被取用过的条目，以及它最近和用户的聊天摘录。请逐条判断：这条说话方式在最近的相处里效果如何？\n\n判断依据（从聊天摘录里找信号，找不到就给 neutral，不要猜）：\n- good：用户没有表示反感、聊天氛围正常、或有正面反应\n- bad：用户表达过「别这样说话」「你怎么突然这个腔调」之类的调整要求，或这条语气出现后明显冷场\n- neutral：没有足够信息判断\n\n严格输出一个 JSON 对象，不要输出任何其他文字：\n{\"entries\": [{\"id\": \"条目id\", \"verdict\": \"good\", \"reason\": \"一句话\"}]}\n只允许对下面给出的条目 id 给判断，不要发明新 id；verdict 只能是 good / bad / neutral。\n\n最近被取用的条目：\n{entries_block}\n\n最近的聊天摘录（只看反应，不要复述）：\n{reactions_block}",
                         "invisible": true,
                         "section": ["F", "F4", 2]
                     },
@@ -1072,7 +1072,7 @@
                         "description": "沉淀归纳提示词（专家）",
                         "hint": "沉淀归纳调用的 prompt。占位符：{entries_block}=高评分条目清单。输出 JSON 协议（features[].note/dims 六键）是解析依赖，别改结构。",
                         "type": "text",
-                        "default": "下面是「她」说话风格库里评分较高、反复被取用的条目。请把它们沉淀成少数几条稳定的「她自己的说话方式」——不是复制原文，而是把共同点归纳成通用特征。\n\n要求：\n- 每条特征六个维度都看一遍（没有内容的给空串）：wording 用词 / syntax 句式 / thinking 思维方式 / emotion_style 情绪表达 / interaction 待人接物 / avoid 别这样\n- 最多 4 条，每条单维内容不超过 40 字\n- 只输出 JSON：{\"features\": [{\"note\": \"一句话概括\", \"dims\": {\"wording\": \"\", \"syntax\": \"\", \"thinking\": \"\", \"emotion_style\": \"\", \"interaction\": \"\", \"avoid\": \"\"}}]}\n\n高评分条目：\n{entries_block}",
+                        "default": "下面是「AstrBot」说话风格库里评分较高、反复被取用的条目。请把它们沉淀成少数几条稳定的「AstrBot 自己的说话方式」——不是复制原文，而是把共同点归纳成通用特征。\n\n要求：\n- 每条特征六个维度都看一遍（没有内容的给空串）：wording 用词 / syntax 句式 / thinking 思维方式 / emotion_style 情绪表达 / interaction 待人接物 / avoid 别这样\n- 最多 4 条，每条单维内容不超过 40 字\n- 只输出 JSON：{\"features\": [{\"note\": \"一句话概括\", \"dims\": {\"wording\": \"\", \"syntax\": \"\", \"thinking\": \"\", \"emotion_style\": \"\", \"interaction\": \"\", \"avoid\": \"\"}}]}\n\n高评分条目：\n{entries_block}",
                         "invisible": true,
                         "section": ["F", "F4", 3]
                     }
@@ -1098,8 +1098,8 @@
                         "section": ["B", "B2", 5]
                     },
                     "web_search_enabled": {
-                        "description": "允许她联网搜索（博查网页搜索）",
-                        "hint": "关闭后她自主活动不再挂载 web_search 搜索工具，冲浪/读文章两项活动也从活动池剔除（转而做其他活动）；她的网页抓取（fetch_page）与你的聊天搜索不受影响（那是 AstrBot 自己的搜索，同一条 key 但独立开关）。",
+                        "description": "允许它联网搜索（博查网页搜索）",
+                        "hint": "关闭后它自主活动不再挂载 web_search 搜索工具，冲浪/读文章两项活动也从活动池剔除（转而做其他活动）；它的网页抓取（fetch_page）与你的聊天搜索不受影响（那是 AstrBot 自己的搜索，同一条 key 但独立开关）。",
                         "type": "bool",
                         "default": true,
                         "invisible": true,
@@ -1107,7 +1107,7 @@
                     },
                     "agent_tools_mode": {
                         "description": "复用本体工具",
-                        "hint": "off=只用她自带的生活工具（默认）；persona=把当前人格设定里勾选的本体工具（含 MCP）也给她用，筛选规则与聊天侧完全一致；custom=按下面的白名单追加。",
+                        "hint": "off=只用它自带的生活工具（默认）；persona=把当前人格设定里勾选的本体工具（含 MCP）也给它用，筛选规则与聊天侧完全一致；custom=按下面的白名单追加。",
                         "type": "string",
                         "options": [
                             "off",
@@ -1120,7 +1120,7 @@
                     },
                     "agent_tools": {
                         "description": "本体工具白名单（custom 档）",
-                        "hint": "逗号分隔的工具名，如 web_search,fetch_page。仅 agent_tools_mode=custom 时生效；留空 = 不追加任何本体工具。与 living 自带工具同名时以自带优先。",
+                        "hint": "可勾选的工具名（保存时仍是逗号分隔，如 web_search,fetch_page）。仅 agent_tools_mode=custom 时生效；留空 = 不追加任何本体工具。与 living 自带工具同名时以自带优先。",
                         "type": "string",
                         "default": "",
                         "invisible": true,
@@ -1155,7 +1155,7 @@
                 "items": {
                     "provider_id": {
                         "description": "自主活动专用 Provider ID",
-                        "hint": "留空 = 与聊天共用同一个模型和账号。该账号的缓存只有一套：她做活动、选活动、搭话、分享等任何一次调用都会冲掉聊天的缓存，之后你和她聊天的全部历史将按未命中重新计费。强烈建议单独配一个 provider（最好用不同的 api key / 账号）。配了独立 provider 时她走自己的提示词形态，与聊天互不影响。",
+                        "hint": "留空 = 与聊天共用同一个模型和账号。该账号的缓存只有一套：它做活动、选活动、搭话、分享等任何一次调用都会冲掉聊天的缓存，之后你和它聊天的全部历史将按未命中重新计费。强烈建议单独配一个 provider（最好用不同的 api key / 账号）。配了独立 provider 时它走自己的提示词形态，与聊天互不影响。",
                         "type": "string",
                         "default": "",
                         "invisible": true,
@@ -1171,7 +1171,7 @@
                     },
                     "allow_chat_fallback": {
                         "description": "失败时允许回退到聊天模型",
-                        "hint": "开（默认，保持旧行为）：模型故障转移链走完后仍可回退到全部已启用的聊天模型——代价是失败时也会冲掉聊天的缓存。关（缓存保护）：只重试故障转移链里配置的 provider，全部失败就按本轮调用失败处理（宁可她这次活动失败，也不冲你聊天的缓存）。",
+                        "hint": "开（默认，保持旧行为）：模型故障转移链走完后仍可回退到全部已启用的聊天模型——代价是失败时也会冲掉聊天的缓存。关（缓存保护）：只重试故障转移链里配置的 provider，全部失败就按本轮调用失败处理（宁可它这次活动失败，也不冲你聊天的缓存）。",
                         "type": "bool",
                         "default": true,
                         "invisible": true,
@@ -1179,7 +1179,7 @@
                     },
                     "prefix_cache_ttl_minutes": {
                         "description": "聊天前缀缓存时效（分钟）",
-                        "hint": "回退到聊天模型时，她的调用会带上与聊天完全相同的 system 与会话历史（前缀对齐，命中缓存、不再冲缓存）。该前缀取自最近一次聊天请求，超过此时效就不用（退回旧形态）。0 = 不过期。一般不用改。",
+                        "hint": "回退到聊天模型时，它的调用会带上与聊天完全相同的 system 与会话历史（前缀对齐，命中缓存、不再冲缓存）。该前缀取自最近一次聊天请求，超过此时效就不用（退回旧形态）。0 = 不过期。一般不用改。",
                         "type": "int",
                         "default": 360,
                         "invisible": true,
@@ -1275,9 +1275,9 @@
                     },
                     "prompt_input": {
                         "description": "输入判断提示词",
-                        "hint": "对主人新消息做'该用什么模式回'判断的 prompt。要求输出 JSON：{\"mode\": \"work|chat\", \"length\": \"short|normal|long\", \"tone\": \"plain|warm|playful\", \"note\": \"一句话提醒\"}。note 只允许提醒语气（如'这条可以短一点答'），不得出现具体措辞指令——小模型只给建议，不指挥输出。",
+                        "hint": "对用户新消息做'该用什么模式回'判断的 prompt。要求输出 JSON：{\"mode\": \"work|chat\", \"length\": \"short|normal|long\", \"tone\": \"plain|warm|playful\", \"note\": \"一句话提醒\"}。note 只允许提醒语气（如'这条可以短一点答'），不得出现具体措辞指令——小模型只给建议，不指挥输出。",
                         "type": "text",
-                        "default": "你是聊天助手的幕后小助手，负责判断主人刚发来的这条消息适合用什么方式回应。\n\n最近聊天（旧→新）：\n{context_block}\n\n主人刚发的消息：{message_text}\n\n请只输出一个 JSON 对象，不要输出任何其他文字：\n{\"mode\": \"work|chat\", \"length\": \"short|normal|long\", \"tone\": \"plain|warm|playful\", \"note\": \"≤40字的一句话提醒\"}\n字段含义：mode=这条消息的性质（work=要办事/问信息，chat=闲聊）；length=合适回应长度（short=几个字到一句话，normal=两三句，long=可以展开聊）；tone=合适语气；note=给回复模型的提醒，只允许提醒语气（例如'这条可以短一点答'），禁止指定具体措辞。判断不了就全给中性值（chat/normal/plain），note 给空串。",
+                        "default": "你是聊天助手的幕后小助手，负责判断用户刚发来的这条消息适合用什么方式回应。\n\n最近聊天（旧→新）：\n{context_block}\n\n用户刚发的消息：{message_text}\n\n请只输出一个 JSON 对象，不要输出任何其他文字：\n{\"mode\": \"work|chat\", \"length\": \"short|normal|long\", \"tone\": \"plain|warm|playful\", \"note\": \"≤40字的一句话提醒\"}\n字段含义：mode=这条消息的性质（work=要办事/问信息，chat=闲聊）；length=合适回应长度（short=几个字到一句话，normal=两三句，long=可以展开聊）；tone=合适语气；note=给回复模型的提醒，只允许提醒语气（例如'这条可以短一点答'），禁止指定具体措辞。判断不了就全给中性值（chat/normal/plain），note 给空串。",
                         "invisible": true,
                         "section": ["A", "A4", 1]
                     },
@@ -1285,7 +1285,7 @@
                         "description": "输入判断注入模板",
                         "hint": "把判断结果拼成注入块的模板（追加到请求末尾，用完即弃，不进记忆）。占位符：{mode}/{length}/{tone}=判断结果；{note}=提醒语（空串则该位置自然消失）。",
                         "type": "text",
-                        "default": "（内部提醒，主人和其他人都看不到这段：回复前先参考这条消息的判断建议——消息性质：{mode}，建议长度：{length}，建议语气：{tone}。{note}这是参考建议，按你自己自然的表达来。）",
+                        "default": "（内部提醒，用户和其他人都看不到这段：回复前先参考这条消息的判断建议——消息性质：{mode}，建议长度：{length}，建议语气：{tone}。{note}这是参考建议，按你自己自然的表达来。）",
                         "invisible": true,
                         "section": ["A", "A4", 2]
                     },

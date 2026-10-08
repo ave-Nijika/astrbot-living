@@ -1,7 +1,7 @@
 """历史污染数据自愈（任务书 M3 补丁 VI 需求 2）+ 存量身份回填（M9-补丁3）。
 
 背景：补丁 IV 时期的 _bot_identity 提取过 default:hash 污染身份并随活动
-记忆入库（凛 SQL 查实 2 个污染 person 节点、12 条记忆）。本模块在插件
+记忆入库（SQL 查实 2 个污染 person 节点、12 条记忆）。本模块在插件
 启动后一次性扫描自身记忆，把 participant_identities 里的污染身份替换为
 修正身份（cron:{dashboard_username} 桥接身份），并触发 LivingMemory
 的图谱重建。
@@ -24,7 +24,7 @@
 M9-补丁3 新增 run_ghost_identity_backfill：身份可用时扫描 living 直写
 （session_id 以 living_ghost 开头）但 participant_identities 为空的存量
 记忆并回填 bot 身份。与污染自愈的记账差异：回填**不用** state 文件按
-id 记账——主人清空记忆库后 documents id 从 1 重排，按 id 记账会把新
+id 记账——用户清空记忆库后 documents id 从 1 重排，按 id 记账会把新
 记忆误判为已处理；"已有身份即跳过"的扫描条件本身天然幂等（2026-09-23
 对 LivingMemory 源码核实：engine.update_memory(id, updates) 的
 updates={"metadata": ...} 走三库同步，且 metadata 键触及
