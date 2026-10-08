@@ -528,25 +528,41 @@ function renderNovice() {
   grid.appendChild(toggleRow);
 
   // 折叠区：13 张功能卡按新一级栏目归组 + 组间小标题（默认折叠）
-  for (const g of plan.cardGroups) {
-    const head = noviceSectionHead(g.title, g.id);
-    head.classList.add("novice-detail");
-    grid.appendChild(head);
-  }
+  // 返工修正（M25-补丁1）：
+  //   ① 组标题与该组卡片相邻显示——原实现先 append 全部标题再 append 全部
+  //     卡，导致"标题全在前、卡片全在后"；现按组穿插（detailHeads 从
+  //     plan.cardGroups 构建，与卡片工厂的显式调用次序一一对应）。
+  //   ② novice-detail 标记只作用于 toggle 之后的功能卡（选择器
+  //     .novice-detail-toggle ~ .knob-card），首层 preset 旋钮（buildKnobCard
+  //     产出、在 toggle 之前）不被标记——修复新手页 8 个 preset 旋钮 +
+  //     13 张功能卡全被 .novice-detail{display:none} 藏住、只剩小标题的 bug。
+  const detailHeads = plan.cardGroups.map((g) => {
+    const h = noviceSectionHead(g.title, g.id);
+    h.classList.add("novice-detail");
+    return h;
+  });
+  let hi = 0;
+  grid.appendChild(detailHeads[hi++]); // A 她的大脑：判断模型
   grid.appendChild(judgeCard());
+  grid.appendChild(detailHeads[hi++]); // B 她的手脚
   grid.appendChild(browserCard());
   grid.appendChild(workspaceCard());
   grid.appendChild(searchToggleCard());
   grid.appendChild(agentToolsCard());
+  grid.appendChild(detailHeads[hi++]); // D 她什么时候开口
   grid.appendChild(initiativeCard()); // 主动搭话卡（M14-补丁2 F3）：D 组先于 E 组
+  grid.appendChild(detailHeads[hi++]); // E 她的作息
   grid.appendChild(scheduleCard()); // 起床约定卡（M5-补丁4）
   grid.appendChild(farewellCard()); // 晚安消息（三档 + 概率滑块）
   grid.appendChild(chatGuardCard()); // 聊天时不睡觉
   grid.appendChild(wakeRandomCard()); // 随机吵醒（M17-补丁1 C1）
   grid.appendChild(pendingReplyCard()); // 醒来补回复（M17-补丁1 C2）
+  grid.appendChild(detailHeads[hi++]); // F 她学我说话
   grid.appendChild(styleLearningCard()); // 风格学习（M17-补丁1 A5，卡上带生效链）
   grid.appendChild(styleDataCard()); // M20-补丁1 J：语料与素材（卡上带生效链）
-  for (const card of grid.querySelectorAll(".knob-card")) {
+  // 仅标记 toggle 之后的功能卡（.novice-detail-toggle ~ .knob-card）为
+  // novice-detail；首层 preset 旋钮在 toggle 之前、不被标记、默认可见
+  for (const card of grid.querySelectorAll(".novice-detail-toggle ~ .knob-card")) {
     if (!card.classList.contains("novice-detail")) {
       card.classList.add("novice-detail");
     }

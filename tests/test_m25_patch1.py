@@ -545,3 +545,37 @@ def test_c6_global_status_row_anchor():
     assert 'id="global-status"' in html
     assert "她现在会主动做的事：" in APP_JS
     assert "renderGlobalStatus();" in APP_JS
+
+
+def test_c7_novice_preset_knobs_not_marked_detail():
+    """返工（M25-补丁1）：首层 preset 旋钮不被标记为 novice-detail。
+
+    根因：renderNovice 原实现末尾用 grid.querySelectorAll(".knob-card") 遍历
+    grid 内 *全部* .knob-card（含 buildKnobCard 产出的首层 preset 旋钮）并打上
+    novice-detail；而 CSS #novice-cards .novice-detail{display:none} 在折叠态下
+    把它们全藏住——新手页只剩栏目小标题，8 个 preset 旋钮 + 13 张功能卡不可见。
+
+    返工改为 .novice-detail-toggle ~ .knob-card（CSS 一般兄弟选择器，只选 toggle
+    之后的功能卡），首层 preset 旋钮在 toggle 之前、不被标记、默认可见。
+
+    局限：本断言是源码锚点（纯文本匹配），不替代浏览器渲染实测——
+    DOM 结构、CSS 层叠、grid 布局等观感由凛在 Chromium 实测验证。"""
+    idx = APP_JS.index("function renderNovice()")
+    body = APP_JS[idx:]
+    # 旧的 blanket 选择器（无排他）在全文件不得残留——它会误把首层 preset
+    # 旋钮也标记为 novice-detail，复现新手页不可见 bug
+    assert 'grid.querySelectorAll(".knob-card")' not in APP_JS, (
+        "renderNovice 仍含 querySelectorAll('.knob-card')（无排他）——"
+        "会把首层 preset 旋钮也标记为 novice-detail")
+    # 新选择器：只选 toggle 之后的功能卡
+    assert ".novice-detail-toggle ~ .knob-card" in body
+    # buildKnobCard 产出的首层旋钮 className 不含 novice-detail
+    idx_bk = APP_JS.index("function buildKnobCard(")
+    body_bk = APP_JS[idx_bk:idx_bk + 300]
+    assert 'card.className = "knob-card"' in body_bk
+    assert "novice-detail" not in body_bk
+    # 折叠开关行为与状态持久化保持不变（返工不触碰）
+    assert "state.expanded.__novice_detail" in body
+    assert "show-detail" in body
+    # 组标题与卡片相邻（返工修正 #2）：detailHeads 穿插在卡片之间
+    assert "detailHeads" in body
