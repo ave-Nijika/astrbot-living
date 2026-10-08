@@ -232,3 +232,29 @@ def test_main_pipeline_untouched_guards():
         "async function save", "async function load",
     ]:
         assert anchor in APP_JS, f"app.js 主链路锚点缺失：{anchor}"
+
+
+# ---------------------------------------------------------------------------
+# 补丁2（M28 说明书补缺）：成本风险提示必须落到说明书里
+# 事实依据：main.py 的 chat_prefix_cache 让聊天复用同一段对话记忆；而
+# preset_model 留空 = 它独处时直接借用聊天模型。共用同一个时，它每次活动、
+# 判断、说话都会把这批对话记忆挤掉重算 —— 之后聊天要多花钱。
+# 断言只锁用户语言关键词，不做逐字比对（避免脆化）。
+# ---------------------------------------------------------------------------
+def test_help_documents_model_cost_risk_to_chat():
+    """说明书必须写出「共用同一个大脑会让聊天变贵」这条风险提示。
+
+    要求用用户能看懂的说法（对话记忆挤掉重算 → 多花钱），
+    且不得出现「缓存」这类实现原理词。
+    """
+    assert "聊天" in HELP_JS, "说明书未提「聊天」侧的连带影响"
+    assert ("挤掉" in HELP_JS and "重算" in HELP_JS), (
+        "说明书应说清共用的后果（对话记忆挤掉重算）"
+    )
+    assert ("变贵" in HELP_JS or "多花钱" in HELP_JS), (
+        "说明书缺成本风险关键词：变贵/多花钱"
+    )
+    assert "缓存" not in HELP_JS, "说明书不得使用「缓存」等实现原理词"
+    assert "独处时用哪个 AI 大脑" in HELP_JS, (
+        "说明书应指向用户能找到的开关名（它独处时用哪个 AI 大脑）"
+    )
