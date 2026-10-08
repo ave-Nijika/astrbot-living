@@ -1217,6 +1217,20 @@ class LivingPlugin(Star):
                 "面板「能力档」选「命令行」，或把 autonomy.tier 设为 4"
             )
 
+    async def _prewarm_chromium_probe(self) -> None:
+        """M24-补丁1 配套 b：启动预热——离环跑一次 Chromium 探测并回写
+        进程内缓存，让首个活动装配时直接命中缓存（不再现起 Playwright
+        driver 子进程）。任何异常只记日志，绝不阻断启动。"""
+        try:
+            from .core.browser_tools import chromium_installed
+
+            await asyncio.to_thread(chromium_installed, True)
+        except Exception as e:
+            logger.warning(
+                f"[{PLUGIN_NAME}] Chromium 启动预热失败（不影响启动，"
+                f"首个活动装配时会再探测）: {e}"
+            )
+
     def _get_browser_session(self, write_level: int):
         """浏览器会话复用（同一会话跨活动共享 → 登录态保持）。
 
@@ -1573,6 +1587,10 @@ class LivingPlugin(Star):
 
         # M23-补丁1 A6：老配置 tier=3 的档位语义迁移说明（不得静默）
         self._log_tier_semantics_note()
+
+        # M24-补丁1 配套 b：Chromium 探测启动预热（离环 + 回写缓存，首个
+        # 活动直接命中；失败只记日志，不阻断启动）
+        await self._prewarm_chromium_probe()
 
         try:
             # 跨日结算用配置的睡眠债消退速率（热读，取自当前配置）
@@ -1989,12 +2007,13 @@ class LivingPlugin(Star):
     async def _api_browser_status_get(self):
         """浏览器能力状态（M15-补丁1 C3，可选加分项）：Chromium 二进制
         可用性只读探测。探测可能起一次 Playwright driver 子进程（数百毫秒），
-        放线程池跑避免卡事件循环；结果只读不缓存——面板每次打开都是实况。
+        放线程池跑避免卡事件循环；force=True 绕过探测缓存——面板每次打开
+        都是实况（M24-补丁1 配套 a），探测结果同时回写缓存供装配判定复用。
         任何异常按"未安装"反馈（安装指引在面板说明块与 README）。"""
         from .core.browser_tools import chromium_installed
 
         try:
-            installed = await asyncio.to_thread(chromium_installed)
+            installed = await asyncio.to_thread(chromium_installed, True)
             return {"status": "ok", "data": {"installed": bool(installed)}}
         except Exception:
             logger.exception(f"[{PLUGIN_NAME}] 浏览器状态探测失败")
