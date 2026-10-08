@@ -46,7 +46,7 @@ valence (mood), arousal, energy, fatigue, sleep_debt, and an interests table. Mo
 
 ### Sleep & daily rhythm
 
-No fixed sleep window — sleepiness accumulates naturally (awake time, circadian hints, wake-up appointments) and it sleeps when it's enough. A late-night stretch (`sleep.circadian_hint`, default 23:00-07:00) is when it naturally feels sleepy and sleepiness builds up faster; while asleep, replies are muted by default (`sleep.sleep_mute_replies`). Receiving several messages in a short span can wake it up (threshold randomly varies with sleep depth); after waking it stays talkative for 30 minutes. It may send a wake acknowledgment instantly, mutter a "dream" after waking, and honors "wake me at 7" style appointments — oversleeping gets an apology.
+No fixed sleep window — sleepiness accumulates naturally (awake time, circadian hints, wake-up appointments) and it sleeps when it's enough. A late-night stretch (`sleep.circadian_hint`, default 23:00-07:00) is when it naturally feels sleepier and sleepiness builds up faster. Once it actually falls asleep, `sleep.sleep_mute_replies` (on by default) intercepts messages without replying. Receiving several messages in a short span can wake it up (threshold randomly varies with sleep depth); after waking it stays talkative for 30 minutes. It may send a wake acknowledgment instantly, mutter a "dream" after waking, and honors "wake me at 7" style appointments — oversleeping gets an apology.
 
 ### Proactive outputs (seven exits)
 
