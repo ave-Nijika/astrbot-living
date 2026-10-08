@@ -21,6 +21,7 @@
     <div class="toolbar-actions">
       <button id="btn-save" class="btn primary" type="button">💾 保存改动</button>
       <button id="btn-reset" class="btn danger" type="button">↩ 恢复默认值</button>
+      <button id="btn-help" class="btn" type="button">📖 说明书</button>
     </div>
   </header>
 
@@ -63,6 +64,18 @@
         <button id="modal-cancel" class="btn" type="button">取消</button>
         <button id="modal-ok" class="btn danger" type="button">确认</button>
       </div>
+    </div>
+  </div>
+
+  <!-- M28-补丁1：内置说明书（模态形态照 prompt_preset；内容纯数据在
+    help-content.js，由 app.js 经 textContent 构节点渲染，零 HTML 字符串） -->
+  <div id="help-mask" class="help-mask hidden">
+    <div class="help-card" role="dialog" aria-modal="true" aria-label="living 使用说明书">
+      <div class="help-head">
+        <h2>📖 living 使用说明书</h2>
+        <button id="help-close" class="btn" type="button">✕ 关闭</button>
+      </div>
+      <div id="help-body" class="help-body"></div>
     </div>
   </div>
 

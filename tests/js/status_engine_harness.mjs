@@ -24,9 +24,13 @@ import {
   findAll,
   findFirst,
   textOf,
+  walk,
   StubElement,
   StubTextNode,
 } from "./dom_stub.mjs";
+/* M28-补丁1：说明书渲染冒烟要往同一份 LIVING_HELP 实例塞转义样例——
+ * import 拿到的是与 app.js 共享的同一模块实例（ES module 缓存）。 */
+import { LIVING_HELP } from "../../pages/config/help-content.js";
 
 const req = JSON.parse(await new Promise((resolve, reject) => {
   let buf = "";
@@ -293,12 +297,80 @@ async function toolsProbe(req) {
   };
 }
 
+/* M28-补丁1：内置说明书探针——渲染冒烟（节数与 LIVING_HELP 一致）+
+ * 三种关闭方式（关闭按钮 / 遮罩本体点击 target===currentTarget /
+ * Escape 仅开着时生效）+ 转义（塞含 <script>/& 的样例节 → 无可执行
+ * 标签、文本按字面出现在文本节点里）。 */
+async function helpProbe(req) {
+  const io = await bootPanel(req);
+  const mask = io.byId["help-mask"];
+  const body = io.byId["help-body"];
+  const titles = () => findAll(body, "help-section").map(
+    (s) => textOf((s.children || []).find((c) => c.tagName === "H3"))
+  );
+  const out = {
+    initial: {
+      hidden: mask.classList.contains("hidden"),
+      bodyChildren: body.children.length,
+    },
+  };
+  io.byId["btn-help"].click();
+  out.afterOpen = {
+    hidden: mask.classList.contains("hidden"),
+    sections: findAll(body, "help-section").length,
+    bodyChildren: body.children.length,
+    livingHelpLength: LIVING_HELP.length,
+    titles: titles(),
+  };
+  io.byId["help-close"].click();
+  out.afterCloseBtn = { hidden: mask.classList.contains("hidden") };
+  // 点遮罩关闭的守卫：把真实监听器拿来喂自定义事件（桩 dispatch 只能
+  // 造 target===currentTarget 的点击，这里两种情形都要验）
+  io.byId["btn-help"].click(); // 开
+  const clickLsn = mask._listeners.find(([t]) => t === "click")[1];
+  clickLsn({ target: { kind: "element" }, currentTarget: mask }); // 点在卡片内
+  out.maskClickOnCard = { hidden: mask.classList.contains("hidden") };
+  clickLsn({ target: mask, currentTarget: mask }); // 点在遮罩本体
+  out.maskClickOnMask = { hidden: mask.classList.contains("hidden") };
+  // Escape：开着时关；已关时保持关（守卫生效、不抛错）
+  io.byId["btn-help"].click();
+  document.dispatch("keydown", { key: "Escape" });
+  out.escapeWhenOpen = { hidden: mask.classList.contains("hidden") };
+  document.dispatch("keydown", { key: "Escape" });
+  out.escapeWhenClosed = { hidden: mask.classList.contains("hidden") };
+  // 转义样例：含 <script> 与 & 的文本必须以文本节点字面出现，不得成标签
+  LIVING_HELP.push({
+    title: "转义样例",
+    blocks: [{ t: "p", text: '<script>alert(1)</script> & "quotes"' }],
+  });
+  io.byId["btn-help"].click();
+  let scriptTags = 0;
+  let asTextNode = false;
+  walk(body, (n) => {
+    if (n.tagName === "SCRIPT") scriptTags += 1;
+    for (const c of n.children || []) {
+      if (c.kind === "#text" && c.text.includes("<script>")) asTextNode = true;
+    }
+  });
+  out.escape = {
+    scriptTags,
+    asTextNode,
+    literalText: body.textContent.includes('<script>alert(1)</script> & "quotes"'),
+    sectionsAfterPush: findAll(body, "help-section").length,
+  };
+  LIVING_HELP.pop(); // 还原共享实例
+  out.loadError = io.byId["load-error"].textContent;
+  return out;
+}
+
 if (req.op === "renderPanel" || req.op === "renderPanelFlat") {
   out = await renderPanel(req);
 } else if (req.op === "statusRecomputeProbe") {
   out = await statusRecomputeProbe(req);
 } else if (req.op === "toolsProbe") {
   out = await toolsProbe(req);
+} else if (req.op === "helpProbe") {
+  out = await helpProbe(req);
 } else if (req.op === "siblingProbe") {
   // M27-补丁1 验收 b：~ 一般兄弟选择器（真值集合、次序、文本节点与前置兄弟排除）
   installDomStub();

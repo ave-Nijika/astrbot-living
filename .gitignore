@@ -17,3 +17,7 @@ tests/*.db
 
 # AstrBot 代码在以本仓库为 cwd 的进程里会把数据目录解析到 ./data（含敏感配置）——绝不入库
 data/
+
+# M28：mock 面板服务器在仓库 cwd 退出时会重建根级配置副本（AstrBot 数据目录
+# 解析到 ./data 的同类问题，见 3753eb8）——运行产物不入库
+/astrbot_plugin_living_config.json

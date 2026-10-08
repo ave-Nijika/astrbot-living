@@ -15,6 +15,7 @@ import {
   renderChain,
   runnableActivities,
 } from "./status-engine.js";
+import { LIVING_HELP } from "./help-content.js"; // M28-补丁1：内置说明书内容（纯数据）
 
 /* M25-补丁1 配套 a：新手旋钮的展示顺序不再由本文件的 KNOB_ORDER 硬编码
  * （已随重排移除）——归组与顺序统一来自 panel_layout.json（后端透传
@@ -2787,11 +2788,94 @@ function styleDataCard() {
   return card;
 }
 
+/* ---------------- M28-补丁1：内置说明书（模态照 prompt_preset 形态） ----------------
+ * 内容来源 help-content.js 的 LIVING_HELP（纯数据）。安全路线：全程
+ * textContent / createElement 构节点——数据里的 < & " 等字符按字面显示，
+ * 不存在拼 HTML 的注入面（因此不需要 escapeHtml）。 */
+
+function renderHelpModal() {
+  const body = $("#help-body");
+  body.textContent = ""; // 重建（说明书内容随版本可能变）
+  for (const section of LIVING_HELP) {
+    const sec = document.createElement("section");
+    sec.className = "help-section";
+    const h3 = document.createElement("h3");
+    h3.textContent = section.title;
+    sec.appendChild(h3);
+    for (const block of section.blocks || []) {
+      if (block.t === "list") {
+        const ul = document.createElement("ul");
+        for (const item of block.items || []) {
+          const li = document.createElement("li");
+          li.textContent = item;
+          ul.appendChild(li);
+        }
+        sec.appendChild(ul);
+      } else if (block.t === "table") {
+        const wrap = document.createElement("div");
+        wrap.className = "help-table-wrap";
+        const table = document.createElement("table");
+        table.className = "help-table";
+        const thead = document.createElement("thead");
+        const headRow = document.createElement("tr");
+        for (const cell of block.head || []) {
+          const th = document.createElement("th");
+          th.textContent = cell;
+          headRow.appendChild(th);
+        }
+        thead.appendChild(headRow);
+        table.appendChild(thead);
+        const tbody = document.createElement("tbody");
+        for (const row of block.rows || []) {
+          const tr = document.createElement("tr");
+          for (const cell of row) {
+            const td = document.createElement("td");
+            td.textContent = cell;
+            tr.appendChild(td);
+          }
+          tbody.appendChild(tr);
+        }
+        table.appendChild(tbody);
+        wrap.appendChild(table);
+        sec.appendChild(wrap);
+      } else {
+        // 默认按一段话（t === "p" 或未标注）
+        const p = document.createElement("p");
+        p.className = "help-block";
+        p.textContent = block.text;
+        sec.appendChild(p);
+      }
+    }
+    body.appendChild(sec);
+  }
+}
+
+function openHelpModal() {
+  renderHelpModal();
+  $("#help-mask").classList.remove("hidden");
+}
+
+function closeHelpModal() {
+  $("#help-mask").classList.add("hidden");
+}
+
 async function boot() {
   $("#tab-novice").addEventListener("click", () => switchView("novice"));
   $("#tab-expert").addEventListener("click", () => switchView("expert"));
   $("#btn-save").addEventListener("click", save);
   $("#btn-reset").addEventListener("click", reset);
+  // M28-补丁1：说明书三开两关——按钮开；关闭按钮、点遮罩（只认遮罩本体，
+  // 点卡片不关）、Escape（仅弹层开着时）关。新手/专家两视图共用工具栏按钮。
+  $("#btn-help").addEventListener("click", openHelpModal);
+  $("#help-close").addEventListener("click", closeHelpModal);
+  $("#help-mask").addEventListener("click", (e) => {
+    if (e.target === e.currentTarget) closeHelpModal();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !$("#help-mask").classList.contains("hidden")) {
+      closeHelpModal();
+    }
+  });
   try {
     await load();
   } catch (e) {

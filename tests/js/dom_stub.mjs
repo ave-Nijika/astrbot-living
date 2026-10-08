@@ -116,9 +116,18 @@ export class StubElement {
   }
 
   /* M27-补丁1：事件探针——把注册的监听器真正跑起来（渲染期不触发，
-   * 仅供 harness 在渲染完成后模拟用户点击/改值）。 */
+   * 仅供 harness 在渲染完成后模拟用户点击/改值）。
+   * M28-补丁1：事件对象补 currentTarget（真实 DOM 语义——冒泡阶段监听器
+   * 上 target 是实际点击节点、currentTarget 是挂监听的节点；说明书弹层
+   * "点遮罩关闭"正是判 e.target === e.currentTarget）。 */
   dispatch(type) {
-    const evt = { type, target: this, preventDefault() {}, stopPropagation() {} };
+    const evt = {
+      type,
+      target: this,
+      currentTarget: this,
+      preventDefault() {},
+      stopPropagation() {},
+    };
     for (const [t, fn] of [...this._listeners]) {
       if (t === type) fn(evt);
     }
@@ -213,7 +222,14 @@ export function installDomStub() {
     "tab-expert": new StubElement("button"),
     "load-error": new StubElement("p"),
     "toast": new StubElement("div"),
+    // M28-补丁1：内置说明书的固定 id（index.html 同名节点）
+    "btn-help": new StubElement("button"),
+    "help-mask": new StubElement("div"),
+    "help-close": new StubElement("button"),
+    "help-body": new StubElement("div"),
   };
+  // M28-补丁1：镜像 index.html 的初始类（弹层默认收起）
+  byId["help-mask"].className = "help-mask hidden";
   byId["view-expert"].className = "view hidden"; // 初渲染为新手视图
   byId["view-novice"].className = "view";
   byId["expert-groups"].className = "drawer-list";
@@ -222,6 +238,18 @@ export function installDomStub() {
   const document = {
     createElement: (tag) => new StubElement(tag),
     createTextNode: (text) => new StubTextNode(text),
+    // M28-补丁1：document 级监听（app.js 的 Escape 关说明书）+ 事件派发，
+    // 供 harness 模拟 keydown。事件对象由测试侧给（带 key/target）。
+    _listeners: [],
+    addEventListener(type, fn) {
+      this._listeners.push([type, fn]);
+    },
+    dispatch(type, evt) {
+      const e = evt || { type, preventDefault() {}, stopPropagation() {} };
+      for (const [t, fn] of [...this._listeners]) {
+        if (t === type) fn(e);
+      }
+    },
     querySelector: (sel) => {
       const m = /^#([A-Za-z0-9_-]+)$/.exec(String(sel || ""));
       // M27-补丁1：非 #id 选择器抛错（$() 只在 index.html 固定 id 上用；

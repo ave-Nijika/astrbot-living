@@ -70,7 +70,8 @@ print(f"连通分量: {len(comps)} 个（大小 {[len(c) for c in comps]}）")
 # ---- 定位关键节点 ----
 cur.execute("SELECT id, node_type, canonical_value FROM graph_nodes WHERE node_type='person'")
 persons = cur.fetchall()
-bot_node = next((r[0] for r in persons if str(r[2] or "").endswith("3410132338")), None)
+# 脱敏：原按真实 QQ 尾号定位 bot 身份节点，按 45dbfbc 先例替换为中性示例
+bot_node = next((r[0] for r in persons if str(r[2] or "").endswith("10001")), None)
 stale_node = next((r[0] for r in persons if r[2] == OLD_CANON), None)
 print(f"bot 身份节点(aiocqhttp)={bot_node}  陈旧节点(cron:astrbot)={stale_node}")
 
