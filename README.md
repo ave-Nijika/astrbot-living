@@ -17,7 +17,7 @@
 
 1. **安装**：AstrBot WebUI → 插件管理 → 从仓库安装，填入本仓库地址；或手动克隆到 `data/plugins/astrbot_plugin_living/`，重启 AstrBot
 2. **最小配置**：什么都不用改，默认值即可跑起来。建议只做一件事——在面板"新手"页给它配一个**独立的模型 provider**（原因见[模型配置与缓存保护](#模型配置与缓存保护)）
-3. **看到它开始活动**：装好后它按默认节奏（约每 45 分钟醒一次）自己决定做不做事。发 `/living` 看它现在的状态；过一阵它的主动消息会出现在你配置的目标会话里
+3. **看到它开始活动**：默认每 5 分钟醒一次做判定（「安静/正常/活泼」新手档会把间隔调成 90 / 45 / 20 分钟），但每日活动上限默认只 3 次，所以它不会真的每次都动手。发 `/living` 看它现在的状态；过一阵它的主动消息会出现在你配置的目标会话里
 4. **想调它**：插件详情页 → Pages → 「living 配置面板」。新手页是常用开关，专家页是全部细项；改完记得「💾 保存改动」（热生效，不用重启）。右上角「📖 说明书」是给普通用户的内置手册
 
 可选搭配：[astrbot_plugin_livingmemory](https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory)（长期记忆 + 知识图谱，不装则降级内置 SQLite 后端）；Playwright 的 Chromium 内核（真实浏览器能力，见[浏览器能力（可选安装）](#浏览器能力可选安装)）。
@@ -52,7 +52,7 @@
 ### 睡眠与作息
 
 - **自主作息**：没有固定的睡觉时间窗——睡意按清醒时长、昼夜节律、起床约定等自然积累，攒够了就睡；一觉时长、白天小睡都由状态涌现
-- **作息窗口**（`sleep.sleep_window`，默认 00:30-08:00）：深夜拦消息（`sleep.sleep_mute_replies`），不回复
+- **昼夜节律时段**（`sleep.circadian_hint`，默认 23:00-07:00）：这个时段它天然犯困、睡意更容易攒够；期间 `sleep.sleep_mute_replies` 默认拦消息不回复
 - **吵醒**：休眠中短时间连发多条消息会把它吵醒（阈值可随机浮动，睡得深要多几条），有起床气概率；醒后 30 分钟清醒待机（期间每条消息刷新待机）
 - **唤醒确认**：被吵醒立即回一条预置消息，不等模型
 - **梦**：睡醒后低概率说一段"梦话"，写进记忆
@@ -94,7 +94,7 @@
 
 老配置的 tier=3 升级后会自动失去命令行（第 4 档独占），启动日志会说明。
 
-**写权限**（`autonomy.write_level`）：管它在网络上动不动手——`read` 只看 → `browse` 能点链接/翻页/填表单但不提交 → `comment` 可点赞/评论/提交表单 → `full` 发帖/私信/下单都行。越权动作按白名单保守拒绝。
+**写权限**（`autonomy.write_level`，0-3 整数，面板档位标签为 read / browse / comment / full）：管它在网络上动不动手——0（read）只看 → 1（browse）能点链接/翻页/填表单但不提交 → 2（comment）可点赞/评论/提交表单 → 3（full）发帖/私信/下单都行。越权动作按白名单保守拒绝。
 
 ## 风格学习
 
@@ -152,19 +152,19 @@
 | 配置 | 说明 | 默认值 |
 |---|---|---|
 | `decision.decision_mode` | 决策模式：rules / hybrid / llm | hybrid |
-| `decision.impulse_check_interval_minutes` | 心跳间隔（分钟） | 45 |
+| `decision.impulse_check_interval_minutes` | 心跳间隔（分钟） | 5 |
 | `decision.daily_impulse_limit` | 每日活动上限（0 = 不限） | 3 |
 | `decision.single_run_token_budget` | 单次活动 token 硬闸 | 20000 |
 | `output_gate.daily_message_limit` | 每日主动消息上限 | 10 |
-| `output_gate.message_min_interval_minutes` | 两条主动消息最小间隔（分钟） | 60 |
-| `sleep.sleep_window` | 作息窗口 | 00:30-08:00 |
+| `output_gate.message_min_interval_minutes` | 两条主动消息最小间隔（分钟） | 30 |
+| `sleep.circadian_hint` | 昼夜节律时段 | 23:00-07:00 |
 | `sleep.sleep_mute_replies` | 休眠期拦截消息 | true |
 | `sleep.standby_blocks_sleep` | 聊天中不入睡 | true |
 | `sleep.wake_source` | 吵醒计数来源：all / owner_only | all |
 | `autonomy.tier` | 能力档位 0-4 | 1（观看） |
-| `autonomy.write_level` | 网络写权限 | read（只看） |
+| `autonomy.write_level` | 网络写权限 0-3（0=只看，见上） | 0（只看） |
 | `capabilities.web_search_enabled` | 允许联网搜索（关 → 冲浪/读文章停） | true |
-| `capabilities.agent_tools_mode` | 复用本体工具：off / persona / custom | persona |
+| `capabilities.agent_tools_mode` | 复用本体工具：off / persona / custom | off |
 | `style_learning.enabled` | 风格学习总开关 | false |
 | `style_learning.daily_review_enabled` | 每日复盘（需判断模型） | true |
 | `judge.mode` | 判断模型档位：off / local / api | off |

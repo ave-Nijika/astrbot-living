@@ -19,7 +19,7 @@ Most chatbots only respond when messaged. This plugin gives your AstrBot somethi
 
 1. **Install**: AstrBot WebUI → Plugin Management → Install from repo, fill in this repo URL; or clone into `data/plugins/astrbot_plugin_living/` and restart AstrBot
 2. **Minimal config**: defaults work out of the box. One thing is strongly recommended — give it a **dedicated model provider** in the panel's novice view (why: see [Model config & cache protection](#model-config--cache-protection))
-3. **See it move**: it wakes roughly every 45 minutes by default and decides whether to do something. Send `/living` to check its status; its proactive messages will appear in your configured target sessions
+3. **See it move**: by default it wakes every 5 minutes to check whether to do something (the "quiet/normal/active" activity level maps the interval to 90 / 45 / 20 minutes), but the daily activity cap is 3 by default — so it won't actually act on every heartbeat. Send `/living` to check its status; its proactive messages will appear in your configured target sessions
 4. **Tune it**: plugin details → Pages → the living config panel. Novice view has the common knobs; expert view has everything. Remember to hit "Save" — changes are hot-reloaded, no restart needed. The "📖 Help" button opens a built-in user manual
 
 Optional: [astrbot_plugin_livingmemory](https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory) for long-term memory + knowledge graph (falls back to a built-in SQLite backend without it); Playwright's Chromium for real browser capabilities (see [Browser capabilities](#browser-capabilities)).
@@ -46,7 +46,7 @@ valence (mood), arousal, energy, fatigue, sleep_debt, and an interests table. Mo
 
 ### Sleep & daily rhythm
 
-No fixed sleep window — sleepiness accumulates naturally (awake time, circadian hints, wake-up appointments) and it sleeps when it's enough. A late-night window (`sleep.sleep_window`, default 00:30-08:00) mutes replies. Receiving several messages in a short span can wake it up (threshold randomly varies with sleep depth); after waking it stays talkative for 30 minutes. It may send a wake acknowledgment instantly, mutter a "dream" after waking, and honors "wake me at 7" style appointments — oversleeping gets an apology.
+No fixed sleep window — sleepiness accumulates naturally (awake time, circadian hints, wake-up appointments) and it sleeps when it's enough. A late-night stretch (`sleep.circadian_hint`, default 23:00-07:00) is when it naturally feels sleepy and sleepiness builds up faster; while asleep, replies are muted by default (`sleep.sleep_mute_replies`). Receiving several messages in a short span can wake it up (threshold randomly varies with sleep depth); after waking it stays talkative for 30 minutes. It may send a wake acknowledgment instantly, mutter a "dream" after waking, and honors "wake me at 7" style appointments — oversleeping gets an apology.
 
 ### Proactive outputs (seven exits)
 
@@ -80,7 +80,7 @@ Two knobs decide how far its hands reach (both on the novice view):
 | 3 | Full | Top of file abilities (same as 2, **no shell**) |
 | 4 | Shell | + execute commands on this machine — **local shell access**, also requires write level ≥ 2; enable only if you trust it |
 
-**Write access** (`autonomy.write_level`): read (look only) → browse (click/paginate/fill forms, no submit) → comment (like/comment/submit) → full (post/DM/order). Out-of-whitelist actions are conservatively rejected.
+**Write access** (`autonomy.write_level`, integer 0-3 — the panel labels them read / browse / comment / full): 0 (read, look only) → 1 (browse, click/paginate/fill forms, no submit) → 2 (comment, like/comment/submit forms) → 3 (full, post/DM/order). Out-of-whitelist actions are conservatively rejected.
 
 ## Style learning
 
@@ -88,7 +88,7 @@ Make it sound like a given person/style (`style_learning.enabled`):
 
 - **Four layers**: materials (raw text you feed from the panel) → corpus (six-dimension style fragments) → distillation (high-score, often-used fragments merged) → usage log
 - **Usage**: paste raw text into the "Materials" card; it digests after its next activity (or click "Process now"). It can also learn from web articles it reads
-- **Daily review** (default 04:00): the judge model re-scores recent corpus — requires `judge.provider_id`, skipped automatically without it
+- **Daily review** (`style_learning.daily_review_enabled`, default 04:00): the judge model re-scores recent corpus — requires `judge.provider_id`, skipped automatically without it
 - **Prerequisites**: LLM access for distillation/review (dedicated provider recommended); web reading for corpus harvesting
 
 ## Judge model ("little brain")
@@ -130,14 +130,14 @@ Everything is hot-reloadable from the WebUI. Full list in `_conf_schema.json`; t
 | Key | Meaning | Default |
 |---|---|---|
 | `decision.decision_mode` | rules / hybrid / llm | hybrid |
-| `decision.impulse_check_interval_minutes` | Heartbeat interval (minutes) | 45 |
+| `decision.impulse_check_interval_minutes` | Heartbeat interval (minutes) | 5 |
 | `decision.daily_impulse_limit` | Daily activity cap (0 = unlimited) | 3 |
 | `decision.single_run_token_budget` | Per-activity token cap | 20000 |
 | `output_gate.daily_message_limit` | Daily proactive message cap | 10 |
-| `sleep.sleep_window` | Late-night mute window | 00:30-08:00 |
+| `sleep.circadian_hint` | Circadian (late-night) stretch | 23:00-07:00 |
 | `sleep.sleep_mute_replies` | Mute replies while asleep | true |
 | `autonomy.tier` | Capability tier 0-4 | 1 (watch) |
-| `autonomy.write_level` | Network write access | read |
+| `autonomy.write_level` | Network write access, 0-3 (0 = look only) | 0 (look only) |
 | `capabilities.web_search_enabled` | Web search on/off | true |
 | `style_learning.enabled` | Style learning on/off | false |
 | `judge.mode` | Judge model: off / local / api | off |
