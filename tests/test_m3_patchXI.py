@@ -302,38 +302,32 @@ def test_path_protection():
     assert not is_path_protected("workspace/screenshot.png")
 
 
-def test_write_level_gate():
-    """write_level 分层（B2.4）：L0 禁写 / L2 区内可写 / L3 全写。"""
-    assert is_write_allowed("ws/file.txt", "ws", write_level=0) is False
-    assert is_write_allowed("ws/file.txt", "ws", write_level=1) is False
-    assert is_write_allowed("ws/file.txt", "ws", write_level=2) is True
-    assert is_write_allowed("ws/file.txt", "ws", write_level=3) is True
-    assert is_write_allowed("/etc/passwd", "ws", write_level=2) is False  # 区外
-    assert is_write_allowed("/etc/passwd", "ws", write_level=3) is True
-    assert is_write_allowed("data/config/cmd_config.json", "ws", 3) is False
+def test_write_allowed_by_workspace_only():
+    """M29-补丁1 职责解耦：本机写入只看"保护路径 + 工作区边界"，
+    不再看 write_level（对外档位管不到本机文件）。"""
+    assert is_write_allowed("ws/file.txt", "ws") is True
+    assert is_write_allowed("/etc/passwd", "ws") is False  # 区外
+    assert is_write_allowed("data/config/cmd_config.json", "ws") is False  # 红线
 
 
 def test_tool_manifest_by_tier():
     """清单函数按档位递进（补丁 XV：与实际挂载名一致，含 click/type/list）。"""
-    m0 = build_tool_manifest(0, 0, has_browser=False)
+    m0 = build_tool_manifest(0, has_browser=False)
     assert "web_search" in m0 and "browser_navigate" not in m0
-    m1 = build_tool_manifest(1, 0, has_browser=True)
+    m1 = build_tool_manifest(1, has_browser=True)
     assert "browser_navigate" in m1
     assert "browser_click" in m1 and "browser_type" in m1
-    m2 = build_tool_manifest(2, 2, has_browser=True, has_workspace=True)
+    m2 = build_tool_manifest(2, has_browser=True, has_workspace=True)
     assert "workspace_read" in m2 and "workspace_list" in m2
     assert "local_shell" not in m2
-    # M23-补丁1 A1/A3：tier 3 不再含 shell（文件能力的顶），shell 独占
-    # 第 4 档且需 write_level>=2（C1/C2 与实际挂载同条件）
-    m3 = build_tool_manifest(3, 3, has_browser=True, has_workspace=True)
+    # M23-补丁1 A1/A3：tier 3 不再含 shell（文件能力的顶）；M29-补丁1：
+    # shell 挂载/清单只看 tier——tier 4 与 write_level 解耦
+    m3 = build_tool_manifest(3, has_browser=True, has_workspace=True)
     assert "local_shell" not in m3
-    m4 = build_tool_manifest(4, 2, has_browser=True, has_workspace=True)
+    m4 = build_tool_manifest(4, has_browser=True, has_workspace=True)
     assert "local_shell" in m4
-    assert "local_shell" not in build_tool_manifest(
-        4, 1, has_browser=True, has_workspace=True
-    )
     # has_workspace=False 时清单不预告工作区工具（与实际挂载条件一致）
-    m2_now = build_tool_manifest(2, 2, has_browser=True, has_workspace=False)
+    m2_now = build_tool_manifest(2, has_browser=True, has_workspace=False)
     assert "workspace_read" not in m2_now
 
 

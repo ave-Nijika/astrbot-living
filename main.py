@@ -1357,7 +1357,6 @@ class LivingPlugin(Star):
         # M15-补丁1 D5：追加结果天然反映在"实际挂载"清单里。
         manifest = build_tool_manifest(
             tier,
-            write_level,
             # M15-补丁2 A2 闭环：fail-closed 挂载后须同口径——未装 Chromium
             # 时实际不挂五件套，manifest 也必须同步不列，"清单 vs 实际挂载"
             # 的一致性日志才有意义（否则天天假报不一致）。

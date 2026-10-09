@@ -78,9 +78,9 @@ Two knobs decide how far its hands reach (both on the novice view):
 | 1 | Watch (default) | Web browsing & search; five browser tools if Chromium is installed |
 | 2 | Home | + read/write files and run mini-programs in its own workspace |
 | 3 | Full | Top of file abilities (same as 2, **no shell**) |
-| 4 | Shell | + execute commands on this machine — **local shell access**, also requires write level ≥ 2; enable only if you trust it |
+| 4 | Shell | + execute commands on this machine — **local shell access**; enable only if you trust it |
 
-**Write access** (`autonomy.write_level`, integer 0-3 — the panel labels them read / browse / comment / full): 0 (read, look only) → 1 (browse, click/paginate/fill forms, no submit) → 2 (comment, like/comment/submit forms) → 3 (full, post/DM/order). Out-of-whitelist actions are conservatively rejected.
+**Write access** (`autonomy.write_level`, integer 0-3 — the panel labels them read / browse / comment / full) governs **online actions only** — it does not affect local file writes or the shell (those follow the capability tier): 0 (read, look only) → 1 (browse, click/paginate/fill forms, no submit) → 2 (comment, like/comment/submit forms) → 3 (full, post/DM/order). Out-of-whitelist actions are conservatively rejected.
 
 ## Style learning
 

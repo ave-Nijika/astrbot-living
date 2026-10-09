@@ -341,10 +341,11 @@ def test_a_conf_group_function_contract():
 # B 组：workspace_write 的 NameError
 # ===========================================================================
 def test_t7_workspace_write_no_nameerror(tmp_path):
-    """T7：绑定 tier≥2（write_level=2）+ 工作区，写入不再抛 NameError。"""
+    """T7：绑定工作区写入不再抛 NameError（M29-补丁1 起 bind 不再收
+    write_level——本机写入与对外写层级解耦）。"""
     ws = tmp_path / "workspace"
     ws.mkdir()
-    tool = WorkspaceWriteTool().bind(str(ws), write_level=2)
+    tool = WorkspaceWriteTool().bind(str(ws))
     result = asyncio.run(tool.call(None, path="notes/todo.txt", content="买猫粮"))
     assert "已写入" in str(result), f"正常写入失败: {result}"
     assert (ws / "notes" / "todo.txt").read_text(encoding="utf-8") == "买猫粮"
@@ -354,20 +355,21 @@ def test_t7_workspace_write_out_of_bounds_rejected(tmp_path):
     """T7：越界路径仍被拒（既有权限语义零变化）。"""
     ws = tmp_path / "workspace"
     ws.mkdir()
-    tool = WorkspaceWriteTool().bind(str(ws), write_level=2)
+    tool = WorkspaceWriteTool().bind(str(ws))
     result = asyncio.run(tool.call(None, path="../escape.txt", content="x"))
     assert "拒绝" in str(result)
     assert not (tmp_path / "escape.txt").exists()
 
 
-def test_t7_workspace_write_below_level2_rejected(tmp_path):
-    """T7：write_level<2 仍一律拒（is_write_allowed 的既有闸门）。"""
+def test_t7_workspace_write_ignores_write_level(tmp_path):
+    """T7（M29-补丁1 改写）：write_level 不再影响本机写入——旧闸门
+    （write_level<2 一律拒）已撤销，工作区内 write_level=1 也可写。"""
     ws = tmp_path / "workspace"
     ws.mkdir()
-    tool = WorkspaceWriteTool().bind(str(ws), write_level=1)
+    tool = WorkspaceWriteTool().bind(str(ws))
     result = asyncio.run(tool.call(None, path="ok.txt", content="x"))
-    assert "拒绝" in str(result)
-    assert not (ws / "ok.txt").exists()
+    assert "已写入" in str(result)
+    assert (ws / "ok.txt").exists()
 
 
 # ===========================================================================

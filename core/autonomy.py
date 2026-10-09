@@ -14,7 +14,9 @@ from typing import Any
 #   1 观看 = + 浏览器五件套
 #   2 居家 = + 工作区文件三件套（读/写/列）
 #   3 自由 = 同 2（文件能力的顶，不含命令行）
-#   4 命令行 = + 本机命令行（等价于把这台电脑交给AstrBot，须 write_level>=2）
+#   4 命令行 = + 本机命令行（等价于把这台电脑交给AstrBot，请确认信任后再开）
+# M29-补丁1 起两条线各管各的：tier 管对内（本机文件/命令行），write_level
+# 管对外（网页上的动作，见 _WRITE_LEVEL_ALLOWED）——互不交叉。
 TIER_NAMES = {0: "静养", 1: "观看", 2: "居家", 3: "自由", 4: "命令行"}
 WRITE_LEVEL_NAMES = {0: "只读", 1: "浏览交互", 2: "轻写入", 3: "全权"}
 
@@ -65,13 +67,14 @@ def is_path_protected(path: str) -> bool:
     return any(normalized.startswith(p) for p in _PROTECTED_PREFIXES)
 
 
-def is_write_allowed(path: str, workspace: str, write_level: int) -> bool:
-    if write_level < 2:
-        return False
+def is_write_allowed(path: str, workspace: str) -> bool:
+    """本机写入判定：红线路径一律拒，其余必须在 workspace 内。
+
+    M29-补丁1 职责解耦：不再看 write_level（对外档位只管网页上的动作，
+    管不到本机文件）——工作区边界仍然保留，越界即拒。
+    """
     if is_path_protected(path):
         return False
-    if write_level >= 3:
-        return True
     ws = str(workspace or "").replace("\\", "/").strip().rstrip("/")
     p = str(path).replace("\\", "/").strip()
     return bool(ws) and p.startswith(ws)
@@ -79,7 +82,6 @@ def is_write_allowed(path: str, workspace: str, write_level: int) -> bool:
 
 def build_tool_manifest(
     tier: int,
-    write_level: int,
     has_browser: bool = False,
     has_workspace: bool = False,
     has_search: bool = True,
@@ -93,9 +95,9 @@ def build_tool_manifest(
     （grep 同源问题）：has_search=False（capabilities.web_search_enabled=
     false）时不列 web_search——否则搜索关闭下"清单 vs 实际挂载"天天假报
     不一致（与 M15-补丁2 给 has_browser 做的 fail-closed 同口径）。
-    M23-补丁1 A3/C2：local_shell 只在 tier>=4 且 write_level>=2 时列入，
-    与 build_living_tools 的挂载条件逐字同款（shell 独占第 4 档 + 写权限
-    闸门都是挂载时判断，清单才不会谎报能力）。
+    M23-补丁1 A3：local_shell 只在 tier>=4 时列入；M29-补丁1 撤销 C2 的
+    "shell 另需写权限闸门"半个决定——write_level 只管对外动作，shell 挂载
+    只看 tier，清单才不会谎报/漏报能力。
     """
     names: list[str] = []
     if has_search:
@@ -108,7 +110,7 @@ def build_tool_manifest(
         ]
     if tier >= 2 and has_workspace:
         names += ["workspace_read", "workspace_write", "workspace_list"]
-    if tier >= 4 and write_level >= 2:
+    if tier >= 4:
         names += ["local_shell"]
     return names
 

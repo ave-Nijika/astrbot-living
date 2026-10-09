@@ -247,7 +247,7 @@ def build_living_tools(
 ) -> ToolSet:
     """按能力档位装配 ToolSet（任务书 M3 补丁 XI-B1/B2）。
 
-    tier 决定挂载哪些工具，write_level 决定写操作权限，
+    tier 决定挂载哪些工具，write_level 决定对外（网页）写操作权限，
     workspace 限制文件操作目录。每次活动周期重建（配置热读）。
 
     M23-补丁1 A1 起的档位阶梯（shell 独占最高档）：
@@ -255,7 +255,7 @@ def build_living_tools(
     tier >= 1: + 浏览器工具（Chromium 探测通过时）
     tier >= 2: + 工作区文件三件套
     tier 3: 同 2（文件能力的顶，不含命令行——老 tier=3 的 shell 已上移）
-    tier >= 4: + 本机 shell（且需 write_level >= 2，见 C1）
+    tier >= 4: + 本机 shell（M29-补丁1 起只看 tier，不再看 write_level）
 
     M15-补丁1 E2：web_search_enabled=False 时 web_search 不挂载（独立
     关掉博查搜索；fetch_page 与其他能力不受影响）。C0：image_probe/
@@ -315,27 +315,22 @@ def build_living_tools(
             except Exception as e:
                 logger.warning(f'浏览器工具加载失败（不影响其他工具）: {e}', exc_info=True)
 
-    # tier >= 2: 工作区受限的文件工具（任务书 M3 补丁 XIV 2.1）
+    # tier >= 2: 工作区受限的文件工具（任务书 M3 补丁 XIV 2.1；M29-补丁1
+    # 起 bind 不再收 write_level——本机文件写入只看红线路径 + 工作区边界）
     if tier >= 2 and workspace:
-        tools.append(WorkspaceReadTool().bind(workspace, write_level))
-        tools.append(WorkspaceWriteTool().bind(workspace, write_level))
+        tools.append(WorkspaceReadTool().bind(workspace))
+        tools.append(WorkspaceWriteTool().bind(workspace))
         tools.append(WorkspaceListTool().bind(workspace))
 
     # M23-补丁1 A1：shell 独占第 4 档——tier 3 不再含本机命令行（老配置
     # tier=3 升级后自动失去 shell，有意为之的安全默认，main.initialize
     # 有对应的启动说明日志）。
-    # M23-补丁1 C1（方案甲：挂载时判断）：write_level >= 2 才挂载——shell
-    # 与"写工作区文件"同属能改动本机的能力，同级闸门；选挂载时判断而非
-    # 执行时拒绝，因为挂载清单（build_tool_manifest）能如实反映"现在
-    # 给没给"，延续 M15/M20"清单=实际挂载"口径；挂了再拒会让清单谎报
-    # 能力，还让它白耗工具轮数去撞墙。
-    if tier >= 4 and write_level >= 2:
-        tools.append(LocalShellTool().bind(workspace, write_level))
-    elif tier >= 4:
-        logger.info(
-            f"tier=4 但 write_level={write_level}(<2)：本地命令行不挂载"
-            "（与写文件同级，需轻写入档及以上）"
-        )
+    # M29-补丁1（撤销 M23-补丁1 C1 的写权限闸门）：shell 挂载只看 tier。
+    # write_level 的语义是"对外（网页上的动作）"，管不到本机操作——本机
+    # 文件与命令行统一由 tier 一条线管（2 居家=文件工具，4 命令行=+shell）。
+    # 挂载时判断（而非挂了再拒）延续 M23 的清单=实际挂载口径。
+    if tier >= 4:
+        tools.append(LocalShellTool().bind(workspace))
 
     return ToolSet(tools=tools)
 
@@ -365,11 +360,9 @@ class WorkspaceReadTool(FunctionTool):
         "required": ["path"],
     })
     _workspace: str = ""
-    _write_level: int = 0
 
-    def bind(self, workspace: str, write_level: int = 0) -> "WorkspaceReadTool":
+    def bind(self, workspace: str) -> "WorkspaceReadTool":
         self._workspace = workspace
-        self._write_level = write_level
         return self
 
     async def call(self, context, **kwargs) -> ToolExecResult:
@@ -387,7 +380,8 @@ class WorkspaceReadTool(FunctionTool):
 
 @pydantic_dataclass
 class WorkspaceWriteTool(FunctionTool):
-    """写工作区内文件。受 is_write_allowed + write_level >= 2 双重校验。"""
+    """写工作区内文件。受 is_write_allowed 校验（红线路径 + 工作区边界，
+    M29-补丁1 起不再看 write_level）。"""
 
     name: str = "workspace_write"
     description: str = "在工作区内写一个文本文件。路径必须在工作区范围内。"
@@ -400,18 +394,16 @@ class WorkspaceWriteTool(FunctionTool):
         "required": ["path", "content"],
     })
     _workspace: str = ""
-    _write_level: int = 0
 
-    def bind(self, workspace: str, write_level: int = 0) -> "WorkspaceWriteTool":
+    def bind(self, workspace: str) -> "WorkspaceWriteTool":
         self._workspace = workspace
-        self._write_level = write_level
         return self
 
     async def call(self, context, **kwargs) -> ToolExecResult:
         rel = str(kwargs.get("path", "")).strip()
         text = str(kwargs.get("content", ""))
         full = str(Path(self._workspace, rel).resolve())
-        if not is_write_allowed(full, self._workspace, self._write_level):
+        if not is_write_allowed(full, self._workspace):
             logger.warning(f"[WorkspaceWrite] 写入被拒（红线路径或越界）: {full}")
             return f"拒绝：{rel!r} 不允许写入（工作区外或受保护路径）"
         p = Path(full)
@@ -472,8 +464,9 @@ _SHELL_BLACKLIST = re.compile(
 
 @pydantic_dataclass
 class LocalShellTool(FunctionTool):
-    """本机 shell（M23-补丁1 起为 tier 4 命令行档独占，需 write_level>=2）：
-    受限执行，命令黑名单 + 超时杀树。工具本体行为不变（黑名单/cwd/超时）。"""
+    """本机 shell（M23-补丁1 起为 tier 4 命令行档独占；M29-补丁1 起挂载
+    只看 tier，不再看 write_level）：受限执行，命令黑名单 + 超时杀树。
+    工具本体行为不变（黑名单/cwd/超时）。"""
 
     name: str = "local_shell"
     description: str = (
@@ -487,11 +480,9 @@ class LocalShellTool(FunctionTool):
         "required": ["command"],
     })
     _workspace: str = ""
-    _write_level: int = 0
 
-    def bind(self, workspace: str, write_level: int = 0) -> "LocalShellTool":
+    def bind(self, workspace: str) -> "LocalShellTool":
         self._workspace = workspace
-        self._write_level = write_level
         return self
 
     async def call(self, context, **kwargs) -> ToolExecResult:

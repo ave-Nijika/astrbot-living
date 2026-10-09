@@ -176,11 +176,11 @@ def test_surf_read_graceful_skip_semantics_unchanged():
 
 def test_tool_manifest_honors_search_switch():
     """顺手项：清单 vs 实际挂载同口径——搜索关闭时清单不列 web_search。"""
-    assert "web_search" in build_tool_manifest(0, 0)
-    off = build_tool_manifest(0, 0, has_search=False)
+    assert "web_search" in build_tool_manifest(0)
+    off = build_tool_manifest(0, has_search=False)
     assert "web_search" not in off
     assert "fetch_page" in off and "run_python" in off and "remember" in off
-    # 其余档位清单不受影响（M23-补丁1：shell 只在 tier>=4 且
-    # write_level>=2 时列入）
-    assert "local_shell" in build_tool_manifest(4, 2, has_search=False)
-    assert "local_shell" not in build_tool_manifest(3, 3, has_search=False)
+    # 其余档位清单不受影响（M23-补丁1：shell 只在 tier>=4；M29-补丁1 起
+    # 挂载与 write_level 解耦，清单不再收 write_level）
+    assert "local_shell" in build_tool_manifest(4, has_search=False)
+    assert "local_shell" not in build_tool_manifest(3, has_search=False)

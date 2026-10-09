@@ -291,8 +291,9 @@ def test_t8_panel_save_then_get_returns_new_value_immediately(tmp_path):
 def test_c2_agent_tools_tier_comes_from_effective_config(tmp_path):
     """C2 行为：_build_agent_tools_async 按磁盘上的 autonomy.tier 挂载
     （此前用 self.config——面板保存后不同步的旧值）。M23-补丁1 起 shell
-    独占第 4 档：tier=4（write_level=2）→ local_shell 挂载；tier=3 →
-    不挂（老配置升级后自动失去 shell，安全默认）；默认 tier 1 → 不挂。"""
+    独占第 4 档：tier=4 → local_shell 挂载（M29-补丁1 起与 write_level
+    无关）；tier=3 → 不挂（老配置升级后自动失去 shell，安全默认）；
+    默认 tier 1 → 不挂。"""
     plugin, _main, cfg_path = make_plugin(tmp_path)
     plugin.searcher = types.SimpleNamespace(close=lambda: asyncio.sleep(0))
     plugin.fetcher = types.SimpleNamespace()
@@ -332,7 +333,7 @@ def test_c2_agent_tools_tier_comes_from_effective_config(tmp_path):
         )
 
     names4, names3, names_default = asyncio.run(flow())
-    assert "local_shell" in names4  # tier 4 + write_level 2
+    assert "local_shell" in names4  # tier 4（挂载只看档位）
     assert "local_shell" not in names3  # tier 3：升级后不含 shell
     assert "local_shell" not in names_default  # 默认 tier 1
 

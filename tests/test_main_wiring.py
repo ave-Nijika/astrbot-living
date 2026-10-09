@@ -367,7 +367,7 @@ def test_build_agent_tools_log_uses_manifest(tmp_path, caplog, monkeypatch):
         return tools
 
     tools = asyncio.run(flow())
-    expected = build_tool_manifest(2, 2, has_browser=True, has_workspace=True)
+    expected = build_tool_manifest(2, has_browser=True, has_workspace=True)
     assert set(expected) == {t.name for t in tools.tools}
     assert any(
         "清单=" in r.getMessage() and "workspace_list" in r.getMessage()

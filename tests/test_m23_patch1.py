@@ -5,8 +5,9 @@ A 组（T1-T4）：逐档挂载（0/1/2/3 均无 shell、tier 4 才有）/ manif
    升级后无 shell 且启动日志有说明（不静默）；
 B 组（T5-T8）：默认工作区为插件数据目录下绝对路径且启动自愈即创建 /
    自填路径不存在时创建 / 路径被文件占用时明确报错不静默 / 幂等不覆盖；
-C 组（T9-T11）：write_level < 2 时 shell 不挂载（方案甲：挂载时判断）/
-   write_level >= 2 正向可用 / tier 4 × write_level 各档清单与挂载一致。
+C 组（T9-T11）：M29-补丁1 起为职责解耦断言——shell 挂载只看 tier
+   （撤销 M23-补丁1 C1 的 write_level 闸门）/ 正向可用 /
+   tier 4 × write_level 各档清单与挂载一致。
 
 A5（旋钮四选）与 A4（schema 文案）有独立断言；B1/B4 的 initialize 接线
 与面板端点用源码锚点 + handler 直调守护。
@@ -116,14 +117,12 @@ def make_plugin(tmp_path, runtime_config=None):
 # A 组：档位分层（T1-T4）
 # ---------------------------------------------------------------------------
 def test_t1_shell_only_at_tier4():
-    """T1：tier 0/1/2/3 均不含 local_shell；tier 4（write_level>=2）含。
-
-    tier 0-3 用 write_level=3（最强写权限）证明缺 shell 不是 write_level
-    的 artifact，而是档位本身不含。"""
+    """T1：tier 0/1/2/3 均不含 local_shell；tier 4 含（M29-补丁1 起
+    挂载只看 tier，write_level=0 即挂）。"""
     for tier in (0, 1, 2, 3):
         ts = _build(tier=tier, write_level=3, workspace=WS)
         assert "local_shell" not in _names(ts), f"tier={tier} 不应挂载 shell"
-    ts4 = _build(tier=4, write_level=2, workspace=WS)
+    ts4 = _build(tier=4, write_level=0, workspace=WS)
     assert "local_shell" in _names(ts4)
     ts4_full = _build(tier=4, write_level=3, workspace=WS)
     assert "local_shell" in _names(ts4_full)
@@ -152,7 +151,7 @@ def test_t2_manifest_matches_mount_tiers_0_to_4(tier, monkeypatch):
         browser_session=object() if tier >= 1 else None,
     )
     manifest = build_tool_manifest(
-        tier, 2, has_browser=tier >= 1, has_workspace=True
+        tier, has_browser=tier >= 1, has_workspace=True
     )
     assert set(manifest) == _names(tools), f"tier={tier} 清单与实际挂载不一致"
 
@@ -299,18 +298,21 @@ def test_b4_workspace_status_endpoint(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# C 组：shell 接入写权限闸门（T9-T11）
+# C 组：shell 挂载与 write_level 解耦（T9-T11，M29-补丁1 起）
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("write_level", [0, 1])
-def test_t9_shell_not_mounted_below_write_level_2(write_level):
-    """T9（方案甲：挂载时判断）：write_level < 2 时 tier 4 也不挂 shell。"""
+@pytest.mark.parametrize("write_level", [0, 1, 2, 3])
+def test_t9_shell_mounts_at_tier4_regardless_of_write_level(write_level):
+    """T9（M29-补丁1 职责解耦）：tier 4 任何 write_level 都挂 shell——
+    对外写层级管不到本机命令行（撤销 M23-补丁1 C1 的挂载闸门）。"""
     ts = _build(tier=4, write_level=write_level, workspace=WS)
-    assert "local_shell" not in _names(ts)
+    assert "local_shell" in _names(ts), (
+        f"tier=4 + write_level={write_level} 应挂载 shell（只看档位）"
+    )
 
 
-@pytest.mark.parametrize("write_level", [2, 3])
-def test_t10_shell_works_at_write_level_2_plus(write_level, tmp_path):
-    """T10：write_level >= 2 且 tier 4 → shell 挂载且真实可用（正向路径）。"""
+@pytest.mark.parametrize("write_level", [0, 1, 2, 3])
+def test_t10_shell_works_at_tier4_any_write_level(write_level, tmp_path):
+    """T10：tier 4 → shell 挂载且真实可用（正向路径，与 write_level 无关）。"""
     ts = _build(tier=4, write_level=write_level, workspace=str(tmp_path))
     shell = next(t for t in ts.tools if t.name == "local_shell")
     result = asyncio.run(shell.call(None, command="echo m23shell"))
@@ -319,7 +321,8 @@ def test_t10_shell_works_at_write_level_2_plus(write_level, tmp_path):
 
 @pytest.mark.parametrize("write_level", [0, 1, 2, 3])
 def test_t11_manifest_mount_consistent_tier4_x_write_level(write_level, monkeypatch):
-    """T11：tier 4 × write_level 各档，清单与实际挂载仍一致（C2 口径）。"""
+    """T11：tier 4 × write_level 各档，清单与实际挂载仍一致（C2 口径；
+    M29-补丁1 起清单不再收 write_level，一致性断言保留）。"""
     monkeypatch.setattr("core.living_tools.chromium_installed", lambda: True)
     tools = build_living_tools(
         searcher=object(),
@@ -331,7 +334,7 @@ def test_t11_manifest_mount_consistent_tier4_x_write_level(write_level, monkeypa
         workspace=WS,
         browser_session=object(),
     )
-    manifest = build_tool_manifest(4, write_level, has_browser=True, has_workspace=True)
+    manifest = build_tool_manifest(4, has_browser=True, has_workspace=True)
     assert set(manifest) == _names(tools), f"write_level={write_level} 清单不一致"
 
 

@@ -250,7 +250,7 @@ def _mg():
 def test_manifest_matches_actual_mount(tier, monkeypatch):
     """build_tool_manifest(…, has_browser, has_workspace) 的集合必须等于
     build_living_tools 同参装配出的实际工具名集合（M23-补丁1 T2：扩到
-    0-4 五档；tier=4 时 write_level=min(tier,2)=2 恰好过 shell 闸门）。"""
+    0-4 五档；M29-补丁1 起挂载与 write_level 解耦，固定 wl=0 装配）。"""
     # M15-补丁2 A2：模拟"Chromium 已安装"——本测试核对 manifest 与实际
     # 挂载的一致性，不含探测语义（fail-closed 两态由 test_m15_patch2.py
     # T3 守护）。
@@ -264,13 +264,12 @@ def test_manifest_matches_actual_mount(tier, monkeypatch):
         sandbox=object(),
         memory_getter=_mg,
         tier=tier,
-        write_level=min(tier, 2),
+        write_level=0,
         workspace="ws",
         browser_session=session,
     )
     manifest = build_tool_manifest(
         tier,
-        min(tier, 2),
         has_browser=tier >= 1,  # session 非 None 即 True
         has_workspace=bool("ws"),
     )

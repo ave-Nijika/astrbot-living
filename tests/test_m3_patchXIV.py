@@ -63,7 +63,7 @@ def test_tier_progression():
     ts1 = _build(tier=1, workspace=ws)
     ts2 = _build(tier=2, workspace=ws)
     ts3 = _build(tier=3, workspace=ws)
-    ts4 = _build(tier=4, write_level=2, workspace=ws)
+    ts4 = _build(tier=4, write_level=0, workspace=ws)
 
     def _tool_names(toolset):
         return {t.name for t in toolset.tools}
@@ -87,7 +87,7 @@ def test_tier_progression_strict():
     ts1 = _build(tier=1, workspace=ws)
     ts2 = _build(tier=2, workspace=ws)
     ts3 = _build(tier=3, workspace=ws)
-    ts4 = _build(tier=4, write_level=2, workspace=ws)
+    ts4 = _build(tier=4, write_level=0, workspace=ws)
 
     n1 = {t.name for t in ts1.tools}
     n2 = {t.name for t in ts2.tools}
@@ -115,33 +115,32 @@ def test_tier2_workspace_read_write():
 
 
 def test_workspace_write_enforces_path(tmp_path):
-    """工作区写入：区外路径被 is_write_allowed 拒绝。"""
+    """工作区写入：区外路径被 is_write_allowed 拒绝（M29-补丁1 起两参签名）。"""
     from core.autonomy import is_write_allowed
 
     ws = str(tmp_path / "ws")
     # 工作区内写入 → 允许
-    assert is_write_allowed(str(tmp_path / "ws" / "file.txt"), ws, 2) is True
+    assert is_write_allowed(str(tmp_path / "ws" / "file.txt"), ws) is True
     # 工作区外 → 拒绝
-    assert is_write_allowed("/etc/passwd", ws, 2) is False
+    assert is_write_allowed("/etc/passwd", ws) is False
     # 红线路径 → 拒绝
-    assert is_write_allowed("data/cmd_config.json", ws, 3) is False
+    assert is_write_allowed("data/cmd_config.json", ws) is False
 
 
-def test_workspace_write_needs_level_2(tmp_path):
-    """write_level < 2 时写被拒（只读/浏览交互不允许落盘）。"""
+def test_workspace_write_ignores_write_level(tmp_path):
+    """M29-补丁1 职责解耦：write_level 不再影响本机写入——工作区内
+    一律可写（旧语义"write_level<2 拒写"已撤销，对外档位管不到本机）。"""
     from core.autonomy import is_write_allowed
 
     ws = str(tmp_path / "ws")
-    assert is_write_allowed(str(tmp_path / "ws" / "f.txt"), ws, 0) is False
-    assert is_write_allowed(str(tmp_path / "ws" / "f.txt"), ws, 1) is False
-    assert is_write_allowed(str(tmp_path / "ws" / "f.txt"), ws, 2) is True
+    assert is_write_allowed(str(tmp_path / "ws" / "f.txt"), ws) is True
 
 
 def test_tier4_local_shell_exists():
-    """M23-补丁1 A1：tier=4（write_level>=2）的 ToolSet 含 local_shell；
-    tier=3 不含（shell 独占第 4 档）。"""
+    """M23-补丁1 A1：tier=4 的 ToolSet 含 local_shell；tier=3 不含（shell
+    独占第 4 档）。M29-补丁1：write_level=0 也挂——shell 只看 tier。"""
     ws = str(Path(__file__).parent / "ws_test")
-    ts4 = _build(tier=4, write_level=2, workspace=ws)
+    ts4 = _build(tier=4, workspace=ws)
     assert "local_shell" in {t.name for t in ts4.tools}
     ts3 = _build(tier=3, workspace=ws)
     assert "local_shell" not in {t.name for t in ts3.tools}
