@@ -120,6 +120,11 @@ def build_config_payload(
         "layout": copy.deepcopy(schema.get("_layout")) or None,
         "providers": list(providers or []),
         "agent_tools": list(agent_tools or []),
+        # M34-补丁1 A 组：旋钮映射表随 payload 下发（同一份来源 config_knobs，
+        # 前端不做第二份硬编码——改映射表后面板自动跟随）。前端用于判定
+        # "新手页显示的档位"与"实际生效配置"是否一致（只提示，不回写）。
+        "knob_presets": copy.deepcopy(KNOB_PRESETS),
+        "knob_direct": DIRECT_KNOB,
     }
 
 

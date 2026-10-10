@@ -162,6 +162,14 @@ main { padding: 18px 20px 60px; max-width: 1080px; margin: 0 auto; }
   font-size: 11px; padding: 0 8px; border-radius: 10px; margin-right: 6px;
 }
 
+/* M34-补丁1 B 组：新手旋钮卡"显示值≠实际生效"提示（与 control-warn 同款
+ * 警示风；只在判定为不一致时渲染，一致时不打扰） */
+.knob-mismatch-note {
+  font-size: 12px; line-height: 1.55; color: var(--danger, #c0392b);
+  background: rgba(192, 57, 43, 0.08); border: 1px solid rgba(192, 57, 43, 0.25);
+  border-radius: 6px; padding: 6px 8px; margin: 6px 0 0;
+}
+
 /* ---------- M19-补丁1：F 组新控件 + 判断模型新手卡 ---------- */
 .key-control select,
 .enum-select {

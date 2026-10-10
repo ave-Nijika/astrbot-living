@@ -191,6 +191,47 @@ async function renderPanel(req) {
   };
 }
 
+/* M34-补丁1：档位联动提示探针——全链路渲染真实 app.js 后摘要：
+ * - 新手页每张旋钮卡的标题 / 是否有 knob-mismatch-note 提示及其文案 /
+ *   preset_model 卡 provider-picker 的状态行文本（C 组：实际生效值）
+ * - 专家页全部带 mapped-chip 的键行：code / chip 文本 / chip title（B 组：
+ *   已脱离 vs 仍在档内） */
+async function knobMismatchProbe(req) {
+  const io = await bootPanel(req);
+  const titleOf = (card) => {
+    const h = (card.children || []).find(
+      (c) => c.kind === "element" && c.tagName === "H3"
+    );
+    return h ? textOf(h) : "";
+  };
+  const novice = findAll(io.byId["novice-cards"], "knob-card").map((card) => {
+    const note = findFirst(card, "knob-mismatch-note");
+    const picker = findFirst(card, "provider-picker");
+    const status = picker && findFirst(picker, "control-status");
+    const jstatus = findFirst(card, "judge-status"); // M34 验收 7：judge 卡状态行不受影响
+    return {
+      title: titleOf(card),
+      mismatch: !!note,
+      noteText: note ? textOf(note) : null,
+      providerStatus: status ? textOf(status) : null,
+      judgeStatus: jstatus ? textOf(jstatus) : null,
+    };
+  });
+  const host = io.byId["expert-groups"];
+  const mappedChips = findAll(host, "key-row", "style-admin").flatMap((row) => {
+    const label = findFirst(row, "key-label");
+    const code = label && findFirst(label, "key-code");
+    const chip = label && findFirst(label, "mapped-chip");
+    if (!chip) return [];
+    return [{ code: textOf(code), chipText: textOf(chip), chipTitle: chip.title }];
+  });
+  return {
+    novice,
+    mappedChips,
+    loadError: io.byId["load-error"].textContent,
+  };
+}
+
 /* M27-补丁1 7.2：状态点实时重算探针——改 judge.mode / judge.provider_id
  * 的下拉值（dispatch change），逐步抓 A2/A3 组头状态点、生效计数、
  * 展开态保持与滚动位置恢复。 */
@@ -365,6 +406,8 @@ async function helpProbe(req) {
 
 if (req.op === "renderPanel" || req.op === "renderPanelFlat") {
   out = await renderPanel(req);
+} else if (req.op === "knobMismatchProbe") {
+  out = await knobMismatchProbe(req);
 } else if (req.op === "statusRecomputeProbe") {
   out = await statusRecomputeProbe(req);
 } else if (req.op === "toolsProbe") {

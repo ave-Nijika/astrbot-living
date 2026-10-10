@@ -113,6 +113,68 @@ const KNOB_MAPPED_KEYS = new Set([
   "autonomy.tier", "autonomy.write_level", "model.provider_id",
 ]);
 
+/* M34-补丁1 B 组：档位一致性判定（只提示，绝不回写——回写会被旋钮监视
+ * 当成"用户改档"再正向覆盖，把专家页的手工微调抹掉）。
+ * 数据源是 payload 下发的映射表（knob_presets / knob_direct，同一份来源
+ * core/config_knobs.py），前端不做第二份硬编码。 */
+function knobEffectiveValue(group, key) {
+  /* 底层键的当前值：编辑值优先，键不在存储里时退 schema 默认（未设置 =
+  按默认生效）；连 schema 定义都没有才返回 undefined（无从判定）。 */
+  const adv = state.values.advanced[group];
+  if (adv && typeof adv === "object" && adv[key] !== undefined && adv[key] !== null) {
+    return adv[key];
+  }
+  const item = ((((state.schema || {}).advanced || {}).items[group] || {}).items || {})[key];
+  return item && item.default !== undefined ? item.default : undefined;
+}
+
+/* 单个旋钮：新手页显示值与实际生效配置是否不一致。
+ * 返回 true=不一致（亮提示）/ false=一致（不打扰）/ null=无法判定（不亮）。
+ * 档位类整组比对——多对一旋钮只要有一个键没命中就算不一致；直通类
+ * （preset_model）比较旋钮值与 model.provider_id。值经 String() 规范化，
+ * 数值 0.8 与 "0.8" 视为相等；布尔与数字靠字符串形态区分。 */
+function knobMismatch(name) {
+  if (!state.knobPresets || typeof state.knobPresets !== "object") return null;
+  if (name === state.knobDirect) {
+    const actual = knobEffectiveValue("model", "provider_id");
+    if (actual === undefined) return null;
+    return String(state.values.knobs[name] ?? "") !== String(actual);
+  }
+  const shown = state.values.knobs[name];
+  const defs = (state.knobPresets[name] || {})[shown];
+  if (!defs) return null; // 显示值不在预设表（空/未知档）：无从比对
+  for (const [group, keys] of Object.entries(defs)) {
+    for (const [key, defined] of Object.entries(keys)) {
+      const actual = knobEffectiveValue(group, key);
+      if (actual === undefined) return true; // 实际值无从得知：按不一致（保守亮出）
+      if (String(actual) !== String(defined)) return true;
+    }
+  }
+  return false;
+}
+
+/* 专家页单键：该键当前值是否仍在"新手页显示档"的定义值内。
+ * 返回 "in"=仍在档内 / "off"=已脱离 / null=无法判定（保持通用文案）。 */
+function mappedKeyKnobStatus(group, key) {
+  if (!state.knobPresets || typeof state.knobPresets !== "object") return null;
+  if (`${group}.${key}` === "model.provider_id") {
+    const actual = knobEffectiveValue(group, key);
+    if (actual === undefined) return null;
+    return String(state.values.knobs[state.knobDirect] ?? "") === String(actual)
+      ? "in" : "off";
+  }
+  for (const [name, tiers] of Object.entries(state.knobPresets)) {
+    const defs = (tiers || {})[state.values.knobs[name]];
+    if (!defs) continue; // 该旋钮当前显示档无从比对——换下一个旋钮
+    const defined = (defs[group] || {})[key];
+    if (defined === undefined) continue; // 这个键不归当前旋钮管
+    const actual = knobEffectiveValue(group, key);
+    if (actual === undefined) return null;
+    return String(actual) === String(defined) ? "in" : "off";
+  }
+  return null;
+}
+
 /* Pages 沙箱（opaque origin）禁用 localStorage —— 直接访问会抛 SecurityError。
  * 必须全程 try/catch：否则模块顶层就抛错，整个面板脚本不执行（M5 补丁1 实测缺陷）。
  * 降级为内存态：抽屉展开状态仅存活于本次会话。 */
@@ -189,7 +251,7 @@ function refreshStatusViews(fullKey) {
  * - M27-补丁1 7.1：judge.provider_id 复用同款控件，留空的语义不同
  *   （model 留空 = 回退聊天模型；judge 留空 = 整条判断链不工作）——
  *   emptyStatus/emptyWarn/missingWarn 可按调用方覆盖，文案必须准确。 */
-function providerPickerControl({ value, onChange, emptyLabel, emptyStatus, emptyWarn, missingWarn }) {
+function providerPickerControl({ value, onChange, emptyLabel, emptyStatus, emptyWarn, missingWarn, effectiveValue }) {
   const wrap = document.createElement("div");
   wrap.className = "provider-picker";
   const providers = state.providers || [];
@@ -227,17 +289,26 @@ function providerPickerControl({ value, onChange, emptyLabel, emptyStatus, empty
 
   const refresh = () => {
     const current = select.value === MANUAL ? manualInput.value.trim() : select.value;
-    if (!current) {
-      // M25-补丁1 配套 c：「当前实际生效」行（留空语义随调用方，见 7.1）
+    /* M34-补丁1 C 组：effectiveValue（getter）由调用方提供真正的实际生效值
+     * （读 advanced 存储）——状态行如实显示它，而不是控件当前编辑值。
+     * 缺省时显示编辑值：专家页两处控件编辑的正是该存储本身，语义等同。
+     * 警告行始终跟随编辑中的选择（正在改什么就提醒什么）。 */
+    const shown = typeof effectiveValue === "function"
+      ? String(effectiveValue() ?? "") : current;
+    if (!shown) {
       status.textContent = emptyStatus || "当前实际生效：聊天模型（共用账号）";
+    } else if (!providers.includes(shown)) {
+      status.textContent = `当前实际生效：${shown}（不在已启用列表中）`;
+    } else {
+      status.textContent = `当前实际生效：${shown}（独立 provider）`;
+    }
+    if (!current) {
       warn.textContent = emptyWarn
         || "⚠ 与聊天共用模型：AstrBot 做活动/搭话/分享的任何一次调用都会打断你聊天的缓存，聊天全部历史将按未命中重新计费。建议单独配一个 provider（最好用不同的 api key）。";
     } else if (!providers.includes(current)) {
-      status.textContent = `当前实际生效：${current}（不在已启用列表中）`;
       warn.textContent = missingWarn
         || "⚠ 该 provider id 不在已启用的 provider 列表里，调用时会按回退处理并在日志留痕。请核对拼写，或到 provider 管理页启用它。";
     } else {
-      status.textContent = `当前实际生效：${current}（独立 provider）`;
       warn.textContent = "";
     }
   };
@@ -474,6 +545,10 @@ async function load() {
   state.statusKeys = statusRelevantKeys(state.layout); // M27-补丁1 7.2
   state.providers = payload.providers || []; // M19-补丁1 F2/E3：provider 下拉数据源
   state.agent_tools = payload.agent_tools || []; // M20-补丁1 F3：本体工具多选数据源
+  // M34-补丁1 A 组：旋钮映射表（payload 下发，与后端同一份来源）——档位
+  // 一致性判定用；缺失（旧后端）时判定函数全部返回 null，面板行为与从前一致
+  state.knobPresets = payload.knob_presets || null;
+  state.knobDirect = payload.knob_direct || "preset_model";
   state.values.knobs = { ...(payload.knobs || {}) };
   state.values.advanced = JSON.parse(JSON.stringify(payload.advanced || {}));
   state.loaded = JSON.parse(JSON.stringify(state.values));
@@ -643,12 +718,14 @@ function buildKnobCard(name, item) {
 
   if (name === "preset_model") {
     // M20-补丁1 F1/A2：新手卡"它独处时用哪个 AI 大脑"改下拉（更不能
-    // 让新手手打 id）+ 留空缓存警告 + 当前实际生效显示（providerPickerControl，
-    // M25-补丁1 配套 c：状态行前缀已改「当前实际生效」）
+    // 让新手手打 id）+ 留空缓存警告。M34-补丁1 C 组：状态行经
+    // effectiveValue 改绑真正的实际生效值（advanced 存储里的
+    // model.provider_id）——专家页单独改过之后不再顶着"实际生效"报旋钮旧值
     card.appendChild(providerPickerControl({
       value: state.values.knobs[name] ?? "",
       onChange: (v) => { state.values.knobs[name] = v; setDirty(true); },
       emptyLabel: "（留空 = 与聊天共用模型）",
+      effectiveValue: () => knobEffectiveValue("model", "provider_id") ?? "",
     }));
   } else {
     const options = item.options || [];
@@ -670,6 +747,17 @@ function buildKnobCard(name, item) {
       wrap.appendChild(btn);
     }
     card.appendChild(wrap);
+  }
+  // M34-补丁1 B 组：显示值与实际生效配置不一致时给只读提示（一致时
+  // 不打扰；无法判定也不亮）。只提示不回写——回写会被旋钮监视当成
+  // "用户改档"再正向覆盖，把专家页的手工微调抹掉
+  if (knobMismatch(name)) {
+    const note = document.createElement("p");
+    note.className = "hint knob-mismatch-note";
+    note.textContent =
+      "⚠ 这里亮着的不是当前实际生效的设置——只代表你上次在这里选的，" +
+      "实际值以专家页为准。想按这里的档位重新生效：先选一下别的，再选回来。";
+    card.appendChild(note);
   }
   return card;
 }
@@ -1752,9 +1840,21 @@ function buildKeyRow(group, key, item, keyStatus, showDot) {
   if (KNOB_MAPPED_KEYS.has(`${group}.${key}`)) {
     const chip = document.createElement("span");
     chip.className = "mapped-chip";
-    chip.textContent = "档位联动";
-    chip.title = "新手区对应的档位旋钮会写入这个键；在新手区切换档位时，" +
-      "你在这里改的值会被档位映射覆盖";
+    // M34-补丁1 B 组：chip 增强——按当前值与新手页显示档比对，"已脱离"
+    // （值≠档位定义）或"仍在档内"，与新手页提示同口径；无法判定时保持
+    // 通用文案
+    const knobStatus = mappedKeyKnobStatus(group, key);
+    if (knobStatus === "off") {
+      chip.textContent = "档位联动·已脱离";
+      chip.title = "新手页当前选中的档位与这里的值不一致（这里的值已经不等于档位默认值）；" +
+        "在新手页切换档位时，这里的值会被档位映射覆盖";
+    } else if (knobStatus === "in") {
+      chip.textContent = "档位联动";
+      chip.title = "这里的值与新手页当前选中的档位一致；在新手页切换档位时，这里的值会被档位映射覆盖";
+    } else {
+      chip.textContent = "档位联动";
+      chip.title = "新手区对应的档位旋钮会写入这个键；在新手区切换档位时，你在这里改的值会被档位映射覆盖";
+    }
     nameEl.prepend(chip);
   }
   if (showDot && keyStatus) {
