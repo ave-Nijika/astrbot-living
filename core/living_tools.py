@@ -18,6 +18,8 @@ import asyncio
 import os
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urljoin, urlparse
+from urllib.request import url2pathname
 
 from astrbot.api import logger
 from astrbot.core.agent.tool import FunctionTool, ToolSet, ToolExecResult
@@ -668,6 +670,68 @@ class LocalShellTool(FunctionTool):
 # 浏览器 FunctionTool 包装（任务书 M3 补丁 XI-B2）
 # ---------------------------------------------------------------------------
 
+# M36-补丁1：URL 准入判定（单点真相，多处复用）。
+# 她会写网页作品放在自己工作区里，以前 browser_navigate 只认
+# http(s)，成品自己打不开。现在 file:// 地址也能打开——但只允许
+# 指向她自己的工作区，拿不准一律拒绝。判定收敛在这一个函数，
+# browser_navigate 入口、browser_click 的链接目标、browser_read 与
+# browser_screenshot 的当前页都过同一道，不分叉。注意这是入口处的
+# 路径判定，不是浏览器里的沙箱：file 页面自己的脚本仍会在浏览器
+# 上下文里跑（见 m36 报告剩余风险）。
+
+
+def _gate_url(
+    url: str, workspace: str, require_exists: bool = True
+) -> tuple[str | None, str | None]:
+    """URL 准入（M36-补丁1 单点判定）。
+
+    返回 (放行后的 URL, None) 或 (None, 给她的拒绝理由)。理由是
+    核心短语（不带句号），调用方按场景补全语气。http/https 原样
+    放行（与既有行为一致）；file:// 解析成路径、规范化后仅限
+    工作区内（require_exists 时还要求文件已存在，防猜路径探测）；
+    其它协议一律拒绝。放行 file:// 时返回按当前平台规范化的
+    file URL（as_uri，中文与空格已转义），打开行为稳定。
+    """
+    url = str(url or "").strip()
+    if not url:
+        return None, "地址是空的"
+    if url.startswith(("http://", "https://")):
+        return url, None
+    if not url.startswith("file:"):
+        return None, "这个地址不是能打开的网页（不是 http(s) 网址，也不是你文件夹里的文件）"
+    try:
+        parsed = urlparse(url)
+        netloc = parsed.netloc or ""
+        path_part = parsed.path or ""
+        if netloc and netloc.lower() != "localhost":
+            # file://server/... 是网络共享地址；file://C:/x 这类
+            # 两斜杠盘符写法并回路径继续判
+            if re.fullmatch(r"[A-Za-z]:", netloc):
+                path_part = "/" + netloc + path_part
+            else:
+                return None, "这个文件地址的写法认不出来"
+        local = url2pathname(path_part)
+        if not local:
+            return None, "这个文件地址的写法认不出来"
+        if not str(workspace or "").strip():
+            return None, "没法确认这个文件在你的文件夹里"
+        base = str(Path(workspace).resolve())
+        # resolve 兼收无盘符的根相对形态（Unix 写法在 Windows 解析成
+        # \etc\x → 当前盘根下），判界按最终落点，不分平台分叉
+        resolved = str(Path(local).resolve())
+    except Exception:
+        return None, "这个文件地址的写法认不出来"
+    if not _path_inside(base, resolved):
+        return None, f"「{local[:80]}」在你的文件夹外面"
+    if require_exists and not Path(resolved).is_file():
+        rel = os.path.relpath(resolved, base)
+        return None, f"你的文件夹里没有「{rel[:80]}」这个文件"
+    try:
+        return Path(resolved).as_uri(), None
+    except Exception:
+        return None, "这个文件地址的写法认不出来"
+
+
 class BrowserSessionRef:
     """浏览器会话引用（跨工具共享同一 BrowserSession 实例）。"""
     def __init__(self, session):
@@ -679,8 +743,10 @@ class BrowserSessionRef:
 class BrowserNavigateTool(FunctionTool):
     name: str = "browser_navigate"
     description: str = (
-        "打开网页，返回标题和正文摘要。想知道页面上有什么可点的东西，"
-        "再用 browser_read 获取可交互元素清单。"
+        "打开网页，返回标题和正文摘要。也能打开你自己工作区里的网页"
+        "文件（file:// 地址，仅限工作区内的文件）——写完网页可以自己"
+        "打开看看。想知道页面上有什么可点的东西，再用 browser_read"
+        "获取可交互元素清单。"
     )
     parameters: dict = Field(default_factory=lambda: {
         "type": "object",
@@ -695,20 +761,37 @@ class BrowserNavigateTool(FunctionTool):
 
     async def call(self, context, **kwargs) -> ToolExecResult:
         url = str(kwargs.get("url", "")).strip()
-        if not url.startswith(("http://", "https://")):
-            return "错误：需要 http(s) URL"
+        # M36-补丁1：URL 准入（单点判定）——http/https 原样放行（行为
+        # 不变），file:// 只开自己工作区里的文件，其它协议一律拒
+        workspace = str(
+            getattr(self._session_ref.session, "_workspace", "") or ""
+        )
+        allowed, reason = _gate_url(url, workspace)
+        if allowed is None:
+            logger.info(f"[browser_navigate] 地址被拒: {url[:80]}")
+            return f"打不开——{reason}。"
         page = await self._session_ref.session._ensure_page()
-        await page.goto(url, timeout=15000, wait_until="domcontentloaded")
+        try:
+            await page.goto(allowed, timeout=15000, wait_until="domcontentloaded")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            # 打不开要说人话：不把原始异常抛给上层，不影响她继续活动
+            logger.info(f"[browser_navigate] 打开失败 {allowed[:80]}: {e}")
+            return f"打开失败——页面没反应或地址有误（{allowed[:120]}），可以稍后再试。"
         title = await page.title()
         text = await page.inner_text("body")
         await self._session_ref.session.save_state()
         # M20-补丁1 L1：成功读取留档（风格学习的"本轮读了网页"证据）
         try:
-            self._session_ref.session.note_read(url, title, text)
+            self._session_ref.session.note_read(allowed, title, text)
         except Exception:
             pass
-        result = "已打开「{}」（{}）".format(title, url)
+        result = "已打开「{}」（{}）".format(title, allowed)
         body = text[:2000]
+        if allowed.startswith("file:"):
+            # M36-补丁1：本地文件是她自己的产物，按 M35 口径不包资料区
+            return result + "\n" + body
         # M35-补丁1 A 组：外部正文包资料区（状态行留在壳外；
         # note_read 存的是原文，不受壳影响）
         return result + "\n" + wrap_external(body)
@@ -737,13 +820,23 @@ class BrowserReadTool(FunctionTool):
 
     async def call(self, context, **kwargs) -> ToolExecResult:
         page = await self._session_ref.session._ensure_page()
+        # M36-补丁1：当前页若是本地文件，只读自己工作区内的——兜住
+        # 一切绕过入口停在越界本地页的路径（内容进不了她的上下文）
+        cur = str(getattr(page, "url", "") or "")
+        local_page = cur.startswith("file:")
+        if local_page:
+            workspace = str(
+                getattr(self._session_ref.session, "_workspace", "") or ""
+            )
+            allowed, reason = _gate_url(cur, workspace, require_exists=False)
+            if allowed is None:
+                logger.info(f"[browser_read] 当前页越界被拒: {cur[:80]}")
+                return f"这次不读——{reason}。"
         title = await page.title()
         text = await page.inner_text("body")
         # M20-补丁1 L1：成功读取留档（风格学习证据）
         try:
-            self._session_ref.session.note_read(
-                str(getattr(page, "url", "") or ""), title, text
-            )
+            self._session_ref.session.note_read(cur, title, text)
         except Exception:
             pass
         result = "「{}」\n{}".format(title, text[:self._max_text])
@@ -753,6 +846,9 @@ class BrowserReadTool(FunctionTool):
         elements = await collect_page_elements(page)
         if elements:
             result = result + "\n\n" + elements
+        if local_page:
+            # M36-补丁1：本地文件是她自己的产物，按 M35 口径不包资料区
+            return result
         # M35-补丁1 A 组：标题、正文、元素清单都是外部内容，整块包
         # 资料区（清单里链接文字同样是别人写的）；note_read 在上面已
         # 用原文留档，语料不带壳
@@ -789,6 +885,17 @@ class BrowserScreenshotTool(FunctionTool):
 
     async def call(self, context, **kwargs) -> ToolExecResult:
         page = await self._session_ref.session._ensure_page()
+        # M36-补丁1：当前页若是本地文件，只截自己工作区内的（与
+        # browser_read 同道判定——截图同样能"看到"页面内容）
+        cur = str(getattr(page, "url", "") or "")
+        if cur.startswith("file:"):
+            workspace = str(
+                getattr(self._session_ref.session, "_workspace", "") or ""
+            )
+            _, reason = _gate_url(cur, workspace, require_exists=False)
+            if reason:
+                logger.info(f"[browser_screenshot] 当前页越界被拒: {cur[:80]}")
+                return f"这次不截图——{reason}。"
         # 补丁 XV 清单1：截图落工作区 screenshots/，不再写系统 temp
         try:
             workspace = str(
@@ -913,6 +1020,32 @@ class BrowserClickTool(FunctionTool):
             )
             return reason
         page = await self._session_ref.session._ensure_page()
+        # M36-补丁1：链接类点击先看它指向哪——指向工作区外本地文件的
+        # 链接不点（与 browser_navigate 同一道判定，相对链接按当前页
+        # 地址解析后再判；无 href 的元素点击不产生跳转，不在此列）
+        ga = getattr(page, "get_attribute", None)
+        href = None
+        if callable(ga):
+            try:
+                href = await ga(selector, "href")
+            except Exception:
+                href = None
+        if href:
+            base_url = str(getattr(page, "url", "") or "")
+            if urlparse(str(href)).scheme:
+                target = str(href)
+            elif base_url:
+                target = urljoin(base_url, str(href))
+            else:
+                target = ""  # 页面地址未知（真实浏览器不出现）
+            if target:
+                workspace = str(
+                    getattr(self._session_ref.session, "_workspace", "") or ""
+                )
+                _, reason = _gate_url(target, workspace)
+                if reason:
+                    logger.info(f"[browser_click] 链接被拒: {target[:80]}")
+                    return f"这个链接不点——{reason}。"
         try:
             await page.click(selector, timeout=5000)
         except Exception as e:
