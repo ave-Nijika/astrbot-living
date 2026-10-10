@@ -130,6 +130,17 @@ _KIND_LABELS = {
     "select": "下拉框",
 }
 
+# M30-补丁1 C(b)：每条元素附"建议 action_kind"——从 DOM 能推断的推断给足
+# （链接 → navigate，输入框/下拉 → fill），推断不出的（按钮可能是"下一页"
+# 也可能是"提交"）明说留给她判断。目标：照着清单点就能走通，不用猜。
+# 这只是提示文案，权限判定仍在 check_action_kind + write_level，零放松。
+_ACTION_KIND_HINTS = {
+    "link": "navigate",
+    "input": "fill",
+    "select": "fill",
+}
+_BUTTON_HINT = "action_kind 按用途自行判断"
+
 _ID_SAFE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 
 
@@ -160,15 +171,28 @@ def build_selector(info: dict) -> str:
 
 
 def format_elements_block(infos: list[dict]) -> str:
-    """把元素信息清单格式化成模型可读文本（含可点选择器，N1/N2）。"""
+    """把元素信息清单格式化成模型可读文本（含可点选择器，N1/N2）。
+
+    M30-补丁1 C(b)：每条行尾附建议 action_kind——链接 navigate、
+    输入框/下拉 fill、按钮留给她自行判断（DOM 推不出用途）。"""
     if not infos:
         return ""
-    lines = ["可交互元素（选择器可直接用于 browser_click / browser_type）："]
+    lines = [
+        "可交互元素（选择器可直接用于 browser_click / browser_type；"
+        "括号内是建议的 action_kind）："
+    ]
     for i, info in enumerate(infos[:ELEMENTS_CAP], 1):
         selector = build_selector(info)
-        kind = _KIND_LABELS.get(str(info.get("kind")), str(info.get("kind") or "元素"))
+        kind = str(info.get("kind") or "")
+        kind_label = _KIND_LABELS.get(kind, kind or "元素")
         label = str(info.get("label") or "").strip() or "（无文字）"
-        lines.append(f"{i}. [{kind}] {label} → {selector}")
+        hint = _ACTION_KIND_HINTS.get(kind)
+        suffix = (
+            f"（建议 action_kind: {hint}）"
+            if hint
+            else f"（{_BUTTON_HINT}）"
+        )
+        lines.append(f"{i}. [{kind_label}] {label} → {selector}{suffix}")
     return "\n".join(lines)
 
 

@@ -1266,6 +1266,20 @@ class LivingPlugin(Star):
         except Exception:
             return []
 
+    def _browser_browsing_available(self) -> bool:
+        """M30-补丁1 A：冲浪/读文章在搜索关闭时的替代通路判定——
+        浏览器五件套真的可用（能力档 ≥ 观看 且 Chromium 内核探测通过）
+        才算"能上网逛"。探测自带 TTL 进程内缓存（M24），决策频率下无
+        额外开销；任何异常按不可用（保守回"搜索关即摘"的旧行为）。"""
+        try:
+            if read_tier(self._effective_config()) < 1:
+                return False
+            from .core.browser_tools import chromium_installed
+
+            return bool(chromium_installed())
+        except Exception:
+            return False
+
     async def _recent_chat_lines(self) -> list[str]:
         """K3 复盘材料：最近的聊天摘录（只取 role/content，脱敏截断）。
 
@@ -1694,6 +1708,8 @@ class LivingPlugin(Star):
             persona_getter=self._persona_prompt,
             life_extra_getter=lambda: str(self._preset("life_extra", "") or ""),
             memory_getter=self._get_memory,
+            # M30-补丁1 A：搜索关闭时 surf/read 改走浏览器（有替代通路则不摘）
+            browser_available_getter=self._browser_browsing_available,
         )
         self.loop = LivingLoop(
             gate=self.gate,
@@ -1711,6 +1727,8 @@ class LivingPlugin(Star):
             activities=default_activities(
                 enabled_free=self._free_activity_enabled()
             ),
+            # M30-补丁1 A：与 decider 同源同款（两池口径一致）
+            browser_available_getter=self._browser_browsing_available,
             decider=decider,
             sleep_manager=self.sleep_manager,
             agent_loop=agent_loop,

@@ -163,7 +163,7 @@
 | `sleep.wake_source` | 吵醒计数来源：all / owner_only | all |
 | `autonomy.tier` | 能力档位 0-4 | 1（观看） |
 | `autonomy.write_level` | 网络写权限 0-3（0=只看，见上） | 0（只看） |
-| `capabilities.web_search_enabled` | 允许联网搜索（关 → 冲浪/读文章停） | true |
+| `capabilities.web_search_enabled` | 允许联网搜索（关 → 冲浪/读文章改用浏览器直接逛；没装浏览器内核才停） | true |
 | `capabilities.agent_tools_mode` | 复用本体工具：off / persona / custom | off |
 | `style_learning.enabled` | 风格学习总开关 | false |
 | `style_learning.daily_review_enabled` | 每日复盘（需判断模型） | true |

@@ -417,6 +417,22 @@
                         "default": "现在是完全的自由活动时间，{extra}。你可以使用这些工具：{tools_line}。{closing}",
                         "invisible": true,
                         "section": ["C", "C5", 8]
+                    },
+                    "prompt_intent_surf_browse": {
+                        "description": "活动意图：上网逛逛·无搜索（专家）",
+                        "hint": "搜索关闭但浏览器可用时，surf 活动改走浏览器直接浏览的意图说明。占位符：{topic_line}=主题方向（可为空）；{avoid_line}=近期话题避开指令（可为空）。",
+                        "type": "text",
+                        "default": "你现在打算上网逛逛。{topic_line}{avoid_line}这次不用搜索引擎，用浏览器自己逛：用 browser_navigate 打开一个你感兴趣的网站（凭你的兴趣、或最近记忆里读过的方向决定去哪），用 browser_read 看看页面上有什么，然后从页面给的『可交互元素』清单里挑一条你最感兴趣的，用 browser_click 点进去（链接类元素建议标 action_kind=navigate）。逛的时候可以连着点好几跳——看完一页觉得有意思就接着点下一条，别只点一下就收工。最后用几句话汇报你一路逛到了什么、有什么想法。",
+                        "invisible": true,
+                        "section": ["C", "C5", 9]
+                    },
+                    "prompt_intent_read_browse": {
+                        "description": "活动意图：读文章·无搜索（专家）",
+                        "hint": "搜索关闭但浏览器可用时，read 活动改走浏览器直接浏览的意图说明。占位符：{topic_line}=主题方向（可为空）；{avoid_line}=近期话题避开指令（可为空）。",
+                        "type": "text",
+                        "default": "你现在打算读一篇文章。{topic_line}{avoid_line}这次不用搜索引擎，用浏览器自己找：用 browser_navigate 打开一个你想读的站，用 browser_read 读正文；如果正文或『可交互元素』清单里有值得追下去的链接，用 browser_click 点进去接着读（链接类元素建议标 action_kind=navigate），可以连着读好几页。读完后用自己的话总结要点，再说一点你的感想。",
+                        "invisible": true,
+                        "section": ["C", "C5", 10]
                     }
                 },
                 "invisible": true
@@ -1099,7 +1115,7 @@
                     },
                     "web_search_enabled": {
                         "description": "允许它联网搜索（博查网页搜索）",
-                        "hint": "关闭后它自主活动不再挂载 web_search 搜索工具，冲浪/读文章两项活动也从活动池剔除（转而做其他活动）；它的网页抓取（fetch_page）与你的聊天搜索不受影响（那是 AstrBot 自己的搜索，同一条 key 但独立开关）。",
+                        "hint": "关闭后它自主活动不再挂载 web_search 搜索工具；冲浪/读文章改用浏览器直接逛（需已装浏览器内核且能力档≥观看）；两条上网通路都没有时这两项活动才从活动池剔除。它的网页抓取（fetch_page）与你的聊天搜索不受影响（那是 AstrBot 自己的搜索，同一条 key 但独立开关）。",
                         "type": "bool",
                         "default": true,
                         "invisible": true,

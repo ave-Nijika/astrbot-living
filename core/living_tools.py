@@ -716,9 +716,10 @@ class BrowserScreenshotTool(FunctionTool):
 class BrowserClickTool(FunctionTool):
     name: str = "browser_click"
     description: str = (
-        "点击网页上的元素（按钮/链接等）。需要 write_level >= 1；"
-        "提交/评论/发帖等写入性质的动作必须用 action_kind 标明，"
-        "标错或漏标会被权限层拒绝。"
+        "点击网页上的元素（链接/按钮等）。需要 write_level >= 1；"
+        "点链接、翻页、打开页面这类浏览动作标 action_kind=\"navigate\"；"
+        "提交表单/评论/发帖/私信/下单等写入性质的动作才标对应的值。"
+        "漏标或标错会被权限层拒绝。"
     )
     parameters: dict = Field(default_factory=lambda: {
         "type": "object",
@@ -727,9 +728,11 @@ class BrowserClickTool(FunctionTool):
             "action_kind": {
                 "type": "string",
                 "description": (
-                    "这次点击的操作性质：navigate(跳转)/fill(填表)/"
-                    "submit_form(提交表单)/comment(评论、点赞)/post(发帖)/"
-                    "message(私信)/purchase(下单)。漏标按 unknown 保守拒绝。"
+                    "这次点击的操作性质：navigate(点链接/跳转/翻页——"
+                    "浏览网页点链接就用它)/fill(填表)/submit_form(提交表单)/"
+                    "comment(评论、点赞)/post(发帖)/message(私信)/"
+                    "purchase(下单)。元素清单里链接类的建议值是 navigate。"
+                    "漏标按 unknown 保守拒绝。"
                 ),
             },
         },
@@ -775,7 +778,9 @@ class BrowserTypeTool(FunctionTool):
     name: str = "browser_type"
     description: str = (
         "在网页输入框中填入文本。需要 write_level >= 1；"
-        "若这次输入是为发帖/私信等写入做准备，必须用 action_kind 标明。"
+        "普通填字/填表/搜索框输入标 action_kind=\"fill\"；"
+        "若这次输入是为评论/发帖/私信等写入做准备，标对应的值。"
+        "漏标会被权限层拒绝。"
     )
     parameters: dict = Field(default_factory=lambda: {
         "type": "object",
@@ -785,8 +790,9 @@ class BrowserTypeTool(FunctionTool):
             "action_kind": {
                 "type": "string",
                 "description": (
-                    "这次输入的操作性质：fill(普通填表)/comment(评论、点赞)/"
-                    "post(发帖)/message(私信)/submit_form(提交表单)。"
+                    "这次输入的操作性质：fill(普通填表/搜索框——"
+                    "日常输入都用它)/comment(评论、点赞)/post(发帖)/"
+                    "message(私信)/submit_form(提交表单)。"
                     "漏标按 unknown 保守拒绝。"
                 ),
             },

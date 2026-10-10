@@ -150,6 +150,7 @@ class ActivityDecider:
         persona_getter: Callable[..., Any] | None = None,
         life_extra_getter: Callable[[], str] | None = None,
         memory_getter: Callable[..., Any] | None = None,
+        browser_available_getter: Callable[[], bool] | None = None,
     ) -> None:
         self._activities = list(activities)
         self._config_getter = config_getter
@@ -159,6 +160,10 @@ class ActivityDecider:
         self._persona_getter = persona_getter  # async () -> str | None
         self._life_extra_getter = life_extra_getter  # () -> str
         self._memory_getter = memory_getter  # async () -> MemoryBackend
+        # M30-补丁1 A：浏览器可用性判定（() -> bool，惰性——只在搜索关闭
+        # 时才被 activities_excluding_search 调用）。None = 缺省，维持
+        # "搜索关即摘 surf/read"的既有行为。
+        self._browser_available_getter = browser_available_getter
         self._last_name: str | None = None
         # 补丁 XVII L2.5：方向归并缓存 (topics_fingerprint, directions)。
         # 归并在决策 LLM 调用里顺带产出，同一批 recent_topics 不重复归并；
@@ -203,6 +208,7 @@ class ActivityDecider:
         """决策池（补丁 XV 清单3）：decision.free_activity_enabled=false 时
         摘除 free。每次决策现读配置——开关热生效，改配置下个决策即回固定池。
         M15-补丁1 E3：capabilities.web_search_enabled=false 时摘除 surf/read。
+        M30-补丁1 A：浏览器可用时 surf/read 保留（改走浏览器直接浏览）。
         """
         pool = self._activities
         try:
@@ -217,7 +223,9 @@ class ActivityDecider:
             pass
         from .activities import activities_excluding_search
 
-        return activities_excluding_search(pool, self._config_getter)
+        return activities_excluding_search(
+            pool, self._config_getter, self._browser_available_getter
+        )
 
     # ------------------------------------------------------------------
     # rules 档

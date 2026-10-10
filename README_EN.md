@@ -138,7 +138,7 @@ Everything is hot-reloadable from the WebUI. Full list in `_conf_schema.json`; t
 | `sleep.sleep_mute_replies` | Mute replies while asleep | true |
 | `autonomy.tier` | Capability tier 0-4 | 1 (watch) |
 | `autonomy.write_level` | Network write access, 0-3 (0 = look only) | 0 (look only) |
-| `capabilities.web_search_enabled` | Web search on/off | true |
+| `capabilities.web_search_enabled` | Web search on/off (off → surf/read browse with the built-in browser instead; dropped only if no browser kernel is installed) | true |
 | `style_learning.enabled` | Style learning on/off | false |
 | `judge.mode` | Judge model: off / local / api | off |
 | `judge.provider_id` | Judge provider (unset = disabled) | empty |

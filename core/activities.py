@@ -37,7 +37,10 @@ TOPIC_POOL = [
 ]
 
 # M15-补丁1 E3：依赖"搜索→挑结果"模式的活动——web_search_enabled=false
-# 时从可选池剔除（她转而做其他活动）；与 free 的剔除先例同款实现
+# 时从可选池剔除（她转而做其他活动）；与 free 的剔除先例同款实现。
+# M30-补丁1 A：剔除不再是 unconditional——搜索关了但浏览器可用时，
+# surf/read 改走浏览器直接浏览（见 activities_excluding_search 的
+# browser_available 参数），只有两条上网通路都没有才摘。
 SEARCH_DEPENDENT_ACTIVITIES = ("surf", "read")
 
 # M16-补丁1 C1：本体 agent runner（tool_loop_agent_runner）被 request_stop
@@ -72,6 +75,32 @@ DEFAULT_PROMPT_INTENT_FREE = (
     "你可以使用这些工具：{tools_line}。{closing}"
 )
 
+# M30-补丁1 B：搜索关闭（但浏览器可用）时 surf/read 的无搜索意图——
+# 教它用浏览器五件套真的"逛"起来：打开站 → 读页 → 从可点清单挑链接点
+# 进去 → 连续几跳 → 汇报。明确允许连点多次（不是点一下就收工）。
+# 面板键 decision.prompt_intent_surf_browse / prompt_intent_read_browse，
+# 占位符与有搜索模板同款（{topic_line}/{avoid_line}）。
+DEFAULT_PROMPT_INTENT_SURF_BROWSE = (
+    "你现在打算上网逛逛。{topic_line}{avoid_line}"
+    "这次不用搜索引擎，用浏览器自己逛："
+    "用 browser_navigate 打开一个你感兴趣的网站（凭你的兴趣、或最近记忆里"
+    "读过的方向决定去哪），用 browser_read 看看页面上有什么，"
+    "然后从页面给的『可交互元素』清单里挑一条你最感兴趣的，"
+    "用 browser_click 点进去（链接类元素建议标 action_kind=navigate）。"
+    "逛的时候可以连着点好几跳——看完一页觉得有意思就接着点下一条，"
+    "别只点一下就收工。"
+    "最后用几句话汇报你一路逛到了什么、有什么想法。"
+)
+DEFAULT_PROMPT_INTENT_READ_BROWSE = (
+    "你现在打算读一篇文章。{topic_line}{avoid_line}"
+    "这次不用搜索引擎，用浏览器自己找："
+    "用 browser_navigate 打开一个你想读的站，用 browser_read 读正文；"
+    "如果正文或『可交互元素』清单里有值得追下去的链接，"
+    "用 browser_click 点进去接着读（链接类元素建议标 action_kind=navigate），"
+    "可以连着读好几页。"
+    "读完后用自己的话总结要点，再说一点你的感想。"
+)
+
 
 def _informative_partial(text: str) -> bool:
     """超预算中断的半截产出是否含有真实信息（M16-补丁1 C1）。
@@ -104,8 +133,21 @@ def web_search_enabled(config_source: Any) -> bool:
     return str(raw).strip().lower() not in ("false", "0", "off", "no")
 
 
-def activities_excluding_search(activities: list, config_source: Any) -> list:
+def activities_excluding_search(
+    activities: list, config_source: Any, browser_available: Any = None
+) -> list:
     """E3：搜索关闭时摘除 surf/read（热读，改配置下个决策即生效）。
+
+    M30-补丁1 A（解绑）：搜索关闭**且没有替代上网手段**才摘。浏览器可用
+    （browser_available 为 True）时 surf/read 保留——意图改走浏览器直接
+    浏览（prompt_intent_surf_browse / prompt_intent_read_browse）。
+
+    browser_available 三种形态（惰性：只在搜索关闭时才求值）：
+      - callable（运行时接线形态）：() -> bool，无参；抛异常按不可用
+        （保守回旧行为：摘除，不留"判定失败还硬上网"的空转）；
+      - bool：直接判定值（测试用）；
+      - None（缺省）：按不可用——与 M15-M29 的既有行为逐字一致（既有
+        两参调用零变化）。
 
     config_source 同 web_search_enabled：dict 或 getter；getter 抛异常
     按默认开处理（回全量池，行为不劣于现状——红线 5 的同款容错）。"""
@@ -115,11 +157,26 @@ def activities_excluding_search(activities: list, config_source: Any) -> list:
         return activities
     if web_search_enabled(config):
         return activities
+    if callable(browser_available):
+        try:
+            browser_available = browser_available()
+        except Exception:
+            logger.warning(
+                "[Activities] 浏览器可用性判定失败，按不可用处理（surf/read 摘除）"
+            )
+            browser_available = False
+    if browser_available is True:
+        logger.info(
+            "[Activities] 网页搜索已关闭，但浏览器可用——surf/read 保留，"
+            "改走浏览器直接浏览"
+        )
+        return activities
     kept = [a for a in activities if a.name not in SEARCH_DEPENDENT_ACTIVITIES]
     if len(kept) != len(activities):
         logger.info(
-            "[Activities] 网页搜索已关闭（web_search_enabled=false），"
-            f"活动池摘除: {'/'.join(SEARCH_DEPENDENT_ACTIVITIES)}"
+            "[Activities] 网页搜索已关闭（web_search_enabled=false）"
+            "且浏览器不可用，活动池摘除: "
+            f"{'/'.join(SEARCH_DEPENDENT_ACTIVITIES)}"
         )
     return kept
 
@@ -399,6 +456,15 @@ class SurfActivity(Activity):
             if avoid_line
             else ""
         )
+        # M30-补丁1 B：搜索关闭（浏览器可用才轮得到本意图）→ 走浏览器
+        # 浏览路径；有搜索时模板与 M19 定稿逐字一致（不回退）。
+        if not ctx.search_enabled:
+            return self._render_intent(
+                ctx,
+                "prompt_intent_surf_browse",
+                DEFAULT_PROMPT_INTENT_SURF_BROWSE,
+                {"topic_line": topic_line, "avoid_line": avoid_line},
+            )
         # M19-补丁1 D6：意图模板搬面板（默认逐字一致）
         return self._render_intent(
             ctx,
@@ -455,6 +521,14 @@ class ReadArticleActivity(Activity):
             if avoid_line
             else ""
         )
+        # M30-补丁1 B：无搜索路径同 surf——浏览器浏览意图
+        if not ctx.search_enabled:
+            return self._render_intent(
+                ctx,
+                "prompt_intent_read_browse",
+                DEFAULT_PROMPT_INTENT_READ_BROWSE,
+                {"topic_line": topic_line, "avoid_line": avoid_line},
+            )
         # M19-补丁1 D6：意图模板搬面板（默认逐字一致）
         return self._render_intent(
             ctx,

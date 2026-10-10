@@ -301,6 +301,8 @@ def test_structure_complete_no_key_lost():
             "prompt_decide_llm_free", "prompt_decide_llm_interest",
             "prompt_intent_surf", "prompt_intent_read",
             "prompt_intent_game", "prompt_intent_free",
+            # M30-补丁1：无搜索路径的浏览器浏览意图（surf/read 各一）
+            "prompt_intent_surf_browse", "prompt_intent_read_browse",
         },
         "initiative": {"prompt_open_topic", "prompt_line"},
         "sleep": {"prompt_farewell", "prompt_wake_reply", "prompt_dream"},

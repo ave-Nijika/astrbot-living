@@ -167,6 +167,7 @@ class LivingLoop:
         initiative: Any = None,
         persona_getter: Callable[..., Any] | None = None,
         style_learner: Any = None,
+        browser_available_getter: Callable[[], bool] | None = None,
     ) -> None:
         self._gate = gate
         self._get_memory = memory_getter
@@ -212,6 +213,10 @@ class LivingLoop:
         # M17-补丁1：风格学习引擎（A 组）——A7 学习触发与 A5 梦话注入
         # 都经它；None = 该链路不存在（既有测试/旧装配零影响）
         self._style_learner = style_learner
+        # M30-补丁1 A：浏览器可用性判定（() -> bool，惰性——只在搜索关闭
+        # 时才被 activities_excluding_search 调用）。None = 缺省，维持
+        # "搜索关即摘 surf/read"的既有行为（与 decider 同款同源）。
+        self._browser_available_getter = browser_available_getter
         # M13-补丁1 A5：已写过的落库幂等键（M16-补丁2 A2：dict 保插入序，
         # 裁剪按插入序 FIFO 淘汰最旧的——原 set+字典序会把 #share: 等键族
         # 按字符先后优先淘汰，幂等键被裁后同句会重复落库）
@@ -1420,7 +1425,8 @@ class LivingLoop:
         """活动池（补丁 XV 清单3）：decision.free_activity_enabled=false 时
         摘除 free。现读配置——开关热生效，覆盖随机选择与 /living do 指名。
         M15-补丁1 E3：web_search_enabled=false 时摘除 surf/read（与 decider
-        同一 helper，两池口径一致）。"""
+        同一 helper，两池口径一致）。
+        M30-补丁1 A：浏览器可用时 surf/read 保留（改走浏览器直接浏览）。"""
         pool = self._activities
         try:
             raw = _conf_group(self._config_getter(), "decision").get(
@@ -1432,7 +1438,9 @@ class LivingLoop:
             pass
         from .activities import activities_excluding_search
 
-        return activities_excluding_search(pool, self._config_getter)
+        return activities_excluding_search(
+            pool, self._config_getter, self._browser_available_getter
+        )
 
     def _recent_topic_penalty_table(self) -> tuple:
         """重复惩罚表（配置 recent_topic_penalty，缺省 0.5/0.3/0.15）。"""
