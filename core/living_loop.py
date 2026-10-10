@@ -688,7 +688,7 @@ class LivingLoop:
             logger.debug("[LivingLoop] 晚安 llm 档：它决定今晚不说（SKIP）")
             return
         # M31-补丁1 B 组：晚安发送前过一遍质检（rewrite 档可轻量修正一次；
-        # 失败/超时/总闸关闭一律放行原文——她该说的话一句不能丢）
+        # 失败/超时/总闸关闭一律放行原文——它该说的话一句不能丢）
         if self._proactive_qc is not None:
             try:
                 qc_line = await self._proactive_qc(line, "farewell", session)
@@ -1071,7 +1071,7 @@ class LivingLoop:
         mode = "认真回" if head.startswith("REPLY") else "糊弄回"
         # M32-补丁1 A2：补回复是模型生成、直接发给用户的话——发送前过
         # 一遍质检（side="pending_reply"，与分享同款形态）；失败/超时/
-        # 总闸关闭一律放行原文（红线：她说的话一句不能丢）。
+        # 总闸关闭一律放行原文（红线：它说的话一句不能丢）。
         if self._proactive_qc is not None:
             try:
                 qc_text = await self._proactive_qc(reply, "pending_reply", session)
