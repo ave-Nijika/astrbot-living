@@ -97,7 +97,7 @@ def test_acc1_every_key_row_has_label():
     rows = rows_by_code(data)
     all_keys = dict(iter_schema_keys())
     assert data["loadError"] == ""
-    assert len(data["keyRows"]) == len(all_keys) == 128  # M31-补丁1 +2
+    assert len(data["keyRows"]) == len(all_keys) == 129  # M32-补丁1 +1
     assert set(rows) == set(all_keys), "键行集合必须与 schema 逐一对应"
     for path, item in all_keys.items():
         row = rows[path]
@@ -197,7 +197,7 @@ def test_acc5_flat_fallback_path_also_has_labels():
     assert data["loadError"] == ""
     rows = rows_by_code(data)
     all_keys = dict(iter_schema_keys())
-    assert len(data["keyRows"]) == 128  # M31-补丁1 +2
+    assert len(data["keyRows"]) == 129  # M32-补丁1 +1
     for path, item in all_keys.items():
         row = rows[path]
         assert row["hasLabel"], f"扁平回退路径 {path} 的 .key-label 缺失"

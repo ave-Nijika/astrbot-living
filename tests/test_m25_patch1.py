@@ -74,8 +74,9 @@ def layout_group(sec_id: str, grp_id: str) -> dict:
 # A 组：元数据与流转（验收 6/7 + 本体安全性）
 # ---------------------------------------------------------------------------
 def test_a1_coverage_completeness():
-    """验收 7：_layout 覆盖 schema 全部扁平键（137——M31-补丁1 加了
-    prompt_intent_surf_browse/read_browse 两条），遗漏 0 / 重复 0。
+    """验收 7：_layout 覆盖 schema 全部扁平键（138——M31-补丁1 加了
+    prompt_intent_surf_browse/read_browse 两条，M32-补丁1 加了
+    avoid_after_user_minutes 一条），遗漏 0 / 重复 0。
 
     复用 scripts/check_layout.py 的同一套校验（报告贴脚本输出）。"""
     import check_layout
@@ -83,9 +84,9 @@ def test_a1_coverage_completeness():
     problems = check_layout.check(SCHEMA, LAYOUT)
     assert problems == [], f"覆盖完整性问题: {problems}"
     keys = check_layout.flat_keys(SCHEMA)
-    assert len(keys) == 137, f"扁平键应为 137，实得 {len(keys)}"
+    assert len(keys) == 138, f"扁平键应为 138，实得 {len(keys)}"
     advanced = sum(1 for k in keys if "." in k)
-    assert advanced == 128 and len(keys) - advanced == 9
+    assert advanced == 129 and len(keys) - advanced == 9
 
 
 def test_a2_metadata_field_not_named_items():

@@ -60,7 +60,7 @@ No fixed sleep window — sleepiness accumulates naturally (awake time, circadia
 | Wake ack | Instant reply when woken | No |
 | Pending-reply catch-up | Replies to messages received while asleep | No |
 
-The first four pass the output gate (`output_gate.daily_message_limit` + `message_min_interval_minutes`); the last three send directly.
+The first four pass the output gate (`output_gate.daily_message_limit` + `message_min_interval_minutes`); the last three send directly. On top of that, a conversation-avoid window: if you have spoken in its target session recently, it holds proactive chatter and shares for `initiative.avoid_after_user_minutes` (default 30, 0=off) — no interrupting an ongoing chat; activities still run and experiences are still recorded, it just stays quiet.
 
 ### Memory
 
@@ -93,7 +93,7 @@ Make it sound like a given person/style (`style_learning.enabled`):
 
 ## Judge model ("little brain")
 
-An independent reviewer model for its proactive messages (`judge.mode`): **off** (default, zero cost) / **local** (reserved, unimplemented) / **api** (uses `judge.provider_id`). Input-side checks before it speaks (advisory only); output-side checks cover both chat replies and its proactive messages (shares / initiative / goodnight / dream talk), optionally rewriting once with a length guard (`judge.output_action=rewrite`). Optionally reference the persona during review (`judge.include_persona`, default off — persona text enters the judge context as quoted reference material with anti-roleplay anchors, at the cost of a persona-sized input per call). Every judgment is viewable in the panel (proactive QC sources tagged share / initiative / farewell / dream).
+An independent reviewer model for its proactive messages (`judge.mode`): **off** (default, zero cost) / **local** (reserved, unimplemented) / **api** (uses `judge.provider_id`). Input-side checks before it speaks (advisory only); output-side checks cover both chat replies and its proactive messages (shares / initiative / goodnight / dream talk / oversleep note / wake-up catch-up reply), optionally rewriting once with a length guard (`judge.output_action=rewrite`). Optionally reference the persona during review (`judge.include_persona`, default off — persona text enters the judge context as quoted reference material with anti-roleplay anchors, at the cost of a persona-sized input per call). Every judgment is viewable in the panel (proactive QC sources tagged share / initiative / farewell / dream / oversleep / pending_reply).
 
 `judge.provider_id` must be separate from your chat model; **without it these features simply don't run** (no silent fallback — that is the cost protection).
 
@@ -143,6 +143,7 @@ Everything is hot-reloadable from the WebUI. Full list in `_conf_schema.json`; t
 | `judge.mode` | Judge model: off / local / api | off |
 | `judge.provider_id` | Judge provider (unset = disabled) | empty |
 | `judge.include_persona` | Reference the persona during review (extra persona-sized input per call) | false |
+| `initiative.avoid_after_user_minutes` | How long it stays quiet after you speak before initiating (minutes, 0=off) | 30 |
 | `model.provider_id` | Dedicated autonomy provider | empty |
 | `model.allow_chat_fallback` | Fall back to chat model | true |
 | `memory.backend` | auto / livingmemory / simple | auto |

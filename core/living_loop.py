@@ -945,8 +945,9 @@ class LivingLoop:
         roll = rng.random() if hasattr(rng, "random") else rng()
         if roll < 0.5:
             try:
-                # M31-补丁1：睡过头交代不在质检四出口范围内（qc_side=""）
-                await self._maybe_share(note, wake_time, qc_side="")
+                # M32-补丁1 A1：睡过头交代也是模型链路的产出、直接发给
+                # 用户的话（M31 当时按四出口范围排除，本批复核后纳入）。
+                await self._maybe_share(note, wake_time, qc_side="oversleep")
             except Exception as e:
                 logger.warning(f"[Schedule] 睡过头交代发送失败: {e}")
         return True
@@ -1068,6 +1069,18 @@ class LivingLoop:
             logger.debug("[LivingLoop] 未回消息缺会话信息，无法补回复")
             return
         mode = "认真回" if head.startswith("REPLY") else "糊弄回"
+        # M32-补丁1 A2：补回复是模型生成、直接发给用户的话——发送前过
+        # 一遍质检（side="pending_reply"，与分享同款形态）；失败/超时/
+        # 总闸关闭一律放行原文（红线：她说的话一句不能丢）。
+        if self._proactive_qc is not None:
+            try:
+                qc_text = await self._proactive_qc(reply, "pending_reply", session)
+                if isinstance(qc_text, str) and qc_text.strip():
+                    reply = qc_text
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug(f"[LivingLoop] 补回复质检失败（放行原文）: {e}")
         try:
             sent = await self._sender.send(session, reply)
         except Exception as e:
@@ -1979,9 +1992,9 @@ class LivingLoop:
                 return
             text_to_send = rewritten
 
-        # M31-补丁1 B 组：发送前过一遍质检（分享="share"、梦话="dream"；
-        # 睡过头交代传 "" 不质检——任务范围只有四个出口）。rewrite 档可
-        # 轻量修正一次；失败/超时/总闸关闭一律放行原文（红线 1/3）。
+        # M31-补丁1 B 组：发送前过一遍质检（分享="share"、梦话="dream"、
+        # 睡过头交代="oversleep"——M32-补丁1 A1 纳入）。rewrite 档可轻量
+        # 修正一次；失败/超时/总闸关闭一律放行原文（红线 1/3）。
         if qc_side and self._proactive_qc is not None:
             try:
                 qc_text = await self._proactive_qc(

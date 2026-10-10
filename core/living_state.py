@@ -149,6 +149,10 @@ class LivingGate:
         self._last_nap_ended_at: datetime | None = None
         self._nap_count_today: int = 0
         self._nap_count_date: str | None = None
+        # 用户在聊避让（M32-补丁1 B）：目标会话用户最近一次说话时刻。
+        # 同步判定（standby_avoid_active）要用 → 必须有内存镜像；
+        # 持久化跨重启（重启不抹掉"刚聊过天"的避让窗口）
+        self._last_user_message_at: datetime | None = None
 
     # ------------------------------------------------------------------
     # 自主作息（任务书 M3 补丁 X；M6-补丁1 起 fixed 机制移除，
@@ -311,6 +315,10 @@ class LivingGate:
         self._fell_asleep_at = _parse_iso(await self._get_raw("fell_asleep_at"))
         self._last_wakeup_at = _parse_iso(await self._get_raw("last_wakeup_at"))
         self._last_nap_ended_at = _parse_iso(await self._get_raw("last_nap_ended_at"))
+        # M32-补丁1 B：用户在聊避让窗口的跨重启恢复
+        self._last_user_message_at = _parse_iso(
+            await self._get_raw("last_user_message_at")
+        )
         try:
             self._nap_count_today = max(
                 int(await self._get_raw("nap_count_today") or 0), 0
@@ -357,6 +365,48 @@ class LivingGate:
             return False
         await self.clear_awake_until()
         return True
+
+    # ------------------------------------------------------------------
+    # 用户在聊避让（M32-补丁1 B 组）
+    # ------------------------------------------------------------------
+    def standby_avoid_active(self, now: datetime | None = None) -> bool:
+        """主动出声避让是否生效（同步；搭话/分享经 should_send_message 第 0 关）。
+
+        语义：目标会话的用户最近一次说话后 initiative.avoid_after_user_minutes
+        （默认 30，≤0 关闭）分钟内，不主动搭话/分享——正聊着天突然插话
+        会打断对话。窗口独立于睡眠侧 awake_standby_minutes（想调搭话避让
+        不会连带改睡眠行为）；无记录（从未说话/跨重启丢失）→ 不避让。
+        """
+        now = now or datetime.now()
+        if self._last_user_message_at is None:
+            return False
+        try:
+            minutes = _to_float(
+                _conf_group(self._config_getter() or {}, "initiative").get(
+                    "avoid_after_user_minutes"
+                ),
+                30.0,
+            )
+        except Exception:
+            minutes = 30.0
+        if minutes <= 0:
+            return False
+        elapsed = (now - self._last_user_message_at).total_seconds()
+        return 0 <= elapsed < minutes * 60
+
+    async def note_user_message(self, now: datetime | None = None) -> None:
+        """记录目标会话用户最近一次说话时刻（避让窗口的锚点）。
+
+        由 main 的全量消息监听在"消息来自目标会话"时调用；内存镜像 +
+        持久化（跨重启窗口不丢）。写入失败只记日志——避让是保护项，
+        不能反过来阻断消息链路。
+        """
+        now = now or datetime.now()
+        self._last_user_message_at = now
+        try:
+            await self._set_raw("last_user_message_at", now.isoformat())
+        except Exception as e:
+            logger.debug(f"[LivingGate] 用户消息时刻持久化失败（仅内存）: {e}")
 
     def _awake_standby_skip_sleeping(self, now: datetime) -> bool:
         """待机期内跳过 sleeping 判定（判定链首位，任务书定稿语义）。"""
@@ -557,11 +607,22 @@ class LivingGate:
         M20-补丁1 G：原第 3 关"静默时段"（output_gate.quiet_hours）已删——
         定论口径：该不该安静由AstrBot的真实作息（睡眠系统）与判断模型决定，
         不该再有一条跟着钟表走的死规则。其余闸门（每日上限/最小间隔/
-        睡眠静默）零改动。"""
+        睡眠静默）零改动。
+        M32-补丁1 B：新增第 0 关"用户在聊避让"——目标会话用户最近说话
+        后的一段时间内不主动出声（搭话/分享共用本闸门，单点生效）；
+        窗口独立键 initiative.avoid_after_user_minutes（≤0 关闭），与
+        睡眠侧待机互不影响。"""
         now = now or datetime.now()
         config = self._config_getter() or {}
         state = await self.get_state(now)
         output = _conf_group(config, "output_gate")
+
+        # 0. 用户在聊避让（M32-补丁1 B1/B2）：正聊着天突然插话会打断
+        # 对话——窗口内搭话与分享都不出声（活动照做、经历照写，不经
+        # 本闸门）
+        avoid = self.standby_avoid_active(now)
+        if avoid:
+            return False, "standby_avoid"
 
         # 1. 今日消息上限（0 = 不限制）
         limit = _to_int(output.get("daily_message_limit"), 10)

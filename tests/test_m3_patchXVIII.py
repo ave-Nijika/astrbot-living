@@ -304,7 +304,11 @@ def test_structure_complete_no_key_lost():
             # M30-补丁1：无搜索路径的浏览器浏览意图（surf/read 各一）
             "prompt_intent_surf_browse", "prompt_intent_read_browse",
         },
-        "initiative": {"prompt_open_topic", "prompt_line"},
+        "initiative": {
+            "prompt_open_topic", "prompt_line",
+            # M32-补丁1 B3：用户在聊避让窗口
+            "avoid_after_user_minutes",
+        },
         "sleep": {"prompt_farewell", "prompt_wake_reply", "prompt_dream"},
         "style_learning": {"prompt_distill"},
     }

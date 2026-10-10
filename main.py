@@ -3195,6 +3195,21 @@ class LivingPlugin(Star):
         initiative = (
             getattr(self.loop, "initiative", None) if self.loop is not None else None
         )
+        # M32-补丁1 B：用户在聊避让的锚点——目标会话（它主动说话的受众）
+        # 里用户说了话，就记下时刻；之后 avoid_after_user_minutes 窗口内
+        # 搭话/分享都避让（正聊着天不插话）。同款只认目标会话：别的会话
+        # 的动静不该让它对自己的受众噤声。失败只 DEBUG（避让是保护项）。
+        try:
+            if self.loop is not None and self.gate is not None:
+                sessions, _src = self.loop._resolve_target_sessions()
+                try:
+                    msg_session = event.unified_msg_origin
+                except Exception:
+                    msg_session = None
+                if sessions and msg_session and msg_session in sessions:
+                    await self.gate.note_user_message(datetime.now())
+        except Exception as e:
+            logger.debug(f"[Living] 用户消息时刻记录失败（忽略）: {e}")
         if initiative is not None:
             try:
                 target = self._initiative_session()

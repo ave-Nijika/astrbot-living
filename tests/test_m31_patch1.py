@@ -616,7 +616,9 @@ def test_b7_gate_off_zero_calls(tmp_path):
 
 
 def test_b8_oversleep_not_in_scope(tmp_path):
-    """范围锁：睡过头交代不在质检四出口内（qc_side=""→ 不送检）。"""
+    """范围锁：qc_side 空串=不送检机制（M31 时睡过头传 ""；M32-补丁1
+    A1 后睡过头改传 "oversleep" 送检——空串机制本身保留，供明确排除
+    的出口使用）。"""
     qc = _qc_capture()
     sent = []
 
@@ -631,7 +633,7 @@ def test_b8_oversleep_not_in_scope(tmp_path):
         _write_speech_to_stores=_noop_async,
     )
     asyncio.run(loop._maybe_share("我睡过头了，抱歉呀", NOW, qc_side=""))
-    assert qc.calls == []  # 未送检
+    assert qc.calls == []  # 空串不送检
     assert sent == ["我睡过头了，抱歉呀"]  # 照发
 
 
@@ -720,8 +722,9 @@ def test_c4_wiring_call_chain():
     assert "async def _judge_persona_text" in main_src
     loop_src = (WORKDIR / "core" / "living_loop.py").read_text(encoding="utf-8")
     assert 'qc_side="dream"' in loop_src
-    assert 'qc_side=""' in loop_src  # 睡过头交代明确排除
+    assert 'qc_side="oversleep"' in loop_src  # M32-补丁1 A1：睡过头纳入送检
     assert '"farewell"' in loop_src
+    assert '"pending_reply"' in loop_src  # M32-补丁1 A2：醒来补回复纳入送检
     initiative_src = (WORKDIR / "core" / "initiative.py").read_text(encoding="utf-8")
     assert "proactive_qc" not in initiative_src  # M17 红线 7 保持：零改动
 
