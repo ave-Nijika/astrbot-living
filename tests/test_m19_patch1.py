@@ -714,6 +714,8 @@ def test_t11_initiative_prompts_verbatim():
 def _bare_loop(**attrs):
     """object.__new__ 构造 LivingLoop，只注入目标方法用到的属性。"""
     loop = object.__new__(LivingLoop)
+    # M31-补丁1：主动产出质检回调缺省 None（不质检）
+    attrs.setdefault("_proactive_qc", None)
     for key, value in attrs.items():
         setattr(loop, key, value)
     return loop
@@ -1270,18 +1272,21 @@ def test_t16_fallback_chain_options_from_providers(tmp_path):
 
 
 def test_judge_group_schema_complete():
-    """A/B/C 组配置完整性：judge 组 12 键齐备且默认值符合任务书。"""
+    """A/B/C 组配置完整性：judge 组 14 键齐备且默认值符合任务书
+    （M31-补丁1：+timeout_output_seconds/include_persona；上文默认 6→4）。"""
     items = SCHEMA["advanced"]["items"]["judge"]["items"]
     expected = {
         "mode": ("off", ["off", "local", "api"]),
         "provider_id": ("", None),
         "local_model_path": ("", None),
         "local_backend": ("", None),
-        "context_messages": (6, None),
+        "context_messages": (4, None),
         "min_interval_seconds": (20, None),
         "timeout_seconds": (6, None),
         "output_action": ("log_only", ["log_only", "rewrite"]),
         "record_limit": (50, None),
+        "timeout_output_seconds": (10, None),
+        "include_persona": (False, None),
         "prompt_input": (DEFAULT_PROMPT_INPUT, None),
         "inject_template": (DEFAULT_INJECT_TEMPLATE, None),
         "prompt_output": (DEFAULT_PROMPT_OUTPUT, None),

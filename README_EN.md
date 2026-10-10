@@ -93,7 +93,7 @@ Make it sound like a given person/style (`style_learning.enabled`):
 
 ## Judge model ("little brain")
 
-An independent reviewer model for its proactive messages (`judge.mode`): **off** (default, zero cost) / **local** (reserved, unimplemented) / **api** (uses `judge.provider_id`). Input-side checks before it speaks (advisory only); output-side checks after, optionally rewriting once with a length guard (`judge.output_action=rewrite`). Every judgment is viewable in the panel.
+An independent reviewer model for its proactive messages (`judge.mode`): **off** (default, zero cost) / **local** (reserved, unimplemented) / **api** (uses `judge.provider_id`). Input-side checks before it speaks (advisory only); output-side checks cover both chat replies and its proactive messages (shares / initiative / goodnight / dream talk), optionally rewriting once with a length guard (`judge.output_action=rewrite`). Optionally reference the persona during review (`judge.include_persona`, default off — persona text enters the judge context as quoted reference material with anti-roleplay anchors, at the cost of a persona-sized input per call). Every judgment is viewable in the panel (proactive QC sources tagged share / initiative / farewell / dream).
 
 `judge.provider_id` must be separate from your chat model; **without it these features simply don't run** (no silent fallback — that is the cost protection).
 
@@ -142,6 +142,7 @@ Everything is hot-reloadable from the WebUI. Full list in `_conf_schema.json`; t
 | `style_learning.enabled` | Style learning on/off | false |
 | `judge.mode` | Judge model: off / local / api | off |
 | `judge.provider_id` | Judge provider (unset = disabled) | empty |
+| `judge.include_persona` | Reference the persona during review (extra persona-sized input per call) | false |
 | `model.provider_id` | Dedicated autonomy provider | empty |
 | `model.allow_chat_fallback` | Fall back to chat model | true |
 | `memory.backend` | auto / livingmemory / simple | auto |

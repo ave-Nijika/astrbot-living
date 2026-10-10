@@ -63,6 +63,12 @@ from .core.style_review import StyleReviewer
 
 PLUGIN_NAME = "astrbot_plugin_living"
 
+# M31-补丁1：判断上下文材料上限——上文每条 800 字（宽松上限，防单条巨型
+# 粘贴撑爆 prompt，不再用会切语义的 80 字）；人格段 4000 字硬顶（防御
+# 异常巨型人格，正常人格远小于此）
+_JUDGE_CONTEXT_LINE_MAX_CHARS = 800
+_JUDGE_PERSONA_MAX_CHARS = 4000
+
 # 闸门拦截原因 → 给用户看的一句话（/living_wake 反馈用）
 _WAKE_REASON_TEXT = {
     "sleeping": "我在睡觉呢（自主作息），不忍心叫就别叫我啦",
@@ -86,6 +92,34 @@ def _merge_config_defaults(refer: dict, conf: dict) -> dict:
         elif isinstance(value, dict) and isinstance(conf[key], dict):
             out[key] = _merge_config_defaults(value, conf[key])
     return out
+
+
+class _QcWrappedSender:
+    """M31-补丁1 B 组：主动出口的质检包装 sender。
+
+    send 前先把台词过一遍判断模型（output_action=rewrite 时可轻量修正，
+    其余只记录）；质检失败/超时/总闸关闭一律放行原文——她该说的话一句
+    不能丢（红线 1），也不新增阻塞（红线 3）。只包 send 一个方法：
+    InitiativeEngine 只用 send，core/initiative.py 得以零改动（M17 红线 7
+    保持），质检经"sender.send 之前"接入位挂上（M31 任务书 2.2）。"""
+
+    def __init__(self, inner: Any, qc: Any) -> None:
+        self._inner = inner
+        self._qc = qc  # async (text, side, umo) -> str
+
+    async def send(self, session: str, text: str) -> bool:
+        text_to_send = str(text or "")
+        try:
+            qc_text = await self._qc(
+                text_to_send, "initiative", str(session or "")
+            )
+            if isinstance(qc_text, str) and qc_text.strip():
+                text_to_send = qc_text
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug(f"[Judge] 主动台词质检失败（放行原文）: {e}")
+        return bool(await self._inner.send(session, text_to_send))
 
 
 class LivingPlugin(Star):
@@ -369,7 +403,14 @@ class LivingPlugin(Star):
             return None
         align: dict | None = None
         try:
-            align = await self._aligned_prefix(pid)
+            # M31-补丁1 A 组：带人格框架的判断调用（system=判断锚定）不做
+            # 前缀对齐——对齐会把聊天的最终 system（人格在其中）顶进 system
+            # 槽，把"你是判断助手"挤掉，扮演风险最高（任务书 2.1.2：防扮演
+            # 优先，放弃蹭聊天缓存）。开关关闭时本分支不触发，与 M30 逐字
+            # 一致。style 复盘等 system=None 的调用不受影响，照旧对齐。
+            framed = bool(system_prompt) and self._judge_include_persona_on()
+            if not framed:
+                align = await self._aligned_prefix(pid)
         except Exception:
             align = None
         call_prompt = prompt
@@ -473,6 +514,47 @@ class LivingPlugin(Star):
         task = asyncio.create_task(coro)
         self._judge_tasks.add(task)
         task.add_done_callback(self._judge_tasks.discard)
+
+    async def _proactive_output_qc(self, text: str, side: str, umo: str = "") -> str:
+        """B 组（M31-补丁1）：她主动说的话发送前过一遍判断模型。
+
+        覆盖四个出口：活动分享（改写后）/ 主动搭话 / 晚安（llm 档）/ 梦话
+        （side 分别为 "share"/"initiative"/"farewell"/"dream"）。复用
+        OutputJudge 输出侧能力，output_action 语义不变：log_only 只记录
+        不动文本（后台任务）；rewrite 最多轻量修正一次（长度护栏沿用）。
+        红线：超时/失败/限频/总闸关闭 → 一律放行原文，绝不丢话、绝不
+        阻断超过 judge 自身超时。返回实际要发送的文本。"""
+        original = str(text or "")
+        try:
+            judge = self._judge
+            if judge is None or not judge.enabled():
+                return original
+            persona_text = ""
+            if judge.include_persona():
+                persona_text = await self._judge_persona_text(umo=umo)
+            if judge.output_action() == "rewrite":
+                fixed = await judge.rewrite_output(
+                    original, side=side, persona_text=persona_text
+                )
+                return str(fixed or original)
+            # log_only：后台检查记录，发送不等待（与聊天输出侧同款）
+            self._judge_record_task(
+                judge.check_output(
+                    original, side=side, persona_text=persona_text
+                )
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug(f"[Judge] 主动产出质检失败（放行原文）: {e}")
+        return original
+
+    def _initiative_qc_sender(self) -> Any:
+        """主动搭话出口的质检包装 sender（搭话台词发送前先过一遍质检）。
+
+        经包装注入而非改 core/initiative.py——该文件保持 M17 红线 7 的
+        零改动；质检失败自动放行原文（_QcWrappedSender）。"""
+        return _QcWrappedSender(self.sender, self._proactive_output_qc)
 
     # ------------------------------------------------------------------
     # 聊天前缀缓存与前缀对齐（M20-补丁1 E 组，缓存保护核心）
@@ -627,7 +709,16 @@ class LivingPlugin(Star):
                 logger.debug(f"[Judge] 输入判断跳过（{skip}）")
                 return
             context_lines = self._judge_context_lines(req)
-            verdict = await judge.judge_input(message_text, context_lines)
+            # M31-补丁1 A 组：人格段按需解析（开关关 → 不解析零开销）；
+            # 切不出 → 空串降级（judge 侧 prompt 明示资料区空着，不阻断）
+            persona_text = ""
+            if judge.include_persona():
+                persona_text = await self._judge_persona_text(
+                    event=event, req=req
+                )
+            verdict = await judge.judge_input(
+                message_text, context_lines, persona_text=persona_text
+            )
             if verdict is None:
                 return
             injection = judge.build_input_injection(verdict)
@@ -639,19 +730,32 @@ class LivingPlugin(Star):
             if parts is None:
                 return  # 本体形态有变时安全退出（不注入、不报错）
             parts.append(TextPart(text=injection).mark_as_temp())
-            judge.record_input_injected(message_text, verdict)
+            judge.record_input_injected(
+                message_text,
+                verdict,
+                extra=(
+                    "（无人格资料）"
+                    if judge.include_persona() and not persona_text
+                    else ""
+                ),
+            )
             logger.debug("[Judge] 输入判断建议已注入（用完即弃）")
         except Exception as e:
             logger.debug(f"[Judge] 输入判断失败（不影响聊天）: {e}")
 
     def _judge_context_lines(self, req: Any) -> list[str]:
         """输入/输出判断的上文材料：只取 role/content 两个字段（安全红线：
-        其余元数据一律不带入 prompt 链），尾部 N 条（judge.context_messages）。"""
+        其余元数据一律不带入 prompt 链），尾部 N 条（judge.context_messages，
+        M31-补丁1 起默认 4）。
+
+        M31-补丁1：不再按 80 字截断——截断常把转折与语气切掉，判断"该用
+        什么语气回"会失真；改带完整内容，仅设 800 字/条的宽松上限，防
+        单条巨型粘贴把 prompt 撑爆。"""
         lines: list[str] = []
         try:
             from .core.conf_path import conf_group
 
-            limit = self._int_from_config("judge", "context_messages", 6, 12)
+            limit = self._int_from_config("judge", "context_messages", 4, 12)
             contexts = getattr(req, "contexts", None) or []
             for message in list(contexts)[-limit:]:
                 if isinstance(message, dict):
@@ -660,8 +764,8 @@ class LivingPlugin(Star):
                 else:
                     role = str(getattr(message, "role", "") or "")
                     content = getattr(message, "content", None)
-                if role == "system":  # system 提示不进判断材料（只看对话）
-                    continue
+                if role == "system":  # system 提示不进判断材料（人格经
+                    continue        # include_persona 单独带，不是对话）
                 if isinstance(content, list):  # 多模态 parts → 取文本部分
                     content = " ".join(
                         str(getattr(part, "text", "") or "")
@@ -670,11 +774,130 @@ class LivingPlugin(Star):
                 content = str(content or "").strip().replace("\n", " ")
                 if not content:
                     continue
+                if len(content) > _JUDGE_CONTEXT_LINE_MAX_CHARS:
+                    content = content[:_JUDGE_CONTEXT_LINE_MAX_CHARS]
                 who = "用户" if role == "user" else "助手"
-                lines.append(f"{who}：{content[:80]}")
+                lines.append(f"{who}：{content}")
         except Exception as e:
             logger.debug(f"[Judge] 上文材料整理失败（按无上文继续）: {e}")
         return lines
+
+    # ------------------------------------------------------------------
+    # M31-补丁1 A 组：判断上下文的人格段（源头优先，标记切分退路）
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _split_persona_section(system_prompt: str) -> str:
+        """退路：从最终 system_prompt 按 "# Persona Instructions" 标记切出
+        人格段（不含其后的技能段等）。
+
+        依赖本体的拼接形态（astr_main_agent._ensure_persona_and_skills）：
+        `\\n# Persona Instructions\\n\\n{prompt}\\n`，其后是技能段
+        "## Skills"。切不出（无标记）→ 空串；人格原文里若有 "## Skills"
+        字样会被提前截断——退路的已知失效风险，源头取法优先的原因之一。"""
+        text = str(system_prompt or "")
+        mark = "# Persona Instructions"
+        idx = text.find(mark)
+        if idx < 0:
+            return ""
+        start = text.find("\n", idx)
+        start = start + 1 if start >= 0 else len(text)
+        while start < len(text) and text[start] in "\n \t":
+            start += 1
+        end = text.find("## Skills", start)
+        segment = text[start:end] if end > start else text[start:]
+        return str(segment or "").strip()[:_JUDGE_PERSONA_MAX_CHARS]
+
+    async def _judge_persona_text(
+        self, event: Any = None, req: Any = None, umo: str = ""
+    ) -> str:
+        """判断用的"人格那一段"原文（只人格，不含技能清单/工具说明）。
+
+        优先从源头取：persona_manager.resolve_selected_persona——与本体
+        astr_main_agent 同一解析入口（会话绑定 > 会话规则 > 默认人格，
+        口径一致，验收 3）；req 在场但 conversation 为空时该请求本来就不
+        挂人格，直接返回空串（同口径）。源头取不到（接口有变/异常）→
+        退路按标记切：req 有最终 system_prompt 用 req 的；没有（输出侧/
+        自主出口）用 M20 聊天前缀缓存里该会话最近一次的快照（TTL 随
+        model.prefix_cache_ttl_minutes，超时快照宁可不用）。都拿不到 →
+        返回空串：本次判断不带人格，降级继续，绝不外抛阻断（兜底要求，
+        prompt 侧由 frame_prompt 明示"资料区空着"）。"""
+        target_umo = str(umo or getattr(event, "unified_msg_origin", "") or "")
+        # 与本体同口径：req.conversation 为空 = 本次聊天请求不挂人格
+        if req is not None and getattr(req, "conversation", None) is None:
+            return ""
+        # ① 源头：persona_manager.resolve_selected_persona
+        try:
+            pm = getattr(self.context, "persona_manager", None)
+            resolve = getattr(pm, "resolve_selected_persona", None)
+            if callable(resolve) and target_umo:
+                platform_name = ""
+                getter = getattr(event, "get_platform_name", None)
+                if callable(getter):
+                    platform_name = str(getter() or "")
+                if not platform_name and ":" in target_umo:
+                    platform_name = target_umo.split(":", 1)[0]
+                try:
+                    provider_settings = (
+                        (self.context.get_config() or {}).get(
+                            "provider_settings", {}
+                        )
+                        or {}
+                    )
+                except Exception:
+                    provider_settings = {}
+                conversation_persona_id = None
+                conversation = getattr(req, "conversation", None)
+                if conversation is not None:
+                    conversation_persona_id = getattr(
+                        conversation, "persona_id", None
+                    )
+                _pid, persona, _force, _special = await resolve(
+                    umo=target_umo,
+                    conversation_persona_id=conversation_persona_id,
+                    platform_name=platform_name,
+                    provider_settings=provider_settings,
+                )
+                if isinstance(persona, dict):
+                    prompt = persona.get("prompt")
+                else:
+                    prompt = getattr(persona, "prompt", None)
+                text = str(prompt or "").strip()
+                if text:
+                    return text[:_JUDGE_PERSONA_MAX_CHARS]
+        except Exception as e:
+            logger.debug(f"[Judge] 人格源头读取失败（走标记切分退路）: {e}")
+        # ② 退路：按标记从最终 system_prompt 切
+        system_prompt = str(getattr(req, "system_prompt", "") or "")
+        if not system_prompt and target_umo:
+            entry = (getattr(self, "_chat_prefix_cache", {}) or {}).get(
+                target_umo
+            )
+            if entry:
+                at = entry.get("at")
+                ttl = self._prefix_cache_ttl_seconds()
+                fresh = not (
+                    isinstance(at, datetime)
+                    and ttl > 0
+                    and (datetime.now() - at).total_seconds() > ttl
+                )
+                if fresh:
+                    system_prompt = str(entry.get("system_prompt") or "")
+        if not system_prompt:
+            logger.debug("[Judge] 人格段切不出，本次判断不带人格（降级继续）")
+            return ""
+        return self._split_persona_section(system_prompt)
+
+    def _judge_include_persona_on(self) -> bool:
+        """judge.include_persona 的直读形态（_judge_llm_call 对齐门控用；
+        与 OutputJudge.include_persona 同一配置键同一默认）。"""
+        try:
+            return bool(
+                conf_group(self._effective_config(), "judge").get(
+                    "include_persona", False
+                )
+            )
+        except Exception:
+            return False
 
     def _int_from_config(self, group: str, key: str, default: int, cap: int) -> int:
         try:
@@ -706,14 +929,27 @@ class LivingPlugin(Star):
                 return
             action = judge.output_action()
             context_lines = []  # 输出侧暂不带会话上下文（req 已不可得）
+            # M31-补丁1 A 组：人格段从 M20 前缀缓存/源头解析（req 不可得）；
+            # 切不出 → 空串降级，照常检查
+            persona_text = ""
+            if judge.include_persona():
+                persona_text = await self._judge_persona_text(
+                    umo=str(getattr(event, "unified_msg_origin", "") or "")
+                )
             if action == "rewrite":
-                fixed = await judge.rewrite_output(reply, context_lines)
+                fixed = await judge.rewrite_output(
+                    reply, context_lines, persona_text=persona_text
+                )
                 if fixed:
                     response.completion_text = fixed
                     logger.info("[Judge] 输出检查打回重写（轻量修正已应用）")
             else:
                 # log_only：后台检查，不阻塞回复送达
-                self._judge_record_task(judge.check_output(reply, context_lines))
+                self._judge_record_task(
+                    judge.check_output(
+                        reply, context_lines, persona_text=persona_text
+                    )
+                )
         except Exception as e:
             logger.debug(f"[Judge] 输出检查失败（不影响回复）: {e}")
 
@@ -1758,7 +1994,9 @@ class LivingPlugin(Star):
                 gate=self.gate,
                 llm_call=self._decision_llm_call,
                 mood=self.mood,
-                sender=self.sender,
+                # M31-补丁1 B 组：搭话台词发送前过质检（包装 sender，不改
+                # initiative.py——M17 红线 7 保持；失败放行原文）
+                sender=self._initiative_qc_sender(),
                 # M17-补丁1 A5：人格 + 风格注入（包装版 persona getter，
                 # initiative.py 本体零改动——红线 7）
                 persona_getter=self._persona_with_style,
@@ -1774,6 +2012,9 @@ class LivingPlugin(Star):
             conversation_manager=getattr(self.context, "conversation_manager", None),
             # M15-补丁1 A3：晚安 LLM 档的人格 system prompt（复用主提示词读取）
             persona_getter=self._persona_prompt,
+            # M31-补丁1 B 组：她主动说的话（分享/晚安 llm 档/梦话）发送前
+            # 过质检（搭话经上面包装 sender；失败放行原文，红线 1）
+            proactive_qc=self._proactive_output_qc,
             # M17-补丁1 A 组：风格学习引擎（A7 学习触发 / A5 梦话注入）
             style_learner=self._style_learner,
         )

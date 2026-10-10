@@ -168,6 +168,7 @@ class LivingLoop:
         persona_getter: Callable[..., Any] | None = None,
         style_learner: Any = None,
         browser_available_getter: Callable[[], bool] | None = None,
+        proactive_qc: Callable[..., Any] | None = None,
     ) -> None:
         self._gate = gate
         self._get_memory = memory_getter
@@ -217,6 +218,10 @@ class LivingLoop:
         # 时才被 activities_excluding_search 调用）。None = 缺省，维持
         # "搜索关即摘 surf/read"的既有行为（与 decider 同款同源）。
         self._browser_available_getter = browser_available_getter
+        # M31-补丁1 B 组：主动产出质检（async (text, side, umo) -> str）——
+        # 分享/晚安 llm 档/梦话发送前过一遍判断模型，失败放行原文。
+        # None = 不质检（既有测试/旧装配零影响）。
+        self._proactive_qc = proactive_qc
         # M13-补丁1 A5：已写过的落库幂等键（M16-补丁2 A2：dict 保插入序，
         # 裁剪按插入序 FIFO 淘汰最旧的——原 set+字典序会把 #share: 等键族
         # 按字符先后优先淘汰，幂等键被裁后同句会重复落库）
@@ -682,6 +687,17 @@ class LivingLoop:
         if not line or line.upper() == "SKIP":
             logger.debug("[LivingLoop] 晚安 llm 档：它决定今晚不说（SKIP）")
             return
+        # M31-补丁1 B 组：晚安发送前过一遍质检（rewrite 档可轻量修正一次；
+        # 失败/超时/总闸关闭一律放行原文——她该说的话一句不能丢）
+        if self._proactive_qc is not None:
+            try:
+                qc_line = await self._proactive_qc(line, "farewell", session)
+                if isinstance(qc_line, str) and qc_line.strip():
+                    line = qc_line
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug(f"[LivingLoop] 晚安质检失败（放行原文）: {e}")
         try:
             sent = await self._sender.send(session, line)
             if not sent:
@@ -929,7 +945,8 @@ class LivingLoop:
         roll = rng.random() if hasattr(rng, "random") else rng()
         if roll < 0.5:
             try:
-                await self._maybe_share(note, wake_time)
+                # M31-补丁1：睡过头交代不在质检四出口范围内（qc_side=""）
+                await self._maybe_share(note, wake_time, qc_side="")
             except Exception as e:
                 logger.warning(f"[Schedule] 睡过头交代发送失败: {e}")
         return True
@@ -1233,7 +1250,9 @@ class LivingLoop:
             logger.debug(f"[LivingLoop] 梦的记忆写入失败: {e}")
             return
         logger.info("[LivingLoop] 醒来做了个梦（已写入记忆）")
-        await self._maybe_share(f"我好像做了个梦：{dream}", now)
+        await self._maybe_share(
+            f"我好像做了个梦：{dream}", now, qc_side="dream"
+        )
 
     async def run_activity_cycle(
         self,
@@ -1897,7 +1916,9 @@ class LivingLoop:
             logger.debug(f"[LivingLoop] 分享上下文读取失败（按无上下文处理）: {e}")
             return None
 
-    async def _maybe_share(self, text: str, now: datetime) -> None:
+    async def _maybe_share(
+        self, text: str, now: datetime, qc_side: str = "share"
+    ) -> None:
         # M7-补丁1 A1：空产物防护——低于下限直接静默返回（不打分享日志、
         # 不浪费闸门掷点，更不进改写流水线）。M9-补丁1 A5：本检查保持在
         # sessions 计算之前，顺序不变。
@@ -1957,6 +1978,21 @@ class LivingLoop:
                 )
                 return
             text_to_send = rewritten
+
+        # M31-补丁1 B 组：发送前过一遍质检（分享="share"、梦话="dream"；
+        # 睡过头交代传 "" 不质检——任务范围只有四个出口）。rewrite 档可
+        # 轻量修正一次；失败/超时/总闸关闭一律放行原文（红线 1/3）。
+        if qc_side and self._proactive_qc is not None:
+            try:
+                qc_text = await self._proactive_qc(
+                    text_to_send, qc_side, sessions[0] if sessions else ""
+                )
+                if isinstance(qc_text, str) and qc_text.strip():
+                    text_to_send = qc_text
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug(f"[LivingLoop] 分享质检失败（放行原文）: {e}")
 
         sent_any = False
         for session in sessions:

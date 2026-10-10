@@ -528,7 +528,8 @@ def test_c_dream_normal_text_written():
     async def llm(prompt, persona=None):
         return "梦见会飞的书"
 
-    async def share(text, now):
+    async def share(text, now, qc_side="share"):
+        # M31-补丁1：_maybe_share 增加 qc_side 形参（梦话标 dream）
         shared.append(text)
 
     loop = make_loop(cfg, dream_llm=llm, memory=memory)

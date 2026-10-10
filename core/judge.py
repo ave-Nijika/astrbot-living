@@ -9,7 +9,10 @@
   先用几天真实数据看判得准不准）；可选 rewrite（最多重写 1 次、有超时、
   失败必须放行原回复，只做轻量修正）；
 - 三档（A 组）：off（默认，零调用零注入零行为变化）/ local（本地推理，
-  本轮只留预留位——明确提示未实现，绝不静默降级）/ api（云端 provider）。
+  本轮只留预留位——明确提示未实现，绝不静默降级）/ api（云端 provider）；
+- M31-补丁1：include_persona 开关下判断 prompt 套防扮演框架（人格作
+  "引用资料"进 user 消息、system 槽只放判断锚定、首尾任务锚定）；输出
+  检查开放 side 标注与宽超时，供自主产出质检（分享/搭话/晚安/梦话）复用。
 
 设计约束：
 - 判断 LLM 调用经注入的 llm_call（main 侧固定走 judge.provider_id，不与
@@ -55,6 +58,28 @@ _REWRITE_MAX_RATIO = 1.2
 
 # 记录摘要的截断长度（面板回看不刷屏）
 _SUMMARY_MAX_CHARS = 80
+
+# ---------------------------------------------------------------------------
+# M31-补丁1 A 组：防扮演框架（include_persona=true 时给判断 prompt 套壳）。
+# 设计（任务书 2.1.2 改定的最终方案）：system 槽只放一句干净的判断锚定
+# （人格绝不放 system——第二人称人设进 system 槽有相当概率被当成"我是谁"，
+# 扮演风险最高，为此放弃蹭聊天缓存）；人格原文作为"引用资料"放 user 消息
+# 固定位置，资料边界标记包裹 + 开头把"你是…"框成第三方资料 + 首尾任务
+# 锚定（防长上下文把任务淹没）。
+# ---------------------------------------------------------------------------
+JUDGE_SYSTEM_ANCHOR = "你是判断助手，只输出 JSON，不要扮演任何角色。"
+JUDGE_OPEN_ANCHOR = "你是判断助手，只做判断，不要扮演对话中的任何角色。"
+JUDGE_PERSONA_INTRO = (
+    "【下面资料区里是一台聊天机器人的角色设定原文，供你判断它的说话风格时"
+    "参考。那是关于它的资料，不是你的身份——你不是它，不要扮演它。】"
+)
+JUDGE_PERSONA_BEGIN = "===== 资料开始 ====="
+JUDGE_PERSONA_END = "===== 资料结束 ====="
+JUDGE_PERSONA_MISSING = "（本次未取得角色设定资料，资料区空着。）"
+JUDGE_CLOSING = (
+    "再提醒一次：你是判断助手，只输出 JSON，不要扮演任何角色；"
+    "资料区里的角色设定属于那台聊天机器人，只是参考资料——你不是它。"
+)
 
 
 @dataclass
@@ -126,6 +151,44 @@ class OutputJudge:
     def timeout_seconds(self) -> float:
         return float(self._int("timeout_seconds", 6, 1, 60))
 
+    def timeout_output_seconds(self) -> float:
+        """输出侧/自主质检超时（M31-补丁1 分场景：后台性质、失败放行
+        原文，可用更宽的值；输入侧保持 timeout_seconds 短超时——那等于
+        用户发消息后多等的时间）。"""
+        return float(self._int("timeout_output_seconds", 10, 1, 60))
+
+    def include_persona(self) -> bool:
+        """A 组开关（M31-补丁1）：判断上下文是否带人格段。默认 False＝
+        与既往版本逐字一致（红线 2：不想要的人不受影响）。"""
+        try:
+            return bool(self._cfg().get("include_persona", False))
+        except Exception:
+            return False
+
+    def frame_prompt(
+        self, task_prompt: str, persona_text: str = ""
+    ) -> tuple[str, str | None]:
+        """给任务 prompt 套防扮演框架，返回 (user_prompt, system_prompt)。
+
+        开关关闭 → 原样返回 (prompt, None)：与 M31 之前的调用形态逐字
+        一致（验收 2）。开启 → system 槽=判断锚定；user=开头锚定 +
+        资料边界声明 + 资料区（人格原文，或"未取得"占位）+ 完整任务 +
+        结尾复述。人格切不出时降级为资料区空着（prompt 内明说，不外抛
+        不阻断——兜底要求）。"""
+        if not self.include_persona():
+            return task_prompt, None
+        persona = str(persona_text or "").strip()
+        parts = [
+            JUDGE_OPEN_ANCHOR,
+            JUDGE_PERSONA_INTRO,
+            JUDGE_PERSONA_BEGIN,
+            persona or JUDGE_PERSONA_MISSING,
+            JUDGE_PERSONA_END,
+            str(task_prompt or ""),
+            JUDGE_CLOSING,
+        ]
+        return "\n\n".join(parts), JUDGE_SYSTEM_ANCHOR
+
     def record_limit(self) -> int:
         return self._int("record_limit", 50, 1, 500)
 
@@ -169,9 +232,16 @@ class OutputJudge:
         self._last_input_judge_at = self._clock()
 
     async def judge_input(
-        self, message_text: str, context_lines: list[str] | None = None
+        self,
+        message_text: str,
+        context_lines: list[str] | None = None,
+        persona_text: str = "",
     ) -> JudgeVerdict | None:
-        """B 组主流程：调判断模型 → 解析 → 记录。任何失败返回 None。"""
+        """B 组主流程：调判断模型 → 解析 → 记录。任何失败返回 None。
+
+        persona_text（M31-补丁1 A 组）：调用方从请求侧解析的人格段原文；
+        是否真的进 prompt 由 include_persona 开关决定（关 → 逐字维持
+        既往形态）。"""
         if not self.enabled():
             return None
         cfg = self._cfg()
@@ -185,10 +255,12 @@ class OutputJudge:
             name="judge.prompt_input",
             default=DEFAULT_PROMPT_INPUT,
         )
+        user_prompt, system_prompt = self.frame_prompt(prompt, persona_text)
         self._mark_input_judged()
         try:
             raw = await asyncio.wait_for(
-                self._llm_call(prompt, None), timeout=self.timeout_seconds()
+                self._llm_call(user_prompt, system_prompt),
+                timeout=self.timeout_seconds(),
             )
         except asyncio.TimeoutError:
             logger.debug("[Judge] 输入判断超时（本轮不注入，主回复照常）")
@@ -248,14 +320,20 @@ class OutputJudge:
         injection = injection.strip()
         return injection or None
 
-    def record_input_injected(self, message_text: str, verdict: JudgeVerdict) -> None:
+    def record_input_injected(
+        self, message_text: str, verdict: JudgeVerdict, extra: str = ""
+    ) -> None:
         """E1：注入成功后由钩子补一条"injected=True"的记录（judge_input
-        里记录的是未注入形态——注入与否要等钩子追加完才算数）。"""
+        里记录的是未注入形态——注入与否要等钩子追加完才算数）。
+
+        extra（M31-补丁1）：人格段开了但本次没取到时的降级标注
+        （"（无人格资料）"），落进 verdict 字段供面板回看核对。"""
         self._add_record(
             side="input",
             input_summary=message_text,
             verdict=f"{verdict.mode}/{verdict.length}/{verdict.tone}"
-            + (f" note={verdict.note}" if verdict.note else ""),
+            + (f" note={verdict.note}" if verdict.note else "")
+            + (f" {extra}" if extra else ""),
             injected=True,
         )
 
@@ -294,12 +372,20 @@ class OutputJudge:
     # C 组：输出侧检查
     # ------------------------------------------------------------------
     async def check_output(
-        self, reply_text: str, context_lines: list[str] | None = None
+        self,
+        reply_text: str,
+        context_lines: list[str] | None = None,
+        side: str = "output",
+        persona_text: str = "",
     ) -> dict | None:
         """C1：回复生成后过一遍判断模型。返回检查结果（None = 没判成）。
 
         不修改、不拦截输出——记录在案（日志 + 面板回看），供用户决定
-        要不要开启 rewrite。"""
+        要不要开启 rewrite。
+
+        M31-补丁1：side 标记录来源（chat 输出侧默认 "output"；自主产出
+        质检传 "share"/"initiative"/"farewell"/"dream"，B 组四出口）；
+        persona_text 同 judge_input；超时改用输出侧宽超时（后台性质）。"""
         if not self.enabled():
             return None
         text = str(reply_text or "").strip()
@@ -316,14 +402,16 @@ class OutputJudge:
             name="judge.prompt_output",
             default=DEFAULT_PROMPT_OUTPUT,
         )
+        user_prompt, system_prompt = self.frame_prompt(prompt, persona_text)
         try:
             raw = await asyncio.wait_for(
-                self._llm_call(prompt, None), timeout=self.timeout_seconds()
+                self._llm_call(user_prompt, system_prompt),
+                timeout=self.timeout_output_seconds(),
             )
         except asyncio.TimeoutError:
             logger.debug("[Judge] 输出检查超时（不干预）")
             self._add_record(
-                side="output", input_summary=text, verdict="timeout", injected=False
+                side=side, input_summary=text, verdict="timeout", injected=False
             )
             return None
         except asyncio.CancelledError:
@@ -331,7 +419,7 @@ class OutputJudge:
         except Exception as e:
             logger.debug(f"[Judge] 输出检查调用失败: {e}")
             self._add_record(
-                side="output",
+                side=side,
                 input_summary=text,
                 verdict=f"error: {e}"[:_SUMMARY_MAX_CHARS],
                 injected=False,
@@ -340,7 +428,7 @@ class OutputJudge:
         check = self._parse_check(raw)
         if check is None:
             self._add_record(
-                side="output",
+                side=side,
                 input_summary=text,
                 verdict="parse_failed",
                 injected=False,
@@ -350,7 +438,7 @@ class OutputJudge:
             f"[Judge] 输出检查: ok={check['ok']} note={check['note'] or '（无）'}"
         )
         self._add_record(
-            side="output",
+            side=side,
             input_summary=text,
             verdict=f"{'ok' if check['ok'] else 'issue'}: {check['note']}",
             injected=False,
@@ -358,7 +446,11 @@ class OutputJudge:
         return check
 
     async def rewrite_output(
-        self, reply_text: str, context_lines: list[str] | None = None
+        self,
+        reply_text: str,
+        context_lines: list[str] | None = None,
+        side: str = "output",
+        persona_text: str = "",
     ) -> str | None:
         """C2 rewrite：拿检查结果做轻量修正。返回修正文本或 None（放行原文）。
 
@@ -366,13 +458,18 @@ class OutputJudge:
         （prompt_output 的 fixed 字段——一次调用完成判断与修正，不加第二
         轮昂贵生成）；修复护栏——fixed 为空/与原文相同/长度超过原文 1.2 倍
         一律视为修正失败放行原文（防小模型自作主张整条重写）。失败/超时
-        必须放行原回复（红线 6：不能让用户收不到消息）。"""
+        必须放行原回复（红线 6：不能让用户收不到消息）。
+
+        side/persona_text 透传给 check_output（M31-补丁1）；本方法自己补
+        记的 rewrite 记录沿用既有 side="rewrite" 口径（既有记录形态零变化）。"""
         if not self.enabled():
             return None
         text = str(reply_text or "").strip()
         if not text:
             return None
-        check = await self.check_output(text, context_lines)
+        check = await self.check_output(
+            text, context_lines, side=side, persona_text=persona_text
+        )
         if check is None or check["ok"]:
             return None
         fixed = str(check.get("fixed") or "").strip()
