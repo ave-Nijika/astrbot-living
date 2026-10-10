@@ -129,9 +129,13 @@ def test_t2_five_call_chains_no_attribute_error(fake_session, chromium_on):
 
     r = asyncio.run(b["browser_read"].call(None))
     assert "替身页面" in r and "替身正文" in r
-    # _max_text=3000 截断：1200 字正文不足上限，全文返回
-    body = r.split(chr(10), 1)[1]
-    assert len(body) == 1600  # 4 字 x 400 次，不足 3000 上限不截断
+    # M35-补丁1 起返回整体包资料区壳——正文语义不变：从壳内取标题行后的
+    # 正文，_max_text=3000 截断：1600 字正文不足上限，全文返回
+    from core.living_tools import _EXTERNAL_BEGIN, _EXTERNAL_END, _EXTERNAL_NOTE
+
+    assert r.startswith(_EXTERNAL_BEGIN) and r.endswith(_EXTERNAL_END)
+    body = r.split(f"{_EXTERNAL_NOTE}\n", 1)[1].rsplit(f"\n{_EXTERNAL_END}", 1)[0]
+    assert len(body) == len("「替身页面」\n") + 1600  # 标题行 + 4 字 x 400 次全文
 
     r = asyncio.run(b["browser_screenshot"].call(None))
     # C0 既有行为：未注入 image_probe/captioner → 默认看图路径，返回含
