@@ -530,3 +530,441 @@ def _make_plugin(tmp_path):
     plugin.gate = None
     plugin.sleep_manager = None
     return plugin, main_module
+
+
+# ---------------------------------------------------------------------------
+# 第二批 C/D 组：双模型协商 + 档位并存（验收 9-19）
+# ---------------------------------------------------------------------------
+from core.judge import DEFAULT_PROMPT_NEGOTIATE, OutputJudge  # noqa: E402
+from core.negotiator import Negotiator, parse_negotiation  # noqa: E402
+
+PREFIX = {
+    "system_prompt": "你是聊天机器人的人格 system（原文）",
+    "contexts": [{"role": "user", "content": "早上好"}, {"role": "assistant", "content": "早"}],
+    "provider_id": "chat-provider",
+    "at": datetime.now(),
+}
+REPLY = "这是一条被按住的聊天回复，内容有点啰嗦，车轱辘话说了两遍说了两遍。"
+
+
+def make_njudge(tmp_path, judge_reply, advanced=None):
+    """协商测试用 OutputJudge + judge 侧 llm capture。"""
+    calls = []
+
+    async def llm(prompt, system_prompt=None):
+        calls.append((prompt, system_prompt))
+        if isinstance(judge_reply, Exception):
+            raise judge_reply
+        return judge_reply
+
+    cfg = {"mode": "api", "provider_id": "p-judge"}
+    cfg.update(advanced or {})
+    judge = OutputJudge(
+        config_getter=lambda: {"advanced": {"judge": cfg}},
+        llm_call=llm,
+        records_path=tmp_path / "judge_records.json",
+    )
+    return judge, calls
+
+
+def make_chat(behavior=None):
+    """chat_call capture：记录 (instruction, system, contexts, pid)。"""
+    calls = []
+
+    async def chat_call(instruction, system_prompt, contexts, provider_id):
+        calls.append(
+            {"instruction": instruction, "system": system_prompt,
+             "contexts": contexts, "pid": provider_id}
+        )
+        if isinstance(behavior, Exception):
+            raise behavior
+        return behavior if behavior is not None else ""
+
+    chat_call.calls = calls
+    return chat_call
+
+
+async def _prefix(umo):
+    return dict(PREFIX, contexts=list(PREFIX["contexts"]))
+
+
+def run_nego(nego, text=REPLY, umo=MASTER):
+    return asyncio.run(nego.negotiate(text, umo))
+
+
+def test_c9_pass_zero_extra_model_calls(tmp_path):
+    """验收 9：质检通过 → 直接放行原版，零额外模型调用（chat 零次）。"""
+    judge, _jcap = make_njudge(tmp_path, '{"ok": true}')
+    chat = make_chat()
+    nego = Negotiator(judge=judge, chat_call=chat, prefix_getter=_prefix)
+    assert run_nego(nego) == REPLY
+    assert chat.calls == []
+
+
+def test_c10_issue_accepted_chat_model_rewrites(tmp_path):
+    """验收 10：不通过 + 聊天模型认可 → 返回重写版（替换原版）。"""
+    judge, _jcap = make_njudge(
+        tmp_path, '{"ok": false, "note": "车轱辘话重复了", "fixed": ""}'
+    )
+    chat = make_chat('{"accept": true, "reply": "这条是重写后的回复，只说一遍。"}')
+    nego = Negotiator(judge=judge, chat_call=chat, prefix_getter=_prefix)
+    out = run_nego(nego)
+    assert out == "这条是重写后的回复，只说一遍。"
+    assert out != REPLY
+
+
+def test_c11_rejected_original_passes_verbatim(tmp_path):
+    """验收 11（立身之本）：聊天模型不认可 → 原版逐字放行、未被替换。"""
+    judge, _jcap = make_njudge(
+        tmp_path, '{"ok": false, "note": "语气太干", "fixed": ""}'
+    )
+    chat = make_chat('{"accept": false, "reason": "用户问的是正事，就该平实"}')
+    nego = Negotiator(judge=judge, chat_call=chat, prefix_getter=_prefix)
+    assert run_nego(nego) == REPLY  # 逐字原版
+    assert len(chat.calls) == 1  # 只问了一次，不纠缠
+
+
+def test_c12_rewrite_uses_cached_materials(tmp_path):
+    """验收 12：重写调用用原材料——system/contexts/provider 来自前缀缓存；
+    contexts 传副本（缓存不被污染）。"""
+    judge, _jcap = make_njudge(
+        tmp_path, '{"ok": false, "note": "啰嗦", "fixed": ""}'
+    )
+    chat = make_chat('{"accept": true, "reply": "重写版。"}')
+    nego = Negotiator(judge=judge, chat_call=chat, prefix_getter=_prefix)
+    run_nego(nego)
+    call = chat.calls[0]
+    assert call["system"] == PREFIX["system_prompt"]
+    assert call["pid"] == PREFIX["provider_id"]
+    assert call["contexts"] == PREFIX["contexts"]
+    assert call["contexts"] is not PREFIX["contexts"]  # 副本
+    # 指令含被按住的原文与意见（大模型知道在讨论什么）
+    assert REPLY in call["instruction"]
+    assert "车轱辘话" in call["instruction"] or "啰嗦" in call["instruction"]
+    # 缓存原条目未被协商改动
+    assert len(PREFIX["contexts"]) == 2
+
+
+def test_c13_round_cap_plan_a_default_no_recheck(tmp_path):
+    """验收 13（甲方案，默认）：质检 1 次 + 重写 1 次，重写版不再质检
+    ——judge 侧 llm 恰 1 次调用。"""
+    judge, jcap = make_njudge(
+        tmp_path, '{"ok": false, "note": "啰嗦", "fixed": ""}'
+    )
+    chat = make_chat('{"accept": true, "reply": "重写版。"}')
+    nego = Negotiator(judge=judge, chat_call=chat, prefix_getter=_prefix)
+    out = run_nego(nego)
+    assert out == "重写版。"
+    assert len(jcap) == 1  # 轮数上限：不再二次质检
+
+
+def test_c13_round_cap_plan_b_recheck_once(tmp_path):
+    """验收 13（乙方案）：negotiate_recheck=true → 重写版复检一次；
+    复检仍不过 → 放行原版（不再循环）。judge 侧恰 2 次调用。"""
+    judge, jcap = make_njudge(
+        tmp_path, '{"ok": false, "note": "啰嗦", "fixed": ""}',
+        advanced={"negotiate_recheck": True},
+    )
+    chat = make_chat('{"accept": true, "reply": "还是啰嗦的重写版。"}')
+    nego = Negotiator(judge=judge, chat_call=chat, prefix_getter=_prefix)
+    # 复检（第 2 次 judge 调用）同样回 ok=false → 放行原版
+    assert run_nego(nego) == REPLY
+    assert len(jcap) == 2
+
+
+def test_c15_failures_all_pass_original(tmp_path):
+    """验收 15（红线）：任一步失败 → 原文照常放行。
+    覆盖：质检失败 / 质检超时 / 材料缺失 / 重写调用失败 / 输出空 /
+    解析失败 / 认可但重写为空。"""
+    # a) 质检调用异常
+    judge, _ = make_njudge(tmp_path, RuntimeError("judge down"))
+    chat = make_chat('{"accept": true, "reply": "x"}')
+    nego = Negotiator(judge=judge, chat_call=chat, prefix_getter=_prefix)
+    assert run_nego(nego) == REPLY and chat.calls == []
+
+    # b) 材料缺失（无前缀缓存）
+    judge2, _ = make_njudge(tmp_path, '{"ok": false, "note": "n", "fixed": ""}')
+
+    async def no_prefix(umo):
+        return None
+
+    chat2 = make_chat('{"accept": true, "reply": "x"}')
+    nego2 = Negotiator(judge=judge2, chat_call=chat2, prefix_getter=no_prefix)
+    assert run_nego(nego2) == REPLY and chat2.calls == []
+
+    # c) 重写调用失败（异常） / 空 / 非 JSON / 认可但 reply 空
+    for behavior in (RuntimeError("net down"), "", "我觉得应该放行", '{"accept": true, "reply": ""}'):
+        judge3, _ = make_njudge(tmp_path, '{"ok": false, "note": "n", "fixed": ""}')
+        chat3 = make_chat(behavior)
+        nego3 = Negotiator(judge=judge3, chat_call=chat3, prefix_getter=_prefix)
+        assert run_nego(nego3) == REPLY, f"失败形态 {behavior!r} 必须放行原版"
+
+
+def test_c15_timeout_inside_check_passes_original(tmp_path):
+    """验收 15（质检超时形态）：judge 侧超时（timeout_output_seconds=1，
+    llm 睡 3s）→ check=None → 放行原版、零 chat 调用。"""
+    async def slow_llm(prompt, system_prompt=None):
+        await asyncio.sleep(3)
+        return '{"ok": false, "note": "n"}'
+
+    judge = OutputJudge(
+        config_getter=lambda: {"advanced": {"judge": {
+            "mode": "api", "provider_id": "p", "timeout_output_seconds": 1,
+        }}},
+        llm_call=slow_llm,
+        records_path=None,
+    )
+    chat = make_chat('{"accept": true, "reply": "x"}')
+    nego = Negotiator(judge=judge, chat_call=chat, prefix_getter=_prefix)
+    assert run_nego(nego) == REPLY
+    assert chat.calls == []
+
+
+def test_c16_no_trace_in_records(tmp_path):
+    """验收 16（不留痕）：协商结论入 judge_records（side=negotiate）但
+    摘要≤80 字——超长被销毁版本在记录里只有截断摘要、无全文。"""
+    long_reply = "这是一条很长很长的被按住的聊天回复，" + "车轱辘话反复说。" * 20
+    assert len(long_reply) > 80
+    judge, _ = make_njudge(
+        tmp_path, '{"ok": false, "note": "啰嗦", "fixed": ""}'
+    )
+    chat = make_chat('{"accept": true, "reply": "重写版。"}')
+    nego = Negotiator(judge=judge, chat_call=chat, prefix_getter=_prefix)
+    asyncio.run(nego.negotiate(long_reply, MASTER))
+    records = judge.records()
+    assert records, "协商结论必须可观测"
+    nego_records = [r for r in records if r["side"] == "negotiate"]
+    assert len(nego_records) == 1
+    assert nego_records[0]["rewrote"] is True
+    assert "accepted" in nego_records[0]["verdict"]
+    for r in records:
+        assert len(r["input_summary"]) <= 80  # 全部记录都是摘要
+        assert long_reply not in r["input_summary"]  # 超长版无全文入库
+
+
+def test_c17_info_logs_every_step(tmp_path, caplog):
+    """验收 17：每步有 INFO——不通过（带意见）/ 接受与否；最终放行版
+    日志在钩子级测试断言。"""
+    import logging as _logging
+
+    judge, _ = make_njudge(
+        tmp_path, '{"ok": false, "note": "车轱辘话", "fixed": ""}'
+    )
+    chat = make_chat('{"accept": true, "reply": "重写版。"}')
+    nego = Negotiator(judge=judge, chat_call=chat, prefix_getter=_prefix)
+    with caplog.at_level(_logging.INFO, logger="astrbot"):
+        run_nego(nego)
+    text = caplog.text
+    assert "输出检查: ok=False" in text and "车轱辘话" in text  # 不通过（带意见）
+    assert "认可意见，已重写" in text  # 接受
+    # 不认可形态
+    caplog.clear()
+    judge2, _ = make_njudge(tmp_path, '{"ok": false, "note": "干", "fixed": ""}')
+    chat2 = make_chat('{"accept": false, "reason": "就该平实"}')
+    nego2 = Negotiator(judge=judge2, chat_call=chat2, prefix_getter=_prefix)
+    with caplog.at_level(_logging.INFO, logger="astrbot"):
+        run_nego(nego2)
+    assert "不接受意见（就该平实）" in caplog.text  # 不接受 + 理由
+
+
+def test_parse_negotiation_tolerant_and_failsafe():
+    """解析器：剥围栏/抓 JSON；accept 非布尔 → None（fail-safe 放行）。"""
+    good = '```json\n{"accept": false, "reason": "不用改"}\n```'
+    assert parse_negotiation(good) == {
+        "accept": False, "reply": "", "reason": "不用改"
+    }
+    assert parse_negotiation('{"accept": true, "reply": "新文本"}') == {
+        "accept": True, "reply": "新文本", "reason": ""
+    }
+    assert parse_negotiation('前置说明 {"accept": true, "reply": "x"} 尾巴')
+    assert parse_negotiation("这不是 JSON") is None
+    assert parse_negotiation('{"accept": "yes", "reply": "x"}') is None
+    assert parse_negotiation("") is None
+
+
+# ---------------------------------------------------------------------------
+# 钩子级（main.py judge_output_on_llm_response 的 negotiate 分支）
+# ---------------------------------------------------------------------------
+class _FakeLLMContext:
+    """记录 llm_generate 调用的 context 替身（可编程回复/延迟）。"""
+
+    def __init__(self, chat_behavior=None, chat_delay=0.0):
+        self.calls = []
+        self._behavior = chat_behavior
+        self._delay = chat_delay
+
+    async def llm_generate(self, **kwargs):
+        self.calls.append(kwargs)
+        if self._delay:
+            await asyncio.sleep(self._delay)
+        if isinstance(self._behavior, Exception):
+            raise self._behavior
+        return types.SimpleNamespace(
+            completion_text=str(self._behavior or ""), result_chain=None
+        )
+
+
+class _FakeResponse:
+    def __init__(self, text):
+        self.completion_text = text
+        self.is_chunk = False
+
+
+def _nego_plugin(tmp_path, judge_reply, chat_behavior=None, advanced=None,
+                 chat_delay=0.0):
+    plugin, _ = _make_plugin(tmp_path)
+    jcfg = {"mode": "api", "provider_id": "p-judge",
+            "output_action": "negotiate"}
+    jcfg.update(advanced or {})
+
+    async def judge_llm(prompt, system_prompt=None):
+        if isinstance(judge_reply, Exception):
+            raise judge_reply
+        return judge_reply
+
+    judge = OutputJudge(
+        config_getter=lambda: {"advanced": {"judge": jcfg}},
+        llm_call=judge_llm,
+        records_path=tmp_path / "judge_records.json",
+    )
+    plugin._judge = judge
+    plugin.context = _FakeLLMContext(chat_behavior, chat_delay)
+    plugin._chat_prefix_cache[MASTER] = {
+        "system_prompt": PREFIX["system_prompt"],
+        "contexts": list(PREFIX["contexts"]),
+        "provider_id": "chat-provider",
+        "at": datetime.now(),
+    }
+    event = types.SimpleNamespace(unified_msg_origin=MASTER)
+    return plugin, judge, event
+
+
+def test_hook_nego_rewrites_completion_text(tmp_path, caplog):
+    """验收 10（钩子级）+ 17（最终放行版）：不通过+认可 →
+    response.completion_text 换成重写版；日志报"放行重写版"。"""
+    import logging as _logging
+
+    plugin, _judge, event = _nego_plugin(
+        tmp_path,
+        '{"ok": false, "note": "啰嗦", "fixed": ""}',
+        chat_behavior='{"accept": true, "reply": "重写后的干净回复。"}',
+    )
+    resp = _FakeResponse(REPLY)
+    with caplog.at_level(_logging.INFO, logger="astrbot"):
+        asyncio.run(plugin.judge_output_on_llm_response(event, resp))
+    assert resp.completion_text == "重写后的干净回复。"
+    assert "协商结束：放行重写版" in caplog.text
+    ctx = plugin.context
+    assert len(ctx.calls) == 1  # 重写调用恰一次
+    kw = ctx.calls[0]
+    assert kw["chat_provider_id"] == "chat-provider"  # 原 provider
+    assert kw["system_prompt"] == PREFIX["system_prompt"]  # 原 system
+    assert kw["contexts"] == PREFIX["contexts"]  # 原 contexts
+    assert REPLY in kw["prompt"]  # 指令含被按住的原版
+
+
+def test_hook_nego_rejected_keeps_original(tmp_path, caplog):
+    """验收 11（钩子级）：不认可 → completion_text 保持原版逐字不动；
+    日志报"放行原版"。"""
+    import logging as _logging
+
+    plugin, _judge, event = _nego_plugin(
+        tmp_path,
+        '{"ok": false, "note": "干", "fixed": ""}',
+        chat_behavior='{"accept": false, "reason": "就该平实"}',
+    )
+    resp = _FakeResponse(REPLY)
+    with caplog.at_level(_logging.INFO, logger="astrbot"):
+        asyncio.run(plugin.judge_output_on_llm_response(event, resp))
+    assert resp.completion_text == REPLY
+    assert "协商结束：放行原版" in caplog.text
+
+
+def test_hook_nego_total_timeout_releases_current(tmp_path, caplog):
+    """验收 14（总超时）：慢重写 → 到点放行当前版本（原版），不卡送达。"""
+    import logging as _logging
+
+    plugin, judge, event = _nego_plugin(
+        tmp_path,
+        '{"ok": false, "note": "啰嗦", "fixed": ""}',
+        chat_behavior='{"accept": true, "reply": "慢工出的细活。"}',
+        chat_delay=1.5,
+    )
+    # 总超时压到 0.2s（产品取值域 5-60；此处注入小值验证到点放行行为本身）
+    judge.negotiate_timeout_seconds = lambda: 0.2
+    resp = _FakeResponse(REPLY)
+    with caplog.at_level(_logging.INFO, logger="astrbot"):
+        asyncio.run(plugin.judge_output_on_llm_response(event, resp))
+    assert resp.completion_text == REPLY  # 到点放行当前版本
+    assert "协商总超时" in caplog.text
+
+
+def test_hook_nego_master_off_zero_calls(tmp_path):
+    """验收 18：mode=off → 零 judge、零协商（chat 侧零调用）。"""
+    plugin, _judge, event = _nego_plugin(
+        tmp_path,
+        '{"ok": false, "note": "n", "fixed": ""}',
+        chat_behavior='{"accept": true, "reply": "x"}',
+        advanced={"mode": "off"},
+    )
+    resp = _FakeResponse(REPLY)
+    asyncio.run(plugin.judge_output_on_llm_response(event, resp))
+    assert resp.completion_text == REPLY
+    assert plugin.context.calls == []
+
+
+def test_d_log_only_no_negotiation_calls(tmp_path):
+    """D 组：log_only 档下不得产生任何额外模型调用（协商零触发）；
+    chat 侧零调用。"""
+    plugin, _judge, event = _nego_plugin(
+        tmp_path,
+        '{"ok": true}',
+        chat_behavior='{"accept": true, "reply": "x"}',
+        advanced={"output_action": "log_only"},
+    )
+    resp = _FakeResponse(REPLY)
+
+    async def drain():
+        await plugin.judge_output_on_llm_response(event, resp)
+        await asyncio.sleep(0.05)  # 让后台检查任务落记录
+
+    asyncio.run(drain())
+    assert resp.completion_text == REPLY  # 未被改
+    assert plugin.context.calls == []  # 零协商调用
+
+
+def test_d_negotiate_proactive_qc_stays_log_only(tmp_path):
+    """D 组（0.1 统一决策）：negotiate 档下自主出口质检仍是"只记录"——
+    _proactive_output_qc 返回原文、零协商调用。"""
+    plugin, _judge, _event = _nego_plugin(
+        tmp_path,
+        '{"ok": false, "note": "啰嗦", "fixed": ""}',
+        chat_behavior='{"accept": true, "reply": "x"}',
+    )
+
+    async def drain():
+        out = await plugin._proactive_output_qc("它主动说的话", "share", MASTER)
+        await asyncio.sleep(0.05)  # 排水后台记录
+        return out
+
+    out = asyncio.run(drain())
+    assert out == "它主动说的话"  # 原文放行（negotiate 不改自主产出）
+    assert plugin.context.calls == []  # 零协商调用
+    records = plugin._judge.records()
+    assert any(r["side"] == "share" for r in records)  # 只记录仍在
+
+
+def test_d_rewrite_action_unchanged_semantics(tmp_path):
+    """D 组：rewrite 档既有语义不变（小模型代笔档保留）——钩子仍走
+    rewrite_output 轻量修正路径，不经协商。"""
+    plugin, _judge, event = _nego_plugin(
+        tmp_path,
+        '{"ok": false, "note": "啰嗦", "fixed": "轻量修正后的全文回复。"}',
+        chat_behavior='{"accept": true, "reply": "协商版"}',
+        advanced={"output_action": "rewrite"},
+    )
+    resp = _FakeResponse(REPLY)
+    asyncio.run(plugin.judge_output_on_llm_response(event, resp))
+    assert resp.completion_text == "轻量修正后的全文回复。"
+    assert plugin.context.calls == []  # rewrite 不打协商电话
+

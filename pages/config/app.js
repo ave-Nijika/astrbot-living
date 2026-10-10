@@ -41,7 +41,9 @@ const OPTION_LABELS = {
   },
   "memory.backend": { auto: "自动", livingmemory: "记忆库", simple: "简易" },
   "judge.mode": { off: "关闭", local: "本地（未实现）", api: "云端 API" },
-  "judge.output_action": { log_only: "只记录", rewrite: "允许打回重写" },
+  "judge.output_action": {
+    log_only: "只记录", negotiate: "协商改稿", rewrite: "代笔替换（不推荐）",
+  },
 };
 
 /* M23-补丁1 A5：能力档旋钮的中文按钮标签（存的值仍是 watch/home/full/shell）。

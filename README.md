@@ -113,7 +113,7 @@
 - **local**：本地推理，预留档，明确未实现、不会静默降级
 - **api**：走 `judge.provider_id` 独立调用
   - **输入判断**：它主动开口前自查一次（说得好不好、像不像它平时的样子），结论只提醒不指挥
-  - **输出检查**：聊天回复与它主动说的话（分享/搭话/晚安/梦话/睡过头交代/醒来补回复）说出口前后再查一遍，`judge.output_action=rewrite` 时允许打回重写一次（带长度护栏，失败放行原文）
+  - **输出检查**：聊天回复与它主动说的话（分享/搭话/晚安/梦话/睡过头交代/醒来补回复）说出口前后再查一遍，`judge.output_action` 三档：`log_only`（默认）只记录不动文本；`negotiate` 协商档——回复先按住，判断模型只提意见，聊天模型自己判断对不对，认可就自己重写一版再发、不认可就说明理由放行原版（判断模型不能压制聊天模型；全过程旁人无感，总超时到点放行当前版本）；`rewrite`（不推荐）=小模型代笔直接替换。协商只作用于聊天回复，它主动说的话在任何档位都只记录不干预
   - **参考人设**（`judge.include_persona`，默认关）：把关时带上角色设定原文，判断更贴"平时的它"；人格作为参考资料进判断上下文、带防串角锚定，代价是每次判断多一段人格体量的输入
   - 每次判断记录可在面板新手卡回看（自主产出质检的来源标为 share / initiative / farewell / dream / oversleep / pending_reply）
 
@@ -172,6 +172,9 @@
 | `judge.provider_id` | 判断模型 provider（不配 = 不工作） | 空 |
 | `judge.include_persona` | 判断时参考角色设定（多花一段人格体量输入） | false |
 | `initiative.avoid_after_user_minutes` | 你说话后它安静多久才主动开口（分钟，0=不避让） | 30 |
+| `judge.output_action` | 输出检查档位：log_only / negotiate / rewrite | log_only |
+| `judge.negotiate_timeout_seconds` | 协商档总超时（秒，到点放行当前版本） | 20 |
+| `judge.negotiate_recheck` | 协商档重写后复检（开=更严更慢） | false |
 | `model.provider_id` | 自主活动专用 provider（留空用默认） | 空 |
 | `model.allow_chat_fallback` | 失败时回退聊天模型 | true |
 | `memory.backend` | 记忆后端：auto / livingmemory / simple | auto |

@@ -93,7 +93,7 @@ Make it sound like a given person/style (`style_learning.enabled`):
 
 ## Judge model ("little brain")
 
-An independent reviewer model for its proactive messages (`judge.mode`): **off** (default, zero cost) / **local** (reserved, unimplemented) / **api** (uses `judge.provider_id`). Input-side checks before it speaks (advisory only); output-side checks cover both chat replies and its proactive messages (shares / initiative / goodnight / dream talk / oversleep note / wake-up catch-up reply), optionally rewriting once with a length guard (`judge.output_action=rewrite`). Optionally reference the persona during review (`judge.include_persona`, default off — persona text enters the judge context as quoted reference material with anti-roleplay anchors, at the cost of a persona-sized input per call). Every judgment is viewable in the panel (proactive QC sources tagged share / initiative / farewell / dream / oversleep / pending_reply).
+An independent reviewer model for its proactive messages (`judge.mode`): **off** (default, zero cost) / **local** (reserved, unimplemented) / **api** (uses `judge.provider_id`). Input-side checks before it speaks (advisory only); output-side checks cover both chat replies and its proactive messages (shares / initiative / goodnight / dream talk / oversleep note / wake-up catch-up reply), with three levels (`judge.output_action`): `log_only` (default) records only; `negotiate` holds the reply, the judge only offers an opinion, and the chat model itself decides — accept and rewrite its own reply, or reject with a reason and the original passes through (the judge can never override the chat model; the whole exchange is invisible to outsiders, with a total timeout that releases the current version); `rewrite` (not recommended) = small model ghostwrites the replacement. Negotiation only applies to chat replies; its proactive messages are record-only at every level. Optionally reference the persona during review (`judge.include_persona`, default off — persona text enters the judge context as quoted reference material with anti-roleplay anchors, at the cost of a persona-sized input per call). Every judgment is viewable in the panel (proactive QC sources tagged share / initiative / farewell / dream / oversleep / pending_reply).
 
 `judge.provider_id` must be separate from your chat model; **without it these features simply don't run** (no silent fallback — that is the cost protection).
 
@@ -144,6 +144,9 @@ Everything is hot-reloadable from the WebUI. Full list in `_conf_schema.json`; t
 | `judge.provider_id` | Judge provider (unset = disabled) | empty |
 | `judge.include_persona` | Reference the persona during review (extra persona-sized input per call) | false |
 | `initiative.avoid_after_user_minutes` | How long it stays quiet after you speak before initiating (minutes, 0=off) | 30 |
+| `judge.output_action` | Output check level: log_only / negotiate / rewrite | log_only |
+| `judge.negotiate_timeout_seconds` | Negotiation total timeout (seconds; releases current version on expiry) | 20 |
+| `judge.negotiate_recheck` | Re-check the rewritten reply in negotiate mode (stricter, slower) | false |
 | `model.provider_id` | Dedicated autonomy provider | empty |
 | `model.allow_chat_fallback` | Fall back to chat model | true |
 | `memory.backend` | auto / livingmemory / simple | auto |

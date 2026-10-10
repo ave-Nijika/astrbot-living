@@ -1279,10 +1279,11 @@
                     },
                     "output_action": {
                         "description": "输出检查动作",
-                        "hint": "对聊天回复与其主动说的话（分享/搭话/晚安/梦话）一并生效：log_only=只记录不干预（默认，先收集几天数据看判得准不准）；rewrite=允许打回重写一次（最多 1 次、有超时、失败放行原文，只做轻量修正不改写整条）。",
+                        "hint": "对聊天回复与其主动说的话（分享/搭话/晚安/梦话/睡过头交代/醒来补回复）一并生效：log_only=只记录不干预（默认，先收集几天数据看判得准不准）；negotiate=协商档——回复先按住，判断模型只提意见，聊天模型自己判断对不对：认可就自己重写一版再发出，不认可就说明理由放行原版（判断模型不能压制聊天模型，全过程旁人无感、总超时到点放行当前版本）；rewrite=小模型代笔直接替换原文（轻量修正一次），不推荐——改出来的话出自判断模型而不是聊天模型，保留仅供对比观察。协商档只作用于聊天回复；它主动说的话在任何档位下都只记录不干预。",
                         "type": "string",
                         "options": [
                             "log_only",
+                            "negotiate",
                             "rewrite"
                         ],
                         "default": "log_only",
@@ -1291,7 +1292,7 @@
                     },
                     "record_limit": {
                         "description": "判断记录保留条数",
-                        "hint": "最近 N 条判断结果（来源 side/输入摘要/判断输出/是否注入/是否打回）供面板查看，超出自动淘汰最旧的。默认 50。自主产出质检的记录 side 为 share/initiative/farewell/dream。",
+                        "hint": "最近 N 条判断结果（来源 side/输入摘要/判断输出/是否注入/是否打回）供面板查看，超出自动淘汰最旧的。默认 50。自主产出质检的记录 side 为 share/initiative/farewell/dream/oversleep/pending_reply；协商档的协商结论 side 为 negotiate。",
                         "type": "int",
                         "default": 50,
                         "invisible": true,
@@ -1299,7 +1300,7 @@
                     },
                     "timeout_output_seconds": {
                         "description": "输出检查超时（秒）",
-                        "hint": "输出侧检查与她主动产出质检（后台性质、失败放行原文）的单次调用超时，可比输入侧宽。默认 10。",
+                        "hint": "输出侧检查与它主动产出质检（后台性质、失败放行原文）的单次调用超时，可比输入侧宽。默认 10。",
                         "type": "int",
                         "default": 10,
                         "invisible": true,
@@ -1312,6 +1313,22 @@
                         "default": false,
                         "invisible": true,
                         "section": ["A", "A3", 7]
+                    },
+                    "negotiate_timeout_seconds": {
+                        "description": "协商总超时（秒）",
+                        "hint": "协商档（output_action=negotiate）整场协商的时间上限：质检 → 提意见 → 聊天模型自辩/重写，到点放行当前版本、不卡回复送达。协商期间该会话的消息会排队（回复被'按住'的必然代价）。默认 20，5-60。",
+                        "type": "int",
+                        "default": 20,
+                        "invisible": true,
+                        "section": ["A", "A3", 8]
+                    },
+                    "negotiate_recheck": {
+                        "description": "协商档重写后复检",
+                        "hint": "协商档的轮数方案：关闭（默认）=质检 1 次 + 重写 1 次，重写版直接发出（共 2 次模型调用）；开启=重写版再质检一次，仍不通过就放行原版（共 3 次调用，更严但更慢也更费）。两种方案都不允许无限循环。",
+                        "type": "bool",
+                        "default": false,
+                        "invisible": true,
+                        "section": ["A", "A3", 9]
                     },
                     "prompt_input": {
                         "description": "输入判断提示词",
@@ -1331,11 +1348,19 @@
                     },
                     "prompt_output": {
                         "description": "输出检查提示词",
-                        "hint": "聊天模型回复后做质量检查的 prompt。要求输出 JSON：{\"ok\": true} 或 {\"ok\": false, \"note\": \"问题一句话\", \"fixed\": \"轻量修正后的全文\"}。fixed 只允许轻量修正（删重复句/删残缺尾句/收紧超长），禁止改写内容或添加新内容。",
+                        "hint": "聊天模型回复后做质量检查的 prompt。要求输出 JSON：{\"ok\": true} 或 {\"ok\": false, \"note\": \"问题一句话\", \"fixed\": \"轻量修正后的全文\"}。fixed 只允许轻量修正（删重复句/删残缺尾句/收紧超长），禁止改写内容或添加新内容。协商档（negotiate）也用这份 prompt 做第一步质检——协商时只用其中的 ok 与 note（意见），fixed 不生效。",
                         "type": "text",
                         "default": "你是聊天助手的幕后质检小助手。下面是助手刚发出的回复，请检查它有没有明显的输出惯性毛病。\n\n最近聊天（旧→新）：\n{context_block}\n\n助手刚发的回复：\n{reply_text}\n\n检查点：是不是明显比平时啰嗦（同样的意思车轱辘话说好几遍）；是不是把闲聊回成了公文（列表/标题/汇报腔）；结尾是否残缺（话说一半）；是否重复了上一条回复里刚说过的话。\n\n只输出一个 JSON 对象，不要输出任何其他文字：\n{\"ok\": true} 或 {\"ok\": false, \"note\": \"问题一句话\", \"fixed\": \"轻量修正后的全文\"}\nfixed 的规则：只做轻量修正（删掉重复句/残缺尾句，收紧啰嗦段），保持原回复的语气与内容，禁止改写内容、禁止添加新内容、长度不得超过原文。没有问题就只给 {\"ok\": true}。",
                         "invisible": true,
                         "section": ["A", "A4", 3]
+                    },
+                    "prompt_negotiate": {
+                        "description": "协商反馈提示词（专家）",
+                        "hint": "协商档把质检意见交给聊天模型自辩的指令（作为最后一条 user 消息注入，聊天模型带着原人设/原历史判断）。占位符：{reply_text}=被按住的回复原文；{note}=质检意见。输出 JSON 协议（accept/reply 或 accept/reason）是解析依赖，别改结构。",
+                        "type": "text",
+                        "default": "（内部流程消息，用户看不到，也不会进入你们的对话记录。）\n你刚生成了一条回复，还没发出去。一位幕后质检助手看后提出了意见。\n\n你刚才的回复原文：\n===== 回复开始 =====\n{reply_text}\n===== 回复结束 =====\n\n质检助手的意见：\n===== 意见开始 =====\n{note}\n===== 意见结束 =====\n\n请你自己判断这条意见对不对：\n- 认可：按意见重写这条回复。保持你原来的语气与身份，不添加原回复没有的新内容，只修正意见指出的问题。\n- 不认可：不要改。说明你的理由，质检助手会放行你的原版。\n\n严格只输出一个 JSON 对象，不要输出任何其他文字：\n{\"accept\": true, \"reply\": \"重写后的完整回复\"}\n或 {\"accept\": false, \"reason\": \"你不认可的理由（一句话）\"}",
+                        "invisible": true,
+                        "section": ["A", "A4", 4]
                     }
                 }
             }

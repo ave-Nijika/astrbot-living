@@ -41,6 +41,7 @@ from core.judge import (
     DEFAULT_INJECT_TEMPLATE,
     DEFAULT_PROMPT_INPUT,
     DEFAULT_PROMPT_OUTPUT,
+    DEFAULT_PROMPT_NEGOTIATE,
     JudgeVerdict,
     OutputJudge,
 )
@@ -1272,8 +1273,10 @@ def test_t16_fallback_chain_options_from_providers(tmp_path):
 
 
 def test_judge_group_schema_complete():
-    """A/B/C 组配置完整性：judge 组 14 键齐备且默认值符合任务书
-    （M31-补丁1：+timeout_output_seconds/include_persona；上文默认 6→4）。"""
+    """A/B/C 组配置完整性：judge 组 17 键齐备且默认值符合任务书
+    （M31-补丁1：+timeout_output_seconds/include_persona，上文默认 6→4；
+    M32+M33-补丁1：+negotiate_timeout_seconds/negotiate_recheck/
+    prompt_negotiate，output_action 三档）。"""
     items = SCHEMA["advanced"]["items"]["judge"]["items"]
     expected = {
         "mode": ("off", ["off", "local", "api"]),
@@ -1283,13 +1286,16 @@ def test_judge_group_schema_complete():
         "context_messages": (4, None),
         "min_interval_seconds": (20, None),
         "timeout_seconds": (6, None),
-        "output_action": ("log_only", ["log_only", "rewrite"]),
+        "output_action": ("log_only", ["log_only", "negotiate", "rewrite"]),
         "record_limit": (50, None),
         "timeout_output_seconds": (10, None),
         "include_persona": (False, None),
+        "negotiate_timeout_seconds": (20, None),
+        "negotiate_recheck": (False, None),
         "prompt_input": (DEFAULT_PROMPT_INPUT, None),
         "inject_template": (DEFAULT_INJECT_TEMPLATE, None),
         "prompt_output": (DEFAULT_PROMPT_OUTPUT, None),
+        "prompt_negotiate": (DEFAULT_PROMPT_NEGOTIATE, None),
     }
     assert set(items) == set(expected)
     for key, (default, options) in expected.items():

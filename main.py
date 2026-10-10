@@ -98,7 +98,7 @@ class _QcWrappedSender:
     """M31-补丁1 B 组：主动出口的质检包装 sender。
 
     send 前先把台词过一遍判断模型（output_action=rewrite 时可轻量修正，
-    其余只记录）；质检失败/超时/总闸关闭一律放行原文——她该说的话一句
+    其余只记录）；质检失败/超时/总闸关闭一律放行原文——它该说的话一句
     不能丢（红线 1），也不新增阻塞（红线 3）。只包 send 一个方法：
     InitiativeEngine 只用 send，core/initiative.py 得以零改动（M17 红线 7
     保持），质检经"sender.send 之前"接入位挂上（M31 任务书 2.2）。"""
@@ -516,12 +516,15 @@ class LivingPlugin(Star):
         task.add_done_callback(self._judge_tasks.discard)
 
     async def _proactive_output_qc(self, text: str, side: str, umo: str = "") -> str:
-        """B 组（M31-补丁1）：她主动说的话发送前过一遍判断模型。
+        """B 组（M31-补丁1）：它主动说的话发送前过一遍判断模型。
 
-        覆盖四个出口：活动分享（改写后）/ 主动搭话 / 晚安（llm 档）/ 梦话
-        （side 分别为 "share"/"initiative"/"farewell"/"dream"）。复用
-        OutputJudge 输出侧能力，output_action 语义不变：log_only 只记录
-        不动文本（后台任务）；rewrite 最多轻量修正一次（长度护栏沿用）。
+        覆盖出口：活动分享（改写后）/ 主动搭话 / 晚安（llm 档）/ 梦话 /
+        睡过头交代 / 醒来补回复（side 分别为 "share"/"initiative"/
+        "farewell"/"dream"/"oversleep"/"pending_reply"）。复用 OutputJudge
+        输出侧能力：rewrite 最多轻量修正一次（长度护栏沿用）；其余档位
+        （log_only 与 negotiate）都按"只记录不动文本"处理——协商只用于
+        聊天回复（任务书 0.1 统一决策：自主产出的重写等于让活动链再生成
+        一次，成本与延迟更高，本批不接）。
         红线：超时/失败/限频/总闸关闭 → 一律放行原文，绝不丢话、绝不
         阻断超过 judge 自身超时。返回实际要发送的文本。"""
         original = str(text or "")
@@ -555,6 +558,89 @@ class LivingPlugin(Star):
         经包装注入而非改 core/initiative.py——该文件保持 M17 红线 7 的
         零改动；质检失败自动放行原文（_QcWrappedSender）。"""
         return _QcWrappedSender(self.sender, self._proactive_output_qc)
+
+    # ------------------------------------------------------------------
+    # 双模型协商（M32+M33-补丁1 第二批 C 组）
+    # ------------------------------------------------------------------
+    async def _chat_prefix_for_umo(self, umo: str) -> dict | None:
+        """该会话的聊天前缀材料（TTL 内的快照 + deepcopy 防污染）。
+
+        协商重写要"原 system / 原 contexts / 原 provider"（3.4：不许换
+        模型）——来源即 M20 的聊天前缀缓存；过期/无记录返回 None
+        （协商侧按"材料缺失放行原版"处理）。"""
+        try:
+            entry = (getattr(self, "_chat_prefix_cache", None) or {}).get(umo)
+            if not isinstance(entry, dict):
+                return None
+            at = entry.get("at")
+            ttl = self._prefix_cache_ttl_seconds()
+            if ttl > 0:
+                if not isinstance(at, datetime) or (
+                    (datetime.now() - at).total_seconds() > ttl
+                ):
+                    return None
+            return {
+                "system_prompt": str(entry.get("system_prompt") or ""),
+                "contexts": copy.deepcopy(list(entry.get("contexts") or [])),
+                "provider_id": str(entry.get("provider_id") or ""),
+            }
+        except Exception as e:
+            logger.debug(f"[Judge] 前缀材料读取失败（按无材料处理）: {e}")
+            return None
+
+    async def _negotiator_chat_call(
+        self,
+        instruction: str,
+        system_prompt: str | None,
+        contexts: list | None,
+        provider_id: str,
+    ) -> str | None:
+        """协商的重写调用：context.llm_generate 直连聊天模型。
+
+        直连不经 agent 流程与钩子系统（源码查证：不递归、不写会话
+        历史、不触发记忆写入——"别人无法察觉"的技术根据）；provider
+        取前缀缓存里记录的聊天 provider id（不许换模型，红线 5）。
+        任何失败返回 None（协商侧放行原版）。"""
+        if not provider_id:
+            return None
+        try:
+            resp = await self.context.llm_generate(
+                chat_provider_id=provider_id,
+                prompt=instruction,
+                system_prompt=system_prompt,
+                contexts=list(contexts or []),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"[Judge] 协商重写调用失败: {summarize_provider_error(e)}")
+            return None
+        text = getattr(resp, "completion_text", None)
+        if not text:
+            try:
+                components = getattr(getattr(resp, "result_chain", None), "chain", None) or []
+                if components:
+                    text = getattr(components[0], "text", None)
+            except Exception:
+                text = None
+        text = str(text or "").strip()
+        if not text or looks_like_llm_error_output(text):
+            return None
+        return text
+
+    def _negotiator(self) -> Any:
+        """协商器惰性构造（judge 配好前零构建成本）。"""
+        cached = getattr(self, "_negotiator_instance", None)
+        if cached is None:
+            from core.negotiator import Negotiator
+
+            cached = Negotiator(
+                judge=self._judge,
+                chat_call=self._negotiator_chat_call,
+                prefix_getter=self._chat_prefix_for_umo,
+            )
+            self._negotiator_instance = cached
+        return cached
 
     # ------------------------------------------------------------------
     # 聊天前缀缓存与前缀对齐（M20-补丁1 E 组，缓存保护核心）
@@ -916,6 +1002,10 @@ class LivingPlugin(Star):
         - rewrite：同步打回（钩子内 await），最多重写 1 次 + 超时，失败
           放行原回复——修改走 response.completion_text setter（同步更新
           result_chain，与本体消费同一形态）；
+        - negotiate（M32+M33-补丁1 第二批）：按住 → 小模型只提意见 →
+          大模型自辩（认可=自己重写，不认可=放行原版）→ 放行最终版；
+          总超时到点放行当前版本。全过程不入上下文/不入 memory
+          （直连调用无存储副作用），被替换的旧版本只存内存、当场销毁；
         - 流式 chunk（is_chunk）不判（每 chunk 一判既烧钱又没法整体改）；
         - 任何异常只 DEBUG，绝不影响回复送达（红线 6）。"""
         try:
@@ -936,7 +1026,28 @@ class LivingPlugin(Star):
                 persona_text = await self._judge_persona_text(
                     umo=str(getattr(event, "unified_msg_origin", "") or "")
                 )
-            if action == "rewrite":
+            if action == "negotiate":
+                umo = str(getattr(event, "unified_msg_origin", "") or "")
+                try:
+                    final = await asyncio.wait_for(
+                        self._negotiator().negotiate(
+                            reply, umo, persona_text=persona_text
+                        ),
+                        timeout=judge.negotiate_timeout_seconds(),
+                    )
+                except asyncio.TimeoutError:
+                    logger.info(
+                        "[Judge] 协商总超时，放行当前版本（不卡送达）"
+                    )
+                    final = reply
+                final = str(final or "").strip() or reply
+                if final != reply:
+                    response.completion_text = final
+                logger.info(
+                    "[Judge] 协商结束：放行"
+                    f"{'重写版' if final != reply else '原版'}"
+                )
+            elif action == "rewrite":
                 fixed = await judge.rewrite_output(
                     reply, context_lines, persona_text=persona_text
                 )
@@ -2012,7 +2123,7 @@ class LivingPlugin(Star):
             conversation_manager=getattr(self.context, "conversation_manager", None),
             # M15-补丁1 A3：晚安 LLM 档的人格 system prompt（复用主提示词读取）
             persona_getter=self._persona_prompt,
-            # M31-补丁1 B 组：她主动说的话（分享/晚安 llm 档/梦话）发送前
+            # M31-补丁1 B 组：它主动说的话（分享/晚安 llm 档/梦话）发送前
             # 过质检（搭话经上面包装 sender；失败放行原文，红线 1）
             proactive_qc=self._proactive_output_qc,
             # M17-补丁1 A 组：风格学习引擎（A7 学习触发 / A5 梦话注入）

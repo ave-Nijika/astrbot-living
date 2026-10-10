@@ -39,7 +39,7 @@ from astrbot.api import logger
 from .prompts import read_template, render_template
 
 JUDGE_MODES = ("off", "local", "api")
-OUTPUT_ACTIONS = ("log_only", "rewrite")
+OUTPUT_ACTIONS = ("log_only", "rewrite", "negotiate")
 
 # 判断输出的合法取值（越界值按中性默认处理——小模型偶尔不听话，不较真）
 VALID_LENGTHS = ("short", "normal", "long")
@@ -164,6 +164,41 @@ class OutputJudge:
             return bool(self._cfg().get("include_persona", False))
         except Exception:
             return False
+
+    def negotiate_recheck(self) -> bool:
+        """协商档轮数方案（M32+M33-补丁1 3.2）：False=甲（默认，质检 1 次
+        + 重写 1 次，重写后不再质检，共 2 次调用）；True=乙（重写后再质检
+        1 次，仍不通过 → 放行原版，共 3 次调用）。"""
+        try:
+            return bool(self._cfg().get("negotiate_recheck", False))
+        except Exception:
+            return False
+
+    def negotiate_timeout_seconds(self) -> float:
+        """协商档总超时（3.3 兜底之二）：整场协商（质检+反馈+自辩+重写）
+        的时间上限，到点放行当前版本。默认 20，5-60。"""
+        return float(self._int("negotiate_timeout_seconds", 20, 5, 60))
+
+    def prompt_negotiate(self) -> str:
+        """协商反馈指令模板（面板可调，默认=DEFAULT_PROMPT_NEGOTIATE）。
+        占位符：{reply_text}=被按住的回复原文；{note}=判断模型的意见。"""
+        return read_template(
+            self._cfg(), "prompt_negotiate", DEFAULT_PROMPT_NEGOTIATE
+        )
+
+    def record_negotiation(
+        self, summary: str, verdict: str, rewrote: bool = False
+    ) -> None:
+        """协商档结论记录（side="negotiate"，M32+M33-补丁1 C 组观测）。
+        summary 只放截断摘要——_add_record 内有 80 字上限，记录里不含
+        被销毁版本的全文（3.4）。"""
+        self._add_record(
+            side="negotiate",
+            input_summary=summary,
+            verdict=verdict,
+            injected=False,
+            rewrote=rewrote,
+        )
 
     def frame_prompt(
         self, task_prompt: str, persona_text: str = ""
@@ -626,4 +661,23 @@ DEFAULT_PROMPT_OUTPUT = (
     "fixed 的规则：只做轻量修正（删掉重复句/残缺尾句，收紧啰嗦段），"
     "保持原回复的语气与内容，禁止改写内容、禁止添加新内容、长度"
     "不得超过原文。没有问题就只给 {\"ok\": true}。"
+)
+
+# 协商反馈指令（M32+M33-补丁1 C 组）：判断模型只提意见，聊天模型自辩。
+# 原料（人格/历史）走 system/contexts（与聊天同前缀），本指令作为最后的
+# user 消息注入——聊天模型在"自己的完整人设"下判断意见对不对。
+DEFAULT_PROMPT_NEGOTIATE = (
+    "（内部流程消息，用户看不到，也不会进入你们的对话记录。）\n"
+    "你刚生成了一条回复，还没发出去。一位幕后质检助手看后提出了意见。\n\n"
+    "你刚才的回复原文：\n"
+    "===== 回复开始 =====\n{reply_text}\n===== 回复结束 =====\n\n"
+    "质检助手的意见：\n"
+    "===== 意见开始 =====\n{note}\n===== 意见结束 =====\n\n"
+    "请你自己判断这条意见对不对：\n"
+    "- 认可：按意见重写这条回复。保持你原来的语气与身份，不添加原回复"
+    "没有的新内容，只修正意见指出的问题。\n"
+    "- 不认可：不要改。说明你的理由，质检助手会放行你的原版。\n\n"
+    "严格只输出一个 JSON 对象，不要输出任何其他文字：\n"
+    '{"accept": true, "reply": "重写后的完整回复"}\n'
+    '或 {"accept": false, "reason": "你不认可的理由（一句话）"}'
 )

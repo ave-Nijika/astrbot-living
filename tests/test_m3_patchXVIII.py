@@ -319,12 +319,13 @@ def test_structure_complete_no_key_lost():
         )
         extra = actual - expected - ADDED_KEYS.get(group, set())
         assert not extra, f"{group} 组出现计划外新键: {extra}"
-    # judge 组 14 键（M19-补丁1 A/B/C 组；M31-补丁1 +2）
+    # judge 组 17 键（M19-补丁1 A/B/C 组；M31-补丁1 +2；M32+M33-补丁1 +3）
     assert set(advanced["judge"]["items"]) == {
         "mode", "provider_id", "local_model_path", "local_backend",
         "context_messages", "min_interval_seconds", "timeout_seconds",
         "output_action", "record_limit",
         "timeout_output_seconds", "include_persona",
+        "negotiate_timeout_seconds", "negotiate_recheck", "prompt_negotiate",
         "prompt_input", "inject_template", "prompt_output",
     }
 

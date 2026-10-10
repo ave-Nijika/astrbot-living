@@ -525,13 +525,19 @@ def test_c1_guard_no_bypass_calls_in_core():
 
 
 def test_c1_guard_main_llm_generate_only_in_chain_helpers():
-    """P0-T5 守护：main.py 的 llm_generate 只出现在两个链helper 内
-    （_decision_llm_call / _judge_llm_call）。"""
+    """P0-T5 守护：main.py 的 llm_generate 只出现在链 helper 内
+    （_decision_llm_call / _judge_llm_call，M32+M33-补丁1 第三处
+    _negotiator_chat_call——协商重写必须直连原聊天 provider，故意
+    不走 failover 链：不许换模型是第二批红线 5）。"""
     src = (WORKDIR / "main.py").read_text(encoding="utf-8")
     count = src.count("self.context.llm_generate(")
-    assert count == 2, f"main.py llm_generate 调用点应为 2 处，实际 {count}"
-    # 两处必须都在带故障转移链/独立 provider 语义的 helper 里
-    for helper in ("async def _decision_llm_call", "async def _judge_llm_call"):
+    assert count == 3, f"main.py llm_generate 调用点应为 3 处，实际 {count}"
+    # 三处必须都在带独立语义的 helper 里（failover 链/判断 provider/协商原 provider）
+    for helper in (
+        "async def _decision_llm_call",
+        "async def _judge_llm_call",
+        "async def _negotiator_chat_call",
+    ):
         assert helper in src
 
 

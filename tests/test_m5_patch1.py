@@ -65,13 +65,15 @@ def test_get_payload_structure_and_key_counts():
     # + M30-补丁1：decision +2（prompt_intent_surf_browse/read_browse）
     # + M31-补丁1：judge +2（include_persona/timeout_output_seconds）
     # + M32-补丁1：initiative +1（avoid_after_user_minutes）
-    assert advanced_count == 129
+    # + M32+M33-补丁1 第二批：judge +3（negotiate_timeout_seconds/negotiate_recheck/prompt_negotiate）
+    assert advanced_count == 132
 
     # 当前值区：knobs 含全部旋钮默认、advanced 全部键（M14-补丁1 起 9 组）
     assert sum(1 for k in payload["knobs"] if k.startswith("preset_")) == 8
     # M19-补丁1：+26（judge 12 + 提示词搬面板 14）；M20-补丁1：+13（净）；
     # M30-补丁1：+2（无搜索浏览意图）；M32-补丁1：+1（避让窗口）
-    assert sum(len(v) for v in payload["advanced"].values()) == 129
+    # M32+M33-补丁1 第二批：+3（协商三键）
+    assert sum(len(v) for v in payload["advanced"].values()) == 132
 
 
 # ---------------------------------------------------------------------------
