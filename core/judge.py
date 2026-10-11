@@ -568,9 +568,15 @@ class OutputJudge:
         injected: bool,
         rewrote: bool = False,
     ) -> None:
-        """记录一条判断结果（内存 + 落盘）。任何失败只 DEBUG——记录绝不
+        """记录一条判断（内存 + 落盘）。任何失败只 DEBUG——记录绝不
         影响判断主流程。"""
         try:
+            # M37-补丁1：写前补一次从盘加载——新实例第一次写记录时若不
+            # 加载，内存里只有这一条，整份覆盖会把盘上历史冲掉（重启后
+            # 记录只剩 1 条的根因）。_load_records_from_disk 里有
+            # _records_loaded 置位与全套异常兜底，只加载一次
+            if not self._records_loaded:
+                self._load_records_from_disk()
             self._records.appendleft(
                 {
                     "ts": self._clock().strftime("%Y-%m-%d %H:%M:%S"),
