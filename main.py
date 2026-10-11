@@ -2135,6 +2135,9 @@ class LivingPlugin(Star):
             # M31-补丁1 B 组：它主动说的话（分享/晚安 llm 档/梦话）发送前
             # 过质检（搭话经上面包装 sender；失败放行原文，红线 1）
             proactive_qc=self._proactive_output_qc,
+            # M39-补丁1：看留言/翻记忆的心理活动轻调用（故障转移链与
+            # decider/分享改写共用同一决策调用通道）
+            reflect_llm_call=self._decision_llm_call,
             # M17-补丁1 A 组：风格学习引擎（A7 学习触发 / A5 梦话注入）
             style_learner=self._style_learner,
         )

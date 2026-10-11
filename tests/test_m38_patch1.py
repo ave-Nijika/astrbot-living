@@ -495,7 +495,11 @@ def test_help_and_schema_copy_updated():
     help_js = (WORKDIR / "pages" / "config" / "help-content.js").read_text(
         encoding="utf-8")
     assert "两种情况这个活动都会发生" in help_js
-    assert "翻回忆和看留言只有固定做法" in help_js
+    # M39-补丁1 起两活动有心理活动（轻调用），不再是"只有固定做法"——
+    # 说明书改为讲清"会想一想、想说同样过闸门"
+    assert "只有固定做法" not in help_js
+    assert "也会真的想一想" in help_js
+    assert "不是想说就发" in help_js
 
     c3 = next(
         g for s in LAYOUT["sections"] if s["id"] == "C" for g in s["groups"]

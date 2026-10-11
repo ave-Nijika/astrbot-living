@@ -303,6 +303,9 @@ def test_structure_complete_no_key_lost():
             "prompt_intent_game", "prompt_intent_free",
             # M30-补丁1：无搜索路径的浏览器浏览意图（surf/read 各一）
             "prompt_intent_surf_browse", "prompt_intent_read_browse",
+            # M39-补丁1：peek/reminisce 心理活动提示词（短/长程分开）+ 超时
+            "prompt_peek_muse", "prompt_reminisce_muse",
+            "muse_timeout_seconds",
         },
         "initiative": {
             "prompt_open_topic", "prompt_line",

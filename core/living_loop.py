@@ -169,6 +169,7 @@ class LivingLoop:
         style_learner: Any = None,
         browser_available_getter: Callable[[], bool] | None = None,
         proactive_qc: Callable[..., Any] | None = None,
+        reflect_llm_call: Callable[..., Any] | None = None,
     ) -> None:
         self._gate = gate
         self._get_memory = memory_getter
@@ -222,6 +223,10 @@ class LivingLoop:
         # 分享/晚安 llm 档/梦话发送前过一遍判断模型，失败放行原文。
         # None = 不质检（既有测试/旧装配零影响）。
         self._proactive_qc = proactive_qc
+        # M39-补丁1：心理活动轻调用通道（peek/reminisce 的"想一遍"）——
+        # async (prompt, system_prompt) -> str | None，main 注入决策调用
+        # （故障转移链复用）。None = 通道不存在，两活动降级脚本模板。
+        self._reflect_llm_call = reflect_llm_call
         # M13-补丁1 A5：已写过的落库幂等键（M16-补丁2 A2：dict 保插入序，
         # 裁剪按插入序 FIFO 淘汰最旧的——原 set+字典序会把 #share: 等键族
         # 按字符先后优先淘汰，幂等键被裁后同句会重复落库）
@@ -1366,6 +1371,10 @@ class LivingLoop:
             search_enabled=_web_search_enabled(self._config_getter),
             # M19-补丁1 D6：意图模板的配置通道（decision.prompt_intent_*）
             config_getter=self._config_getter,
+            # M39-补丁1：心理活动轻调用 + peek 短程材料（惰性——只有
+            # peek/reminisce 被选中才会用到；None 时活动降级脚本模板）
+            reflect=self._reflect_callable(),
+            chat_context_getter=self._chat_context_getter(),
         )
 
         outcome = None
@@ -1517,6 +1526,84 @@ class LivingLoop:
         if activity_name not in list(enabled):
             return None
         return self._agent_loop.run
+
+    # ------------------------------------------------------------------
+    # M39-补丁1：心理活动轻调用（peek/reminisce 的"想一遍"通道）
+    # ------------------------------------------------------------------
+    def _reflect_callable(self) -> Callable[..., Any] | None:
+        """轻调用通道装配：user prompt 进、结构化 JSON 文本出（解析在
+        活动侧 muse.parse_muse_output）。
+
+        system 由这里组装（人格 + 输出锚定，与分享改写器的 system 组装
+        同构）；超时 decision.muse_timeout_seconds（宽超时口径同
+        judge.timeout_output_seconds）在通道内收口——超时/失败返回
+        None，活动侧回落脚本模板，绝不阻塞活动周期（max_run_seconds
+        之外的第二道更紧的闸）。通道未接线（reflect_llm_call=None）时
+        返回 None。"""
+        if self._reflect_llm_call is None:
+            return None
+
+        async def _reflect(user_prompt: str) -> str | None:
+            from .muse import MUSE_SYSTEM_TAIL
+
+            parts: list[str] = []
+            if self._persona_getter is not None:
+                try:
+                    persona = await self._persona_getter()
+                    if persona and str(persona).strip():
+                        parts.append(f"你的人格设定：\n{persona}")
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    pass  # 人格读取失败不挡心理活动（锚定仍在）
+            parts.append(MUSE_SYSTEM_TAIL)
+            try:
+                return await asyncio.wait_for(
+                    self._reflect_llm_call(user_prompt, "\n\n".join(parts)),
+                    timeout=self._muse_timeout(),
+                )
+            except asyncio.TimeoutError:
+                logger.info("[Muse] 心理活动调用超时，回落脚本模板")
+                return None
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug(f"[Muse] 心理活动调用失败，回落脚本模板: {e}")
+                return None
+
+        return _reflect
+
+    def _muse_timeout(self) -> float:
+        """decision.muse_timeout_seconds（默认 10s；1-60 收口；脏值回默认）。"""
+        try:
+            value = float(
+                _conf_group(self._config_getter(), "decision").get(
+                    "muse_timeout_seconds"
+                )
+                or 10.0
+            )
+        except Exception:
+            return 10.0
+        return min(max(value, 1.0), 60.0)
+
+    def _chat_context_getter(self) -> Callable[..., Any] | None:
+        """peek 的短程材料通道：主会话最近真实聊天（复用 _load_chat_contexts
+        ——与分享改写同源同款容错；任何失败按无材料处理，不报错）。"""
+        if self._conversation_manager is None:
+            return None
+
+        async def _get() -> list[dict] | None:
+            try:
+                sessions, _source = self._resolve_target_sessions()
+                if not sessions:
+                    return None
+                return await self._load_chat_contexts(sessions)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                return None
+
+        return _get
 
     async def _choose_activity(self, now: datetime) -> tuple[Activity, dict]:
         """M2：决策层优先（rules/hybrid/llm 三档），未接线时退回 M1 随机。"""

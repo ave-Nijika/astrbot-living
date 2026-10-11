@@ -205,12 +205,16 @@ async def main() -> int:
             now=datetime.now(),
             params=decision.params,
         )
-        # gate 只被 peek 用；peek 无产出，注入一个最小 gate 以防万一
+        # gate 只被 peek（读留言状态键）用；M39-补丁1 起 peek 可能带
+        # summary（想跟对方说一句），但发送闸门在 LivingLoop._maybe_share，
+        # 本脚本直跑不经发送——注入最小 gate 仅为状态键读取兜底
         if decision.activity.name == "peek":
             class _G:
                 async def should_send_message(self, now=None):
                     return False, "quiet_hours"
             act_ctx.gate = _G()
+        # reflect/chat_context_getter 未注入：peek/reminisce 按 M39 降级
+        # 路径跑（脚本模板，不调模型）——脚本验证的是决策链，不是心理活动
         outcome = await decision.activity.run(act_ctx)
         log(f"    -> summary: {outcome.summary}")
         log(f"    -> memory : {outcome.memory_content}")

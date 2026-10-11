@@ -35,8 +35,8 @@ On each heartbeat it checks: am I awake, how much quota is left, do I feel like 
 | Surf (surf) | Pick a topic of interest and search for it |
 | Read (read) | Actually open a search result and read the article |
 | Mini-game (game) | Write Python code and run it in its sandbox |
-| Reminisce (reminisce) | Browse its own old memories |
-| Peek (peek) | Look back at "did they reply to my last proactive message" and journal it; read-only, never sends |
+| Reminisce (reminisce) | Digs up an old memory and savors it, like leafing through an old photo album; it genuinely thinks it over |
+| Peek (peek) | Opens the chat when alone to see if they left a message, and genuinely thinks it over; mostly digests it silently, occasionally wants to say something |
 
 Plus a "free play" switch (free): when on, it occasionally decides entirely by itself what to do. Activities can run as a full agent loop — the model drives tools (search/fetch/sandbox/memory/browser) on its own, under a per-run token hard cap (`decision.single_run_token_budget`).
 
@@ -185,7 +185,7 @@ Plugin details → Pages → the living config panel. Dependency-free vanilla JS
 - **Sandbox isolation is heuristic** ("prevents accidents, not hackers") — static import whitelist + timeout + `-I` isolated mode; don't enable the shell tier in untrusted environments
 - **With `sleep_mute_replies=true`, AstrBot replies to NOTHING during the sleep window** — turn it off or use `/living_wake_now` for emergencies
 - **prompt-preset overrides AstrBot's native system_prompt** — keep built-in content via a `{{native_system}}` entry
-- **Peek is read-only** — it never sends because of peeking; proactive speech always goes through the seven exits' gates
+- **Peek/reminisce speech never bypasses the gates** — after "thinking it over" alone it occasionally wants to say something; that goes through the same gates as every other proactive message (daily cap / min interval / back-off), not sent just because it wants to; most of the time it just thinks and lets it go
 - Chromium is ~150MB and installed manually (see above)
 
 ## Development

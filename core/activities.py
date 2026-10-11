@@ -212,6 +212,14 @@ class ActivityContext:
     # None = 用代码内默认模板——既有构造点零改动；LivingLoop 装配 ctx 时
     # 传入，agent_intent 的面板覆盖才生效。
     config_getter: Any = None
+    # M39-补丁1：心理活动轻调用通道——async (user_prompt) -> str | None
+    # （system 由 LivingLoop 侧组装：人格 + 输出锚定；超时也在通道内）。
+    # None = 通道未接线（旧装配/测试），peek/reminisce 降级脚本模板。
+    reflect: Any = None
+    # M39-补丁1：peek 的短程材料通道——async () -> list[dict] | None
+    # （主会话最近真实聊天，role/content 形态，_load_chat_contexts 同源）。
+    # None = 无该材料（活动按"没有可翻的"处理，不报错）。
+    chat_context_getter: Any = None
 
     def date_prefix(self) -> str:
         # 不用 strftime 的 %-m：Windows 平台不支持该转义
@@ -655,22 +663,25 @@ class MiniGameActivity(Activity):
 
 
 class PeekFeedbackActivity(Activity):
-    """看留言（M27-补丁1 7.4 改造）：真的去看一眼"我上一条主动说的话，
-    对方回了没有"，并把结论写成一段第一人称经历留在记忆里。仍然不发言：
-    产出不带 summary（不进 _maybe_share 分享链），发送一律由 LivingLoop
-    统一管理；本活动零新增存储、零新增发送路径。
+    """看留言（M27-补丁1 7.4 引入；M39-补丁1 改性质）：独处时看一眼
+    "我上一条主动说的话，对方回了没有"，然后**真的想一想**——一次轻量
+    模型调用产生心理活动，并自行决定要不要开口。
 
-    数据源（既有状态键，只读）：
-    - living_state 的 last_message_at（KEY_LAST_MESSAGE_AT）：
-      最后一条主动消息的时间；缺失 = 还没有过主动消息；
-    - initiative 状态的 initiative_unanswered_streak（STATE_KEY_STREAK）：
-      连续未回应计数（对方来消息即被 note_owner_message 清零）——
-      streak ≥ 1 即"上一条还没被理"。
-    三种情形各给一种口吻：惦记（有未回）/ 安心（已被回应）/ 期待（无历史）。
+    材料（短程：最近还没落地的那句话）：
+    - living_state 的 last_message_at / initiative 的未回应计数（既有
+      状态键，只读）；
+    - 主会话最近真实聊天（chat_context_getter，_load_chat_contexts
+      同源）——她上次说了什么、对方回了什么。
+
+    开口与否由她定（模型输出的 speak 就是最终意愿）：想说则 summary
+    有值、进既有 _maybe_share 分享链（每日上限/最小间隔/避让闸门 +
+    输出侧质检一步不少——不新增绕过闸门的发送路径）；自己消化（常见
+    结果）则 summary=None、只写记忆。模型不可用/超时/解析失败回落
+    本活动的脚本模板（模板形态 summary=None，照旧不发言）。
     """
 
     name = "peek"
-    description = "看看有没有人给我留了话（不发言，只是看一眼）"
+    description = "看看有没有人给我留了话（只是看一眼，多半自己消化）"
 
     @staticmethod
     async def _read_state(getter: Any, key: str) -> Any:
@@ -686,7 +697,10 @@ class PeekFeedbackActivity(Activity):
             return None
 
     def _compose(self, ctx: ActivityContext, streak: int, last_at: Any) -> str:
-        """三情形经历文本（纯逻辑便于测试；"对方"为中性指代，不写称谓）。"""
+        """三情形经历文本（纯逻辑便于测试；"对方"为中性指代，不写称谓）。
+
+        M39-补丁1 起这是降级模板（通道未接线/超时/解析失败时的保底），
+        与 M27 版本逐字一致。"""
         prefix = ctx.date_prefix()
         if last_at is None:
             return (
@@ -702,10 +716,61 @@ class PeekFeedbackActivity(Activity):
             f"{prefix}看了一眼对话，上次主动说的那句，对方接了。挺好。"
         )
 
+    async def _material(self, ctx: ActivityContext, last_at: Any, streak: int) -> str:
+        """peek 的材料块：状态行 + 最近对话（无材料的诚实占位）。"""
+        lines: list[str] = []
+        if last_at is not None:
+            try:
+                hours = (ctx.now - last_at).total_seconds() / 3600.0
+                lines.append(
+                    f"你上一次主动开口：{last_at.month}月{last_at.day}日 "
+                    f"{last_at:%H:%M}（距今约 {hours:.0f} 小时）"
+                )
+            except Exception:
+                lines.append("你上一次主动开口：时间记录读不出来。")
+        if streak >= 1:
+            lines.append(f"那句话之后，对方已经连续 {streak} 次没接你的话。")
+        elif last_at is not None:
+            lines.append("对方接上了你的话。")
+        chat: list | None = None
+        getter = getattr(ctx, "chat_context_getter", None)
+        if callable(getter):
+            try:
+                chat = await getter()
+            except Exception:
+                chat = None
+        if chat:
+            rendered = []
+            for message in chat:
+                if not isinstance(message, dict):
+                    continue
+                role = "对方" if str(message.get("role")) in ("user", "human") else "我"
+                content = (
+                    str(message.get("content") or "").strip().replace("\n", " ")[:100]
+                )
+                if content:
+                    rendered.append(f"{role}：{content}")
+            if rendered:
+                lines.append("最近这段对话（最后一条是最近的）：")
+                lines.extend(rendered)
+        from .muse import MATERIAL_BEGIN, MATERIAL_END
+
+        if not lines:
+            return (
+                f"{MATERIAL_BEGIN}\n（你还没有主动开过口的记录，"
+                f"聊天框里也还没有留言。）\n{MATERIAL_END}\n\n"
+            )
+        return f"{MATERIAL_BEGIN}\n" + "\n".join(lines) + f"\n{MATERIAL_END}\n\n"
+
     async def _run_script(self, ctx: ActivityContext) -> ActivityOutcome:
         # 惰性导入（本文件惯例）：状态键常量复用既有模块，零新增存储
         from .initiative import STATE_KEY_STREAK
         from .living_state import KEY_LAST_MESSAGE_AT
+        from .muse import (
+            DEFAULT_PROMPT_PEEK_MUSE,
+            mood_line,
+            parse_muse_output,
+        )
 
         getter = getattr(ctx.gate, "state_get", None)
         raw_last = await self._read_state(getter, KEY_LAST_MESSAGE_AT)
@@ -720,31 +785,143 @@ class PeekFeedbackActivity(Activity):
             streak = max(int(raw_streak or 0), 0)
         except (TypeError, ValueError):
             streak = 0
-        memory = self._compose(ctx, streak, last_at)
-        logger.debug(
-            f"[PeekFeedback] 看留言 streak={streak} "
-            f"last_message_at={'有' if last_at else '无'}（不发言，只留经历）"
-        )
-        # summary 保持 None：绝不进分享链（不发送是本活动的定位，不是遗漏）
+
+        # M39-补丁1：轻调用——读材料 → 心理活动 → 自行决定要不要开口。
+        # 通道未接线/超时/调用失败 → 完整回落脚本模板（含模板的 summary
+        # 语义）；模型有产出但解析失败 → 模板经历 + summary 强制 None
+        # （宁可不说不说错）。
+        reflect = getattr(ctx, "reflect", None)
+        if callable(reflect):
+            prompt = self._render_intent(
+                ctx,
+                "prompt_peek_muse",
+                DEFAULT_PROMPT_PEEK_MUSE,
+                {
+                    "mood_line": mood_line(ctx),
+                    "material_block": await self._material(ctx, last_at, streak),
+                },
+            )
+            raw = None
+            try:
+                raw = await reflect(prompt)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug(f"[PeekFeedback] 心理活动调用失败，回落模板: {e}")
+            parsed = parse_muse_output(raw) if raw else None
+            if parsed is not None:
+                logger.info(
+                    "[PeekFeedback] 看留言想过了"
+                    f"（{'想说一句' if parsed['speak'] else '自己消化'}）"
+                )
+                return ActivityOutcome(
+                    name=self.name,
+                    summary=parsed["say"],
+                    memory_content=f"{ctx.date_prefix()}{parsed['thought']}",
+                    importance=0.4,
+                    topics=["看留言"],
+                )
+            if raw:
+                logger.info(
+                    "[PeekFeedback] 心理活动产出无法解析，本次只留模板经历、不发言"
+                )
+        else:
+            logger.debug(
+                f"[PeekFeedback] 看留言 streak={streak} "
+                f"last_message_at={'有' if last_at else '无'}"
+                "（无轻调用通道，按模板留经历）"
+            )
+        # summary 保持 None：peek 的任何降级路径都不发言（分享链只接收
+        # 她明确想说的话；模板不是她的意愿，不冒充）
         return ActivityOutcome(
             name=self.name,
             summary=None,
-            memory_content=memory,
+            memory_content=self._compose(ctx, streak, last_at),
             importance=0.3,
             topics=["看留言"],
         )
 
 
 class MemoryBrowsingActivity(Activity):
-    """整理：随机捞一段旧记忆翻一翻，像人翻旧相册。保持脚本模式。"""
+    """翻记忆（M1 引入；M39-补丁1 改性质）：翻出一条**够旧**的记忆，
+    然后**真的回味一遍**——一次轻量模型调用产生心理活动，并自行决定
+    要不要跟对方说点什么（长程：已经沉下去的旧事，与 peek 的短程
+    相对）。
+
+    挑选（muse.pick_old_memory）：候选池按"X月X日"前缀判旧、最旧的
+    一半里随机（保留翻旧相册的随机感）；材料正文按 M35 资料区口径
+    包裹（旧记忆里可能嵌着当年从网页读来的原文）。
+
+    开口与否由她定：想说则 summary 有值、进既有 _maybe_share 分享链
+    （闸门 + 输出侧质检一步不少）；自己消化（常见结果）只写记忆。
+    降级：通道未接线/超时 → M1 脚本模板（模板 summary 保留——那是
+    本活动自 M1 起的既有分享形态）；解析失败 → 模板经历 + summary
+    强制 None（宁可不说不说错）。
+    """
 
     name = "reminisce"
-    description = "翻翻自己的旧记忆，回味一下最近经历过的事"
+    description = "翻翻自己的旧记忆，回味一下（多半自己想想，偶尔想说说）"
 
     async def _run_script(self, ctx: ActivityContext) -> ActivityOutcome:
-        rows = await ctx.memory.search("", k=5)
-        if rows:
-            picked = ctx.rng.choice(rows)
+        from .muse import (
+            DEFAULT_PROMPT_REMINISCE_MUSE,
+            MEMORY_CANDIDATES,
+            mood_line,
+            parse_muse_output,
+            pick_old_memory,
+            render_memory_material,
+        )
+
+        rows = await ctx.memory.search("", k=MEMORY_CANDIDATES)
+        picked = pick_old_memory(rows, ctx.rng, ctx.now.date()) if rows else None
+
+        # M39-补丁1：轻调用——翻出旧事 → 心理活动 → 自行决定要不要说。
+        # 三层降级见类 docstring（模板形态不空转，解析失败绝不误发）。
+        reflect = getattr(ctx, "reflect", None)
+        if callable(reflect) and picked is not None:
+            prompt = self._render_intent(
+                ctx,
+                "prompt_reminisce_muse",
+                DEFAULT_PROMPT_REMINISCE_MUSE,
+                {
+                    "mood_line": mood_line(ctx),
+                    "material_block": render_memory_material(
+                        picked, ctx.now.date()
+                    ),
+                },
+            )
+            raw = None
+            try:
+                raw = await reflect(prompt)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug(f"[MemoryBrowsing] 心理活动调用失败，回落模板: {e}")
+            parsed = parse_muse_output(raw) if raw else None
+            if parsed is not None:
+                logger.info(
+                    "[MemoryBrowsing] 翻记忆想过了"
+                    f"（{'想说一句' if parsed['speak'] else '自己消化'}）"
+                )
+                return ActivityOutcome(
+                    name=self.name,
+                    summary=parsed["say"],
+                    memory_content=f"{ctx.date_prefix()}{parsed['thought']}",
+                    importance=0.4,
+                    topics=["记忆整理"],
+                )
+            if raw:
+                logger.info(
+                    "[MemoryBrowsing] 心理活动产出无法解析，本次只留模板经历、不发言"
+                )
+                return ActivityOutcome(
+                    name=self.name,
+                    summary=None,
+                    memory_content=self._compose(ctx, picked),
+                    importance=0.4,
+                    topics=["记忆整理"],
+                )
+        if picked is not None:
             snippet = (picked.get("content") or "").strip()[:50]
             return ActivityOutcome(
                 name=self.name,
@@ -763,6 +940,14 @@ class MemoryBrowsingActivity(Activity):
             f"发现还空得很，得多经历点事。",
             importance=0.3,
             topics=["记忆整理"],
+        )
+
+    def _compose(self, ctx: ActivityContext, picked: dict) -> str:
+        """解析失败时的模板经历（与 M1 模板句式一致，只换挑选来源）。"""
+        snippet = (picked.get("content") or "").strip()[:50]
+        return (
+            f"{ctx.date_prefix()}我翻了翻以前的记忆，"
+            f"翻到一条：{snippet}"
         )
 
 
