@@ -18,6 +18,19 @@
  * 活动（前端镜像，验收 4 的展示口径；锚点测试锁定两侧同值）。 */
 export const SEARCH_DEPENDENT_ACTIVITIES = ["surf", "read"];
 
+/* M38-补丁1 第二批：真实活动池（镜像 core/activities.py default_activities
+ * 的顺序与名单）。池子里六个活动常驻，只有 free 可被开关摘掉；
+ * peek / reminisce 永不被移出（它们不依赖搜索也不是 free）。 */
+export const ACTIVITY_POOL = [
+  "surf", "read", "game", "peek", "reminisce", "free",
+];
+
+/* 支持"自主发挥"形态的活动（镜像 supports_agent=True 的四个声明）。
+ * 注意：支持自主 ≠ 正在自主——还要当前配置勾选了 agent_activities
+ * 才走自主，不勾照样跑（固定脚本形态）。peek / reminisce 永远是
+ * 固定脚本（设计如此，不是缺陷）。 */
+const AGENT_CAPABLE_ACTIVITIES = ["surf", "read", "game", "free"];
+
 const CIRCLED = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩"];
 function circled(i) {
   return CIRCLED[i] || `(${i + 1})`;
@@ -277,18 +290,26 @@ export function computeExitLines(exitsDecl, ctx) {
   });
 }
 
-/* ---------------- C3 活动池：当前可跑的活动（验收 4 展示口径） ----------------
- * 镜像 core/activities.py:106-120 activities_excluding_search +
- * decision.free_activity_enabled（:707 附近，调用方据此裁掉 free）。 */
+/* ---------------- C3 活动池：当前可跑的活动（M38-补丁1 第二批修正） ----------------
+ * 数据源是真实活动池 ACTIVITY_POOL（六个常驻），**不是** agent_activities
+ * ——后者只管"哪些活动走自主发挥"，把它当活动池会把 peek / reminisce
+ * 少报掉（它们不勾选也照常跑）。过滤规则沿用两条：搜索关闭摘掉
+ * surf / read；free_activity_enabled=false 摘掉 free。
+ * 返回 [{ name, agent }]：agent=当前配置下该活动是否走自主发挥
+ * （被勾选且支持自主才为 true，否则固定脚本）。 */
 export function runnableActivities(agentActivities, freeEnabled, webSearchEnabled) {
-  let list = Array.isArray(agentActivities) ? [...agentActivities] : [];
+  const chosen = Array.isArray(agentActivities) ? agentActivities : [];
+  let list = ACTIVITY_POOL.slice();
   if (!webSearchEnabled) {
     list = list.filter((a) => !SEARCH_DEPENDENT_ACTIVITIES.includes(a));
   }
   if (freeEnabled === false) {
     list = list.filter((a) => a !== "free");
   }
-  return list;
+  return list.map((name) => ({
+    name,
+    agent: AGENT_CAPABLE_ACTIVITIES.includes(name) && chosen.includes(name),
+  }));
 }
 
 /* ---------------- 新手面板归组（配套 a） ----------------

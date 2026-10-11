@@ -335,7 +335,7 @@
                     },
                     "agent_activities": {
                         "description": "走 agent 模式的活动",
-                        "hint": "列表内的活动由 LLM 拿着工具集（搜索/抓取/沙箱/记忆）自己决定怎么玩，其余走脚本模式。受 single_run_token_budget 硬闸保护。free 的唯一执行形态就是 agent 模式（M15-补丁3 A1），不应移出。",
+                        "hint": "勾选的活动由 LLM 拿着工具集（搜索/抓取/沙箱/记忆）自己决定怎么玩；没勾的不会停——活动照常进行，只是换成固定流程。看留言、翻记忆没有自主模式，不在选项里，但始终在活动池中。受 single_run_token_budget 硬闸保护。free 的唯一执行形态就是 agent 模式（M15-补丁3 A1），不应移出。",
                         "type": "list",
                         "default": [
                             "surf",

@@ -1223,10 +1223,14 @@ def test_t13_enum_fields_render_as_select():
 
 
 def test_t14_agent_activities_multiselect_with_labels():
-    """T14：agent_activities 多选——6 个活动选项带中文说明，勾选保存数组。"""
+    """T14：agent_activities 多选——勾选保存数组。M38-补丁1 第二批起
+    选项只列真正支持自主模式的四个（peek/reminisce 勾了无效果，移出）。"""
     app_js = (WORKDIR / "pages" / "config" / "app.js").read_text(encoding="utf-8")
-    for name in ("surf", "read", "game", "peek", "reminisce", "free"):
+    for name in ("surf", "read", "game", "free"):
         assert f'value: "{name}"' in app_js
+    # 不支持自主模式的活动不得再作为选项（它们常驻活动池，与勾选无关）
+    assert 'value: "peek"' not in app_js
+    assert 'value: "reminisce"' not in app_js
     assert "AGENT_ACTIVITY_CHOICES" in app_js
     assert 'box.type = "checkbox"' in app_js
     # 保存仍是数组（F4：类型不变）

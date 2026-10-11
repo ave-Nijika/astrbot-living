@@ -333,16 +333,22 @@ def test_b3_pending_reply_uses_model_chain_not_judge():
 def test_b4_search_gate_to_activity_pool():
     """验收 4（前端镜像与后端同源）：web_search_enabled=false → C3 可跑
     活动不含 surf/read；free 开关独立生效；镜像常量与
-    core/activities.SEARCH_DEPENDENT_ACTIVITIES 逐字一致。"""
+    core/activities.SEARCH_DEPENDENT_ACTIVITIES 逐字一致。
+    M38-补丁1 第二批：数据源换成真实活动池（六常驻，peek/reminisce
+    不再被 agent_activities 少报），返回形态为 [{name, agent}]。"""
     from core.activities import SEARCH_DEPENDENT_ACTIVITIES
     mirrored = run_js("searchDependent")
     assert mirrored == list(SEARCH_DEPENDENT_ACTIVITIES)
-    assert run_js("runnableActivities", agentActivities=["surf", "read", "game", "free"],
-                  freeEnabled=True, webSearchEnabled=False) == ["game", "free"]
-    assert run_js("runnableActivities", agentActivities=["surf", "read", "game", "free"],
-                  freeEnabled=True, webSearchEnabled=True) == ["surf", "read", "game", "free"]
-    assert run_js("runnableActivities", agentActivities=["surf", "read", "game", "free"],
-                  freeEnabled=False, webSearchEnabled=True) == ["surf", "read", "game"]
+
+    def names(**kw):
+        return [a["name"] for a in run_js("runnableActivities", **kw)]
+
+    assert names(agentActivities=["surf", "read", "game", "free"],
+                 freeEnabled=True, webSearchEnabled=False) == ["game", "peek", "reminisce", "free"]
+    assert names(agentActivities=["surf", "read", "game", "free"],
+                 freeEnabled=True, webSearchEnabled=True) == ["surf", "read", "game", "peek", "reminisce", "free"]
+    assert names(agentActivities=["surf", "read", "game", "free"],
+                 freeEnabled=False, webSearchEnabled=True) == ["surf", "read", "game", "peek", "reminisce"]
 
 
 @NODE_SKIP

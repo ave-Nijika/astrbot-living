@@ -8,6 +8,7 @@
  * 保存契约）、siblingProbe / selectorThrowProbe（dom_stub 选择器）。 */
 import {
   SEARCH_DEPENDENT_ACTIVITIES,
+  ACTIVITY_POOL,
   getConfValue,
   evalCond,
   computeNodeStatus,
@@ -338,6 +339,57 @@ async function toolsProbe(req) {
   };
 }
 
+/* M38-补丁1 第二批：活动池探针——全链路渲染真实 app.js 后摘要：
+ * - C3「活动池」卡的 pool-note 文本（六个活动 + 各自执行形态标注）
+ * - decision.agent_activities 键行：选项文本/勾选态、语义说明行
+ * - 勾选一个未勾选项并触发保存，抓 POST 保存契约（数组形态、
+ *   残留值不被误删） */
+async function activityProbe(req) {
+  const posts = [];
+  const io = await bootPanel(req, posts);
+  const host = io.byId["expert-groups"];
+  const c3 = findAll(host, "expert-group").find((g) => {
+    const head = findFirst(g, "group-head");
+    return head && textOf(head).includes("活动池");
+  });
+  const poolNote = c3 ? findFirst(c3, "pool-note") : null;
+  const row = findAll(host, "key-row", "style-admin").find((r) => {
+    const c = findFirst(r, "key-code");
+    return c && textOf(c) === "decision.agent_activities";
+  });
+  if (!row) return { found: false, loadError: io.byId["load-error"].textContent };
+  const readChoices = () => findAll(row, "multi-choice").map((m) => {
+    const box = m.children.find((c) => c.kind === "element" && c.tagName === "INPUT");
+    return { text: textOf(m), checked: !!(box && box.checked) };
+  });
+  const before = readChoices();
+  // 控件区的语义说明行（B2：勾=自主发挥，不勾=固定方式）
+  const ctrl = findFirst(row, "key-control");
+  const noteEl = ctrl && findFirst(ctrl, "hint");
+  // 勾选一个未勾的选项（如 read），验证保存拼入且残留值保留
+  const target = before.find((c) => !c.checked);
+  if (target) {
+    const m = findAll(row, "multi-choice").find((x) => textOf(x) === target.text);
+    const box = m.children.find((c) => c.kind === "element" && c.tagName === "INPUT");
+    box.checked = true;
+    box.dispatch("change");
+  }
+  const after = readChoices();
+  io.byId["btn-save"].click();
+  await flush(200);
+  return {
+    found: true,
+    poolNote: poolNote ? textOf(poolNote) : null,
+    groupSummary: c3 ? textOf(findFirst(c3, "group-summary")) : null,
+    note: noteEl ? textOf(noteEl) : null,
+    labels: before.map((c) => c.text),
+    checkedBefore: before.filter((c) => c.checked).map((c) => c.text),
+    checkedAfter: after.filter((c) => c.checked).map((c) => c.text),
+    savePosts: posts,
+    loadError: io.byId["load-error"].textContent,
+  };
+}
+
 /* M28-补丁1：内置说明书探针——渲染冒烟（节数与 LIVING_HELP 一致）+
  * 三种关闭方式（关闭按钮 / 遮罩本体点击 target===currentTarget /
  * Escape 仅开着时生效）+ 转义（塞含 <script>/& 的样例节 → 无可执行
@@ -412,6 +464,8 @@ if (req.op === "renderPanel" || req.op === "renderPanelFlat") {
   out = await statusRecomputeProbe(req);
 } else if (req.op === "toolsProbe") {
   out = await toolsProbe(req);
+} else if (req.op === "activityProbe") {
+  out = await activityProbe(req);
 } else if (req.op === "helpProbe") {
   out = await helpProbe(req);
 } else if (req.op === "siblingProbe") {
@@ -498,6 +552,9 @@ if (req.op === "renderPanel" || req.op === "renderPanelFlat") {
     break;
   case "searchDependent":
     out = SEARCH_DEPENDENT_ACTIVITIES;
+    break;
+  case "activityPool":
+    out = ACTIVITY_POOL;
     break;
   default:
     console.error(JSON.stringify({ error: `unknown op ${req.op}` }));

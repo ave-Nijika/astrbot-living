@@ -57,16 +57,23 @@ const KNOB_OPTION_LABELS = {
   },
 };
 
-/* M19-补丁1 F2：agent_activities 的多选选项（6 个活动 + 中文说明——
- * 用户反馈原话"没有说明用户肯定不知道怎么写"）。 */
+/* M19-补丁1 F2 + M38-补丁1 第二批收窄：agent_activities 的多选选项。
+ * 只列真正支持"自主发挥"的活动（surf / read / game / free）——
+ * peek（看留言）/ reminisce（翻记忆）不支持自主模式，勾了不会有任何
+ * 效果，不再作为选项出现（它们本来也一直在活动池里跑，见 C3 卡片）。 */
 const AGENT_ACTIVITY_CHOICES = [
   { value: "surf", label: "surf 上网冲浪" },
   { value: "read", label: "read 读文章" },
   { value: "game", label: "game 写小游戏" },
-  { value: "peek", label: "peek 看留言" },
-  { value: "reminisce", label: "reminisce 翻记忆" },
   { value: "free", label: "free 自由活动" },
 ];
+
+/* M38-补丁1 第二批 B2：多选框的语义说明（勾=自主发挥，不勾=固定方式，
+ * 两种情况活动都会做）。 */
+const AGENT_ACTIVITY_NOTE =
+  "勾上后，这个活动会用「自主发挥」的方式做（自己决定怎么玩）；" +
+  "不勾就用固定方式做，活动本身照常进行。看留言、翻记忆没有自主模式，" +
+  "不在上面的选项里，但它们一直在活动池中。";
 
 /* M19-补丁1 F3：source_weights 只有两个固定键——做成两个数字输入比
  * 裸 JSON 文本框友好（任务书 F3 建议）。 */
@@ -1509,10 +1516,14 @@ function buildControl(group, key, item, container) {
     select.addEventListener("change", () => set(select.value));
     container.appendChild(select);
   } else if (group === "decision" && key === "agent_activities") {
-    // M19-补丁1 F2：活动白名单改多选（6 个活动带中文说明）
+    // M19-补丁1 F2 + M38-补丁1 第二批：活动自主模式多选（带语义说明）
     const current = Array.isArray(value) ? value : [];
     const wrap = document.createElement("div");
     wrap.className = "multi-choices";
+    const noteEl = document.createElement("div");
+    noteEl.className = "hint";
+    noteEl.textContent = AGENT_ACTIVITY_NOTE;
+    wrap.appendChild(noteEl);
     for (const choice of AGENT_ACTIVITY_CHOICES) {
       const row = document.createElement("label");
       row.className = "multi-choice";
@@ -1520,10 +1531,15 @@ function buildControl(group, key, item, container) {
       box.type = "checkbox";
       box.checked = current.includes(choice.value);
       box.addEventListener("change", () => {
-        // F4：保存数组（类型与内容形态不变），勾选集合按固定顺序输出
+        // F4：保存数组（类型与内容形态不变），勾选集合按固定顺序输出。
+        // M38-补丁1 第二批 C1：不在选项里的既有值（历史残留，如早期
+        // 配置里的 peek / reminisce）原样保留——不因收窄选项而误删
+        const kept = current.filter(
+          (v) => !AGENT_ACTIVITY_CHOICES.some((c) => c.value === v));
         const next = AGENT_ACTIVITY_CHOICES
           .map((c) => c.value)
-          .filter((v) => (v === choice.value ? box.checked : current.includes(v)));
+          .filter((v) => (v === choice.value ? box.checked : current.includes(v)))
+          .concat(kept);
         set(next);
         current.length = 0;
         current.push(...next);
@@ -1950,7 +1966,9 @@ function buildGroup(secDecl, gDecl, entries, ctx) {
     body.appendChild(chainWrap);
   }
 
-  // C3 活动池：当前可跑的活动注记（镜像 activities.py，验收 4 的展示面）
+  // C3 活动池：当前可跑的活动注记（M38-补丁1 第二批：数据源换成真实
+  // 活动池，六个常驻，并逐个标明执行形态——"哪些会做"与"哪些能自主"
+  // 两件事分开呈现）
   if (secDecl.id === "C" && gDecl.id === "C3") {
     const adv = state.values.advanced || {};
     const runnable = runnableActivities(
@@ -1958,11 +1976,13 @@ function buildGroup(secDecl, gDecl, entries, ctx) {
       (adv.decision || {}).free_activity_enabled,
       (adv.capabilities || {}).web_search_enabled,
     );
+    const parts = runnable.map((a) =>
+      a.agent ? `${a.name}（可自主发挥）` : `${a.name}（固定脚本）`);
     const poolNote = document.createElement("div");
     poolNote.className = "pool-note";
     poolNote.textContent =
-      `当前可跑的活动：${runnable.length ? runnable.join(" / ") : "（空）"}` +
-      (runnable.length ? "" : "——检查联网搜索与活动池配置");
+      `当前可跑的活动：${parts.length ? parts.join(" / ") : "（空）"}` +
+      (parts.length ? "" : "——检查联网搜索与活动池配置");
     body.appendChild(poolNote);
   }
 

@@ -632,7 +632,10 @@ class LivingPlugin(Star):
         """协商器惰性构造（judge 配好前零构建成本）。"""
         cached = getattr(self, "_negotiator_instance", None)
         if cached is None:
-            from core.negotiator import Negotiator
+            # M38-补丁1：相对导入——生产以包形态加载插件
+            # （data.plugins.<插件目录>.main），顶层 core 模块不存在；
+            # 绝对导入只在测试把插件目录塞进 sys.path 时碰巧可用
+            from .core.negotiator import Negotiator
 
             cached = Negotiator(
                 judge=self._judge,
@@ -1007,7 +1010,9 @@ class LivingPlugin(Star):
           总超时到点放行当前版本。全过程不入上下文/不入 memory
           （直连调用无存储副作用），被替换的旧版本只存内存、当场销毁；
         - 流式 chunk（is_chunk）不判（每 chunk 一判既烧钱又没法整体改）；
-        - 任何异常只 DEBUG，绝不影响回复送达（红线 6）。"""
+        - 任何异常不改动回复、绝不影响送达；M38-补丁1 起外层异常记
+          WARNING 并带类型名——配置/部署级硬错吞成 DEBUG 时 INFO 级
+          日志一个字不落，故障完全不可见。"""
         try:
             judge = self._judge
             if judge is None or not judge.enabled():
@@ -1062,7 +1067,11 @@ class LivingPlugin(Star):
                     )
                 )
         except Exception as e:
-            logger.debug(f"[Judge] 输出检查失败（不影响回复）: {e}")
+            # M38-补丁1：升 WARNING 带异常类型名（不影响回复的性质不变；
+            # CancelledError 继承 BaseException，不经此分支，原样上抛）
+            logger.warning(
+                f"[Judge] 输出检查失败（不影响回复，{type(e).__name__}）: {e}"
+            )
 
     def _platform_prefixes(self) -> set[str]:
         """合法身份前缀集合（补丁 VI 需求 1-2；补丁 XVI 修正：补 type 维度）。
